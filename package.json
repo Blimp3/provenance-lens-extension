@@ -1,0 +1,49 @@
+{
+  "name": "provenance-lens-public",
+  "version": "0.8.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Credential-free public source edition of the Provenance Lens Chromium extension.",
+  "type": "module",
+  "packageManager": "npm@11.6.2",
+  "workspaces": [
+    "apps/extension",
+    "packages/shared"
+  ],
+  "engines": {
+    "node": ">=24.15.0 <25"
+  },
+  "scripts": {
+    "dev": "npm run build --workspace @provenance-lens/shared && npm run dev --workspace @provenance-lens/extension",
+    "start:extension": "node scripts/start-extension.mjs",
+    "build": "npm run build:extension",
+    "build:extension": "npm run build --workspace @provenance-lens/shared && npm run build --workspace @provenance-lens/extension",
+    "test": "npm run test:unit",
+    "test:unit": "npm run build --workspace @provenance-lens/shared && vitest run --config vitest.config.ts && npm run test --workspace @provenance-lens/extension && npm run test:launcher",
+    "test:launcher": "node --test scripts/start-extension.test.mjs scripts/public-package.test.mjs",
+    "test:e2e": "npm run build:extension && npm run test:e2e --workspace @provenance-lens/extension",
+    "lint": "npm run build --workspace @provenance-lens/shared && eslint .",
+    "typecheck": "npm run build --workspace @provenance-lens/shared && npm run typecheck --workspaces --if-present",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build",
+    "package": "npm run package:public",
+    "package:public": "npm run build:extension && node scripts/audit-extension.mjs && node scripts/scan-extension.mjs && node scripts/package.mjs",
+    "audit:extension": "node scripts/audit-extension.mjs",
+    "scan:extension": "node scripts/scan-extension.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.3",
+    "@vitest/coverage-v8": "4.1.11",
+    "archiver": "8.0.0",
+    "eslint": "10.9.1",
+    "globals": "17.11.0",
+    "jsdom": "30.0.1",
+    "prettier": "3.9.6",
+    "sharp": "0.35.4",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.69.0",
+    "vitest": "4.1.11"
+  }
+}

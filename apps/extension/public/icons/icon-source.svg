@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Provenance Lens">
+  <defs>
+    <linearGradient id="lens-gradient" x1="14" y1="10" x2="114" y2="118" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#52525b" />
+      <stop offset="1" stop-color="#18181b" />
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="30" fill="#f4f4f5" />
+  <path d="M26 26h28v12H38v16H26V26Zm48 0h28v28H90V38H74V26ZM26 74h12v16h16v12H26V74Zm64 0h12v28H74V90h16V74Z" fill="url(#lens-gradient)" />
+  <circle cx="64" cy="64" r="22" fill="none" stroke="#52525b" stroke-width="8" />
+  <path d="m80 80 18 18" stroke="#18181b" stroke-width="10" stroke-linecap="round" />
+  <path d="M56 64h16M64 56v16" stroke="#f4f4f5" stroke-width="5" stroke-linecap="round" />
+</svg>

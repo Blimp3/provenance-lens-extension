@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Provenance Lens deterministic image fixture</title>
+    <style>
+      .background {
+        width: 2px;
+        height: 2px;
+        background-image: url("image-fixture.png");
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Deterministic image fixture</h1>
+      <img src="image-fixture.png" alt="PNG fixture" width="2" height="2" />
+      <picture
+        ><img src="image-fixture.jpg" alt="JPEG fixture" width="2" height="2"
+      /></picture>
+      <video poster="image-fixture.webp" width="2" height="2"></video>
+      <div class="background" aria-label="Background image fixture"></div>
+      <img
+        src="fixture.html"
+        alt="HTML must not be treated as an image"
+        width="2"
+        height="2"
+      />
+    </main>
+  </body>
+</html>

@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+artifacts/
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+.wrangler/
+.DS_Store
+output/
+test-results/
+playwright-report/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+apps/extension/.bundled-client.json

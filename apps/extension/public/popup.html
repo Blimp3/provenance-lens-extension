@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Provenance Lens</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="popup-shell" aria-labelledby="page-title">
+      <header class="brand">
+        <img src="icons/icon-48.png" alt="" width="36" height="36" />
+        <div>
+          <p class="eyebrow">Provenance Lens</p>
+          <h1 id="page-title">Check provenance</h1>
+        </div>
+      </header>
+      <section class="card stack" aria-labelledby="action-heading">
+        <h2 id="action-heading">Available action</h2>
+        <div id="action-list" class="stack"></div>
+        <p class="muted small">
+          Checks embedded image credentials and supported OpenAI image or audio
+          signals.
+        </p>
+        <p id="verification-mode-summary" class="muted small"></p>
+        <p
+          id="workflow-status"
+          class="status"
+          role="status"
+          aria-live="polite"
+        ></p>
+        <button id="cancel-verification" class="danger" type="button" hidden>
+          Cancel verification
+        </button>
+      </section>
+      <section
+        id="optional-access-card"
+        class="card stack setup-card"
+        aria-labelledby="setup-heading"
+      >
+        <h2 id="setup-heading">Finish setup</h2>
+        <p class="muted small">
+          Core permissions are already active. Grant optional access once to
+          retrieve the selected image from any HTTP or HTTPS site and save an
+          exact original for Website mode or the manual fallback.
+        </p>
+        <button id="grant-optional-access" type="button">
+          Grant optional access
+        </button>
+        <p
+          id="optional-access-status"
+          class="status"
+          role="status"
+          aria-live="polite"
+        ></p>
+      </section>
+      <section
+        id="latest-card"
+        class="card"
+        hidden
+        aria-labelledby="latest-heading"
+      >
+        <h2 id="latest-heading">Most recent result</h2>
+        <div id="latest-result"></div>
+        <div class="actions">
+          <a
+            id="latest-details"
+            class="button secondary"
+            href="details.html"
+            target="_blank"
+            rel="noopener"
+            >Show result details</a
+          >
+        </div>
+      </section>
+      <nav class="actions" aria-label="Extension pages">
+        <a
+          class="button secondary"
+          href="history.html"
+          target="_blank"
+          rel="noopener"
+          >Result history</a
+        >
+        <button id="open-settings" class="secondary" type="button">
+          Settings
+        </button>
+      </nav>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

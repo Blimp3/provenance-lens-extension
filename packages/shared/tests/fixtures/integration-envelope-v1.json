@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "operationId": "11111111-1111-4111-8111-111111111111",
+  "action": "check",
+  "media": {
+    "mediaSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "byteLength": 68,
+    "mimeType": "image/png",
+    "inputKind": "original",
+    "audioDurationSeconds": null,
+    "segment": null,
+    "fullSourceSha256": null
+  },
+  "forceRecheck": false,
+  "accountId": "account-fixture-1",
+  "requestedAt": "2026-09-16T09:59:00.000Z",
+  "result": {
+    "resultRef": "result-fixture-1",
+    "accountId": "account-fixture-1",
+    "mediaSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "verificationPolicyVersion": "content-provenance-c2pa-6273cdcb4f27-v2",
+    "resultSchemaVersion": 2,
+    "originallyCheckedAt": "2026-09-16T10:00:00.000Z",
+    "cacheSource": "fresh",
+    "evidence": {
+      "verdict": "no_supported_openai_signal",
+      "summary": "No supported provenance signal was detected.",
+      "signals": [],
+      "warnings": [],
+      "checkedAt": "2026-09-16T10:00:00.000Z",
+      "requestId": "22222222-2222-4222-8222-222222222222",
+      "contentCredentials": {
+        "status": "not_present",
+        "signatureValid": false,
+        "contentBindingValid": false,
+        "signerTrusted": false,
+        "issuer": null,
+        "actions": [],
+        "aiDeclaration": null,
+        "validationCodes": [],
+        "trustListVersion": "fixture-v1"
+      }
+    }
+  },
+  "archive": {
+    "deliveryState": "confirmed",
+    "documentReceipt": {
+      "botId": "123456789",
+      "chatId": "987654321",
+      "messageId": "101",
+      "fileId": "telegram-document-fixture-1"
+    },
+    "integrityState": "verified",
+    "roundTripSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": null,
+    "retryReady": false
+  },
+  "historySync": {
+    "state": "synced",
+    "historyId": "33333333-3333-4333-8333-333333333333",
+    "error": null
+  }
+}

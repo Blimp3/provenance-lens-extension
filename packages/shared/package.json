@@ -1,0 +1,27 @@
+{
+  "name": "@provenance-lens/shared",
+  "version": "0.8.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./content-credentials": {
+      "types": "./dist/content-credentials.d.ts",
+      "default": "./dist/content-credentials.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@contentauth/c2pa-wasm": "0.11.5",
+    "file-type": "21.3.4",
+    "music-metadata": "11.15.0",
+    "zod": "4.5.4"
+  }
+}

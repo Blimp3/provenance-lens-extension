@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Before your first verification</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="page">
+    <main class="page-shell" aria-labelledby="page-title">
+      <header class="brand">
+        <img src="icons/icon-48.png" alt="" width="36" height="36" />
+        <div>
+          <p class="eyebrow">Provenance Lens</p>
+          <h1 id="page-title">Before your first verification</h1>
+        </div>
+      </header>
+      <section class="card stack">
+        <div id="website-disclosure" class="stack" hidden>
+          <p>
+            Website mode downloads the exact bytes Lens retrieved for the
+            selected image and opens OpenAI Verify. You choose the downloaded
+            file and review the result on OpenAI's website. Your browser saves
+            the file and may retain a record in its download history.
+          </p>
+          <p class="muted">
+            Provenance Lens does not upload the file to OpenAI, automate or
+            scrape the Verify page, read its result, or add a website result to
+            extension history or cache.
+          </p>
+        </div>
+        <div id="api-disclosure" class="stack" hidden>
+          <p>
+            API mode uploads the exact bytes of the selected image or audio file
+            to your configured verification server, which sends them to the
+            documented OpenAI Content Provenance API. The backend and a valid
+            OpenAI API key are required; the key remains on the backend and is
+            never stored in this extension.
+          </p>
+          <p class="muted">
+            Successful API verdicts may be stored in the separate authenticated
+            server cache and bounded local cache. Media bytes and source URLs
+            are not stored in either cache or in result history.
+          </p>
+        </div>
+        <p class="muted">
+          Image API checks also verify embedded Content Credentials on the
+          backend. Audio checks look for supported OpenAI SynthID signals.
+          Finding no supported signal does not establish human origin; these
+          checks are not universal AI detectors.
+        </p>
+        <div class="actions">
+          <button id="acknowledge" type="button" disabled>
+            Acknowledge and choose an image
+          </button>
+          <button id="cancel" class="secondary" type="button">Cancel</button>
+        </div>
+        <p
+          id="disclosure-status"
+          class="status"
+          role="status"
+          aria-live="polite"
+        ></p>
+      </section>
+    </main>
+    <script type="module" src="disclosure.js"></script>
+  </body>
+</html>

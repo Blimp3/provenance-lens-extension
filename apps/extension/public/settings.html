@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Provenance Lens settings</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="page">
+    <main class="page-shell settings-shell" aria-labelledby="page-title">
+      <header class="brand">
+        <img src="icons/icon-48.png" alt="" width="36" height="36" />
+        <div>
+          <p class="eyebrow">Provenance Lens</p>
+          <h1 id="page-title">Settings</h1>
+        </div>
+      </header>
+      <form id="settings-form" class="settings-grid" novalidate>
+        <div class="settings-column">
+          <section
+            class="card stack"
+            aria-labelledby="verification-mode-heading"
+          >
+            <h2 id="verification-mode-heading">Verification mode</h2>
+            <label for="verification-mode"
+              >How should Lens handle a selected image?
+              <select id="verification-mode" name="verification-mode">
+                <option value="website">Website review (manual)</option>
+                <option value="api">Automatic API result</option>
+              </select>
+            </label>
+            <p id="website-mode-disclosure" class="mode-disclosure muted small">
+              Website mode downloads the exact selected image file and opens
+              <a
+                href="https://openai.com/research/verify/"
+                target="_blank"
+                rel="noopener noreferrer"
+                >OpenAI Verify</a
+              >
+              for you to upload and review manually. Lens never automates,
+              submits to, or scrapes that website.
+            </p>
+            <p
+              id="api-mode-disclosure"
+              class="mode-disclosure muted small"
+              hidden
+            >
+              API mode sends the exact selected image or audio file to your
+              configured verification backend for an automatic result. The
+              backend and a valid OpenAI API key are required; the API key stays
+              on the backend and is never stored in this extension.
+            </p>
+          </section>
+          <section class="card stack" aria-labelledby="connection-heading">
+            <h2 id="connection-heading">API connection</h2>
+            <p class="muted small">
+              Website review needs no backend. For API mode, enter a backend you
+              control and its client access token. The OpenAI API key must stay
+              on that backend.
+            </p>
+            <label for="backend-url"
+              >Backend base URL
+              <input
+                id="backend-url"
+                name="backend-url"
+                type="text"
+                autocomplete="url"
+                spellcheck="false"
+              />
+            </label>
+            <p class="muted small">
+              Use HTTPS for remote servers. HTTP is accepted only for loopback
+              development.
+            </p>
+            <p id="bundled-client-disclosure" class="muted small" hidden>
+              A bundled connection is active. Public builds never include one.
+            </p>
+            <label for="client-token"
+              >Client access token
+              <input
+                id="client-token"
+                name="client-token"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </label>
+            <div class="actions">
+              <button id="save-settings" type="submit">Save settings</button>
+              <button id="test-connection" class="secondary" type="button">
+                Test connection
+              </button>
+              <button
+                id="request-backend-permission"
+                class="secondary"
+                type="button"
+              >
+                Allow backend access
+              </button>
+            </div>
+            <p id="backend-permission-note" class="muted small" hidden>
+              API mode requires an exact-origin browser permission for the
+              backend you configure.
+            </p>
+            <p
+              id="connection-status"
+              class="status"
+              role="status"
+              aria-live="polite"
+            ></p>
+          </section>
+          <section class="card stack" aria-labelledby="integration-heading">
+            <h2 id="integration-heading">Connect DigiBot</h2>
+            <p class="muted small">
+              Link this browser to your private DigiBot account to send selected
+              originals, keep shared History, and view account statistics.
+            </p>
+            <p class="muted small">
+              Check sends the selected file to OpenAI for supported provenance
+              signals; these checks are not eligible for Zero Data Retention.
+              Checked images are also saved as exact files in Telegram.
+              Temporary processing copies expire after 24 hours. Download only
+              sends the selected file to Telegram and does not run a check.
+              <a
+                href="https://developers.openai.com/api/docs/guides/content-provenance"
+                target="_blank"
+                rel="noreferrer"
+                >Provider processing details</a
+              >. Shared History remains until you delete it; local History
+              settings below apply only to standalone results.
+            </p>
+            <p
+              id="integration-status"
+              class="status"
+              role="status"
+              aria-live="polite"
+            ></p>
+            <div id="integration-pairing" class="stack" hidden>
+              <p class="muted small">
+                In your private DigiBot chat, send this command and approve the
+                matching code.
+              </p>
+              <code id="integration-command"></code>
+              <p>Confirmation code: <strong id="integration-code"></strong></p>
+              <button id="complete-pairing" type="button">
+                Complete pairing
+              </button>
+            </div>
+            <div class="actions">
+              <button id="start-pairing" type="button">Start pairing</button>
+              <button
+                id="disconnect-integration"
+                class="danger"
+                type="button"
+                hidden
+              >
+                Disconnect DigiBot
+              </button>
+            </div>
+          </section>
+          <section class="card stack" aria-labelledby="privacy-heading">
+            <h2 id="privacy-heading">Privacy and history</h2>
+            <label for="history-retention"
+              >History retention
+              <select id="history-retention" name="history-retention">
+                <option value="0">Disabled</option>
+                <option value="10">Last 10 results</option>
+                <option value="20">Last 20 results</option>
+                <option value="50">Last 50 results</option>
+              </select>
+            </label>
+            <label for="local-cache-limit"
+              >Local verification cache limit
+              <select id="local-cache-limit" name="local-cache-limit">
+                <option value="10">10 results</option>
+                <option value="50">50 results</option>
+                <option value="100">100 results</option>
+                <option value="250">250 results</option>
+                <option value="1000">1,000 results</option>
+              </select>
+            </label>
+            <label class="check-row" for="include-page-title">
+              <input
+                id="include-page-title"
+                name="include-page-title"
+                type="checkbox"
+              />
+              <span>Save a sanitized page title with history</span>
+            </label>
+            <label class="check-row" for="debug-mode">
+              <input id="debug-mode" name="debug-mode" type="checkbox" />
+              <span>Enable sanitized debug details</span>
+            </label>
+            <p class="muted small">
+              Website mode writes no Lens result, history record, or cache
+              entry. API mode can store only normalized results, check time,
+              hostname, optional title, signal details, and exact-byte digests.
+              Image bytes, cookies, full URLs, and keys are not stored in Lens
+              history or caches. The client token is stored locally to
+              authenticate API requests; the OpenAI API key is never stored in
+              this extension.
+            </p>
+            <div class="actions">
+              <button id="clear-history" class="danger" type="button">
+                Clear history
+              </button>
+              <button id="clear-cache" class="danger" type="button">
+                Clear verification cache
+              </button>
+            </div>
+            <p
+              id="history-status"
+              class="status"
+              role="status"
+              aria-live="polite"
+            ></p>
+            <p
+              id="cache-status"
+              class="status"
+              role="status"
+              aria-live="polite"
+            ></p>
+          </section>
+        </div>
+        <div class="settings-column">
+          <section class="card stack" aria-labelledby="fallback-heading">
+            <h2 id="fallback-heading">Fallbacks</h2>
+            <label class="check-row" for="screenshot-fallback">
+              <input
+                id="screenshot-fallback"
+                name="screenshot-fallback"
+                type="checkbox"
+              />
+              <span>Enable “Verify a screenshot copy”</span>
+            </label>
+            <p class="muted small">
+              Disabled by default. A screenshot can remove metadata or weaken
+              provenance signals, so its result can be less reliable.
+            </p>
+            <p class="muted small">
+              Website review mode is the normal manual path: a successfully
+              retrieved selected file is downloaded and OpenAI Verify is opened
+              for your review. This extension never automates that website.
+            </p>
+          </section>
+          <section class="card stack" aria-labelledby="permissions-heading">
+            <h2 id="permissions-heading">Extension access</h2>
+            <p class="muted small">
+              One click asks the browser to allow selected-image retrieval on
+              all HTTP and HTTPS sites and exact selected-file downloads for
+              Website mode or the API manual fallback. The browser confirmation
+              is required, and the extension still checks images only after your
+              direct action.
+            </p>
+            <div class="actions">
+              <button id="grant-optional-access" type="button">
+                Grant optional access
+              </button>
+            </div>
+            <p
+              id="optional-access-status"
+              class="status"
+              role="status"
+              aria-live="polite"
+            ></p>
+            <div class="section-divider" aria-hidden="true"></div>
+            <h3>Grant one site instead</h3>
+            <p class="muted small">
+              For narrower access, grant only the exact image-host origin below.
+              Existing grants are never removed when another request is denied.
+            </p>
+            <label for="permission-origin"
+              >Host origin
+              <input
+                id="permission-origin"
+                name="permission-origin"
+                type="text"
+                placeholder="https://images.example"
+                inputmode="url"
+              />
+            </label>
+            <div class="actions">
+              <button id="request-permission" type="button">
+                Request host access
+              </button>
+              <button id="refresh-permissions" class="secondary" type="button">
+                Refresh status
+              </button>
+            </div>
+            <p
+              id="permission-status"
+              class="status"
+              role="status"
+              aria-live="polite"
+            ></p>
+          </section>
+        </div>
+      </form>
+      <p class="muted small">
+        Lens does not scan pages automatically. Verification starts only after
+        you pick an image. Website review mode keeps the result on OpenAI’s
+        site; API mode sends the exact file to your configured backend.
+      </p>
+    </main>
+    <script type="module" src="settings.js"></script>
+  </body>
+</html>

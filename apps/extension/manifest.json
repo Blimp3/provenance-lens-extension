@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Provenance Lens",
+  "description": "Check image Content Credentials and supported OpenAI image or short-audio provenance signals.",
+  "version": "0.8.0",
+  "permissions": ["activeTab", "contextMenus", "scripting", "storage"],
+  "host_permissions": [
+    "https://private-media-downloader.yellow-salad-bfde.workers.dev/*"
+  ],
+  "optional_permissions": ["downloads"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Provenance Lens",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "options_ui": {
+    "page": "settings.html",
+    "open_in_tab": true
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "commands": {
+    "pick-image": {
+      "suggested_key": {
+        "default": "Alt+Shift+V",
+        "mac": "Alt+Shift+V"
+      },
+      "description": "Pick an image for OpenAI provenance review"
+    }
+  }
+}

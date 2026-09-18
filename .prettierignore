@@ -1,0 +1,7 @@
+node_modules
+dist
+coverage
+artifacts
+package-lock.json
+apps/extension/public/icons/*.png
+output

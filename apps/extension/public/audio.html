@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Provenance Lens audio check</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="page">
+    <main class="page-shell" aria-labelledby="page-title">
+      <header class="brand">
+        <img src="icons/icon-48.png" alt="" width="36" height="36" />
+        <div>
+          <p class="eyebrow">Provenance Lens</p>
+          <h1 id="page-title">Check an audio file</h1>
+        </div>
+      </header>
+      <form id="audio-form" class="card stack">
+        <p>
+          Check one original audio file or an explicit short segment from a
+          video URL. Lens checks supported OpenAI SynthID signals through your
+          configured API backend.
+        </p>
+        <label for="audio-source">Source</label>
+        <select id="audio-source" name="audio-source">
+          <option value="file">Audio file</option>
+          <option value="video">Video URL segment</option>
+        </select>
+        <label for="audio-file">
+          Audio file
+          <input
+            id="audio-file"
+            name="audio-file"
+            type="file"
+            accept="audio/mpeg,audio/ogg,audio/opus,audio/aac,audio/flac,audio/wav,audio/x-wav"
+            required
+          />
+        </label>
+        <div id="video-segment-fields" class="stack" hidden>
+          <label for="video-source-url">
+            Video URL
+            <input
+              id="video-source-url"
+              name="video-source-url"
+              type="url"
+              inputmode="url"
+              placeholder="https://example.com/video"
+            />
+          </label>
+          <div class="row">
+            <label for="video-start-seconds">
+              Start (seconds)
+              <input
+                id="video-start-seconds"
+                name="video-start-seconds"
+                type="number"
+                min="0"
+                max="86399"
+                step="1"
+                value="0"
+              />
+            </label>
+            <label for="video-end-seconds">
+              End (seconds)
+              <input
+                id="video-end-seconds"
+                name="video-end-seconds"
+                type="number"
+                min="1"
+                max="86400"
+                step="1"
+                value="30"
+              />
+            </label>
+          </div>
+          <p class="muted small">
+            The selected range must be whole seconds and 1–60 seconds long. Only
+            the extracted audio segment is checked; the video and its frames are
+            not analyzed.
+          </p>
+        </div>
+        <p class="muted small">
+          Supported files must contain valid duration metadata and be no longer
+          than 60 seconds or larger than 4 MiB. Raw PCM without a self
+          describing header is rejected.
+        </p>
+        <div id="api-authorization" class="stack" hidden>
+          <label for="api-acknowledgement">
+            <input id="api-acknowledgement" type="checkbox" />
+            I understand that checking uploads this exact audio file to the
+            configured verification backend.
+          </label>
+          <p class="muted small">
+            The backend sends the file to the documented OpenAI Content
+            Provenance API. Successful normalized results may be retained in the
+            authenticated server cache and bounded local cache; the audio bytes
+            are not stored there or in history.
+          </p>
+        </div>
+        <p id="api-only-message" class="muted small" hidden>
+          Audio checks use API mode only. Switch to API mode and acknowledge its
+          privacy disclosure in
+          <a href="settings.html" target="_blank" rel="noopener">Settings</a>.
+        </p>
+        <button id="check-audio" type="submit">Check audio</button>
+        <p
+          id="audio-status"
+          class="status"
+          role="status"
+          aria-live="polite"
+        ></p>
+        <div id="audio-result" hidden></div>
+      </form>
+      <nav class="actions" aria-label="Extension pages">
+        <a
+          class="button secondary"
+          href="history.html"
+          target="_blank"
+          rel="noopener"
+          >Result history</a
+        >
+        <button id="open-settings" class="secondary" type="button">
+          Settings
+        </button>
+      </nav>
+    </main>
+    <script type="module" src="audio.js"></script>
+  </body>
+</html>
