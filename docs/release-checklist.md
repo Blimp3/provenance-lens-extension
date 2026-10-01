@@ -28,10 +28,11 @@ checkout with Node.js 24.20.0 (`.nvmrc`) and npm 11.6.2.
    `package:public` audits the manifest permissions and scans the built
    extension for provider keys and unapproved `workers.dev` hosts.
 
-4. **Scan the tracked source.** Review every hit of
-   `git grep -nE 'workers\.dev|/Users/|sk-[A-Za-z0-9_-]{8}' -- ':!SOURCE_MANIFEST.sha256'`.
-   Only the DigiBot gateway already allowed in `scripts/scan-extension.mjs`,
-   test fixtures, the scanner and these docs may match.
+4. **Scan the tracked source.** `npm run scan:source`, which `npm run check`
+   also runs, rejects local user-directory paths, provider-key-shaped strings
+   and `workers.dev` hosts other than the DigiBot gateway allowed in
+   `scripts/scan-extension.mjs`, in every tracked file except the scanner and
+   its test. Fix every hit rather than adding an exclusion.
 5. **Update the records.** In `SOURCE_PROVENANCE.md`, record the new private
    base commit, the review date and any new public-edition difference. Update
    `THIRD_PARTY_NOTICES.txt` when the bundled packages change.
