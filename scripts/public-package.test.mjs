@@ -21,7 +21,7 @@ import * as esbuild from "esbuild";
 
 import { buildOptions } from "../apps/extension/scripts/build.mjs";
 import { packageExtension, validatePackageInputs } from "./package.mjs";
-import { scanExtensionDirectory } from "./scan-extension.mjs";
+import { scanExtensionDirectory, scanSourceFiles } from "./scan-extension.mjs";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -169,6 +169,68 @@ test("extension scan permits only the documented workers.dev host", async (conte
   assert.equal(findings.length, 1);
   assert.match(findings[0], /unapproved workers\.dev host/u);
   assert.match(findings[0], /synthetic-verifier\.workers\.dev/u);
+});
+
+test("source scan walks tracked files and rejects leaked paths, keys and hosts", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "provenance-lens-source-scan-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await execFileAsync("git", ["init", "-q"], { cwd: root });
+  await mkdir(join(root, "scripts"), { recursive: true });
+  await writeFile(
+    join(root, "clean.ts"),
+    [
+      'const gateway = "https://private-media-downloader.yellow-salad-bfde.workers.dev/api/integration";',
+      'const example = "/Users/example/Provenance Lens/apps/extension/dist";',
+      'const prefix = "sk-";',
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(root, "scripts/public-package.test.mjs"),
+    'const excluded = "/Users/owner/private";\n',
+  );
+  await writeFile(join(root, "untracked.ts"), 'const path = "/home/owner";\n');
+  await assert.rejects(scanSourceFiles(root), /needs a git clone/u);
+  await execFileAsync("git", ["add", "clean.ts", "scripts"], { cwd: root });
+
+  const clean = await scanSourceFiles(root);
+  assert.deepEqual(clean, { files: ["clean.ts"], findings: [] });
+
+  const fakeKey = `sk-proj-${"A".repeat(24)}`;
+  await writeFile(
+    join(root, "leak.ts"),
+    [
+      "// comment",
+      'const home = "/Users/owner/Projects/lens";',
+      `const linux = "/home/owner/lens"; const key = "${fakeKey}";`,
+      'const host = "https://synthetic-verifier.workers.dev/api/verify";',
+      "",
+    ].join("\n"),
+  );
+  await writeFile(join(root, "gone.ts"), 'const path = "/home/owner";\n');
+  await symlink("/Users/owner/private/key", join(root, "link"));
+  await execFileAsync("git", ["add", "leak.ts", "gone.ts", "link"], {
+    cwd: root,
+  });
+  await rm(join(root, "gone.ts"));
+
+  const { files, findings } = await scanSourceFiles(root);
+  assert.deepEqual(files, ["clean.ts", "leak.ts", "link"]);
+  assert.deepEqual(findings, [
+    "unapproved workers.dev host synthetic-verifier.workers.dev in leak.ts",
+    "local user path /Users/owner/Projects/lens in leak.ts:2",
+    "local home path /home/owner/lens in leak.ts:3",
+    "provider-key-shaped string in leak.ts:3",
+    "local user path /Users/owner/private/key in link:1",
+  ]);
+  assert.equal(findings.join("\n").includes(fakeKey), false);
+});
+
+test("source scan refuses to run outside a git clone", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "provenance-lens-source-copy-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, "clean.ts"), "export {};\n");
+  await assert.rejects(scanSourceFiles(root), /needs a git clone/u);
 });
 
 async function createBuildFixture() {
