@@ -11,7 +11,7 @@ const outputDir = join(appDir, "dist");
 const watch = process.argv.includes("--watch");
 const bundledClientToken = "";
 
-const entryPoints = {
+export const entryPoints = {
   background: join(sourceDir, "background.ts"),
   picker: join(sourceDir, "picker.ts"),
   popup: join(sourceDir, "ui/popup.ts"),
@@ -22,43 +22,7 @@ const entryPoints = {
   audio: join(sourceDir, "ui/audio.ts"),
 };
 
-await rm(outputDir, { recursive: true, force: true });
-await mkdir(outputDir, { recursive: true });
-await cp(join(publicDir, "styles.css"), join(outputDir, "styles.css"));
-await cp(
-  join(publicDir, "icons/icon-source.svg"),
-  join(outputDir, "icons/icon-source.svg"),
-);
-await cp(join(appDir, "manifest.json"), join(outputDir, "manifest.json"));
-await writeFile(
-  join(outputDir, "build-profile.json"),
-  `${JSON.stringify({ profile: "public" }, null, 2)}\n`,
-);
-await cp(
-  resolve(appDir, "../..", "THIRD_PARTY_NOTICES.txt"),
-  join(outputDir, "THIRD_PARTY_NOTICES.txt"),
-);
-await cp(resolve(appDir, "../..", "LICENSE"), join(outputDir, "LICENSE"));
-
-for (const page of [
-  "popup",
-  "settings",
-  "history",
-  "details",
-  "disclosure",
-  "audio",
-]) {
-  await cp(join(publicDir, `${page}.html`), join(outputDir, `${page}.html`));
-}
-
-for (const size of [16, 32, 48, 128]) {
-  await writeFile(
-    join(outputDir, `icons/icon-${size}.png`),
-    createIconPng(size),
-  );
-}
-
-const buildOptions = {
+export const buildOptions = {
   entryPoints,
   outdir: outputDir,
   bundle: true,
@@ -75,12 +39,50 @@ const buildOptions = {
   logLevel: "info",
 };
 
-if (watch) {
-  const context = await esbuild.context(buildOptions);
-  await context.watch();
-  console.log("Watching extension sources...");
-} else {
-  await esbuild.build(buildOptions);
+if (import.meta.main) {
+  await rm(outputDir, { recursive: true, force: true });
+  await mkdir(outputDir, { recursive: true });
+  await cp(join(publicDir, "styles.css"), join(outputDir, "styles.css"));
+  await cp(
+    join(publicDir, "icons/icon-source.svg"),
+    join(outputDir, "icons/icon-source.svg"),
+  );
+  await cp(join(appDir, "manifest.json"), join(outputDir, "manifest.json"));
+  await writeFile(
+    join(outputDir, "build-profile.json"),
+    `${JSON.stringify({ profile: "public" }, null, 2)}\n`,
+  );
+  await cp(
+    resolve(appDir, "../..", "THIRD_PARTY_NOTICES.txt"),
+    join(outputDir, "THIRD_PARTY_NOTICES.txt"),
+  );
+  await cp(resolve(appDir, "../..", "LICENSE"), join(outputDir, "LICENSE"));
+
+  for (const page of [
+    "popup",
+    "settings",
+    "history",
+    "details",
+    "disclosure",
+    "audio",
+  ]) {
+    await cp(join(publicDir, `${page}.html`), join(outputDir, `${page}.html`));
+  }
+
+  for (const size of [16, 32, 48, 128]) {
+    await writeFile(
+      join(outputDir, `icons/icon-${size}.png`),
+      createIconPng(size),
+    );
+  }
+
+  if (watch) {
+    const context = await esbuild.context(buildOptions);
+    await context.watch();
+    console.log("Watching extension sources...");
+  } else {
+    await esbuild.build(buildOptions);
+  }
 }
 
 function createIconPng(size) {
