@@ -5,6 +5,10 @@ extension. This repository is public: everything committed here is published.
 This guide is written for this edition; don't replace it with another
 repository's guide.
 
+It is still the 0.8.0 source (private base `91775e5`) and has not been synced
+to private 0.8.1; [SOURCE_PROVENANCE.md](SOURCE_PROVENANCE.md) records the
+sync status, and a sync follows the release checklist.
+
 ## Layout
 
 - `apps/extension/`: extension source, static pages, unit tests (Vitest and

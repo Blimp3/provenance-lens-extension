@@ -11,6 +11,16 @@ tools. It excludes the private verification server, Cloudflare Worker and
 bindings, migrations, owner provisioning, environment files, operational
 history, and historical release assets.
 
+## Status
+
+As of 2026-10-01 this edition is still the 0.8.0 source from private base
+`91775e5` and has not been synced to private 0.8.1; see
+[SOURCE_PROVENANCE.md](SOURCE_PROVENANCE.md). Commits here since publication
+change only docs, checks and tests; the extension's runtime source is
+unchanged. No public release has been tagged yet, and
+[docs/release-checklist.md](docs/release-checklist.md) is the procedure for
+the first one.
+
 ## Run locally
 
 Use Node.js 24.20.0 and npm 11.6.2:
@@ -47,6 +57,22 @@ The synthetic browser tests intercept this gateway and do not call OpenAI,
 Telegram, DigiBot, or a production verification backend. See
 [docs/portfolio-demo.md](docs/portfolio-demo.md).
 
+## Permissions
+
+- `activeTab`, `contextMenus`, `scripting` and `storage` run the picker on the
+  current tab after a direct user action, add the **Check OpenAI provenance**
+  image context-menu entry, and keep settings and local results. `activeTab`
+  also lets the opt-in **Verify a screenshot copy** fallback capture the
+  visible tab; that fallback is off by default in Settings.
+- The one required host permission is the DigiBot gateway above. It grants no
+  access to other sites.
+- Optional `downloads` saves the exact selected file in Website review mode or
+  the API manual fallback.
+- Optional `http://*/*` and `https://*/*` let Lens retrieve a user-selected
+  image from its host. **Grant optional access** in the popup or Settings asks
+  the browser for site access and downloads at once; Settings can instead
+  grant one exact origin, such as an image host or a user-controlled backend.
+
 ## Privacy and limits
 
 - Verification starts only after a direct user action.
@@ -59,7 +85,7 @@ Telegram, DigiBot, or a production verification backend. See
 
 ## Licensing
 
-Original Provenance Lens source in this candidate is licensed under the MIT
+Original Provenance Lens source in this edition is licensed under the MIT
 License; see [LICENSE](LICENSE). This grant covers the project source and
 documentation authored for Provenance Lens. Bundled third-party components
 retain their own terms in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt);

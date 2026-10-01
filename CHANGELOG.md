@@ -9,6 +9,9 @@
   bundling an account credential.
 - Include deterministic unit/browser checks and notices for bundled third-party
   software.
+- Scan every tracked file in `npm run check` for local user-directory paths,
+  provider-key-shaped strings and `workers.dev` hosts other than the DigiBot
+  gateway.
 
 ## 0.8.0 source feature set
 

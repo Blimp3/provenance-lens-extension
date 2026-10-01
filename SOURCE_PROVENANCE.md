@@ -8,17 +8,38 @@ commits in this repository; the private repository's history is not part of
 it. Public releases are tagged `vX.Y.Z` and listed on this repository's GitHub
 Releases page; see [docs/release-checklist.md](docs/release-checklist.md).
 
+Sync status on 2026-10-01: this edition is still the 0.8.0 source from base
+`91775e5`. The private edition's main is now versioned 0.8.1. None of the
+private changes after the base have been brought over. The commits here since
+`d0b453a` add docs, checks and tests only; `apps/extension/src`,
+`apps/extension/public`, the manifest and `packages/shared/src` are unchanged.
+No public release has been tagged yet.
+
+For users, private 0.8.1 differs from this source in two ways:
+
+- the background worker accepts the messages that start, resume, cancel or
+  retry a verification only from the extension's own pages (popup, result
+  details and disclosure), not from the page picker or other content scripts;
+- the popup lists **Verify an image on this page** first, renamed from **Pick
+  an image on this page**, and **Pick an image to download** second.
+
+Its other changes are checks and tests, the version number, and dependency
+updates in the excluded server and Worker workspaces; `npm audit` reports no
+findings in this edition.
+
 Included:
 
 - `apps/extension`: Chromium extension source, static pages, deterministic
   fixtures, unit tests, and browser tests;
 - `packages/shared`: runtime schemas, validation, exact-byte hashing,
   provenance wording, test fixtures, and their existing licenses/notices;
-- root build, lint, typecheck, test, public-package, local-launcher, and CI
-  configuration;
+- root build, lint, typecheck, test, tracked-source scan, version-sync,
+  public-package, local-launcher, and CI configuration;
+- `CLAUDE.md`, the contributor guide for this edition;
 - `docs`: the local portfolio demo and the public release checklist;
 - the project MIT license in `LICENSE`;
-- exact third-party notices for the 14 packages bundled into extension code.
+- exact third-party notices for the 14 packages bundled into extension code,
+  which `npm run check` compares with the esbuild bundle.
 
 Excluded:
 
