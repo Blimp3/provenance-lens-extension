@@ -137,7 +137,7 @@ c4e888ea448a6c5d73e247e38f7bf1e4de53a6aaec6c00037b0ffa2000b3b9d1  ./packages/sha
 e5bd0b7731c516492c844fb8af234af1287147f24f4805cb2705c0f7fca930f2  ./packages/shared/tsconfig.json
 ab2e643a7951ef45a95f6c1e609cac06bfa2473f3dee896d5f41be439c21b6f8  ./scripts/audit-extension.mjs
 fefd04764e0fecbf444fea949906d3b362998645b67287f3d574b8d5a39ebfd1  ./scripts/package.mjs
-800397bb4196537851f8a15847fdbd183988d70b346aad878e6642b152804ba3  ./scripts/public-package.test.mjs
+949a9b162da67d7a835e491f970b2a752c6aa304de37fcf4b5ad97b4966dc86a  ./scripts/public-package.test.mjs
 24e15ddda75bd84d0a65df21b0cd9f88e409f5a9e8eade0d70c014ff7a63b548  ./scripts/scan-extension.mjs
 aca765fe3e754a08f01306264672b7d24f873bb9e718ab778c15f7c4fd213058  ./scripts/start-extension.mjs
 b9d45bc198d4e50adf28d7d76d21781d3ac3541a30b27617257000735a90f800  ./scripts/start-extension.test.mjs

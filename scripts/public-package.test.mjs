@@ -85,6 +85,13 @@ test("public build and ZIP ignore an owner config canary", async (context) => {
   assert.equal((await stat(secondPackage)).isFile(), true);
 });
 
+test("README names the public ZIP for the current version", async () => {
+  const readme = await readFile(join(repositoryRoot, "README.md"), "utf8");
+  const names = readme.match(/provenance-lens-extension-v\S+?-public\.zip/gu);
+  assert.ok(names, "README.md must name the public ZIP");
+  assert.deepEqual([...new Set(names)], [zipName]);
+});
+
 test("public packaging refuses a personalized build", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "provenance-lens-public-package-"));
   context.after(() => rm(root, { recursive: true, force: true }));
@@ -128,13 +135,6 @@ test("extension scan permits only the documented workers.dev host", async (conte
   assert.equal(findings.length, 1);
   assert.match(findings[0], /unapproved workers\.dev host/u);
   assert.match(findings[0], /synthetic-verifier\.workers\.dev/u);
-});
-
-test("README names the public ZIP for the current version", async () => {
-  const readme = await readFile(join(repositoryRoot, "README.md"), "utf8");
-  const names = readme.match(/provenance-lens-extension-v\S+?-public\.zip/gu);
-  assert.ok(names, "README.md must name the public ZIP");
-  assert.deepEqual([...new Set(names)], [zipName]);
 });
 
 async function createBuildFixture() {
