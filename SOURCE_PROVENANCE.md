@@ -1,12 +1,12 @@
 # Source provenance and publication boundary
 
 This public source edition derives from private repository base
-`91775e52e2d282e2c2280143a257fcdd5e44a9f8` (Provenance Lens 0.8.0), plus the
-public packaging changes reviewed on 2026-09-17. It was published as this
-repository's first commit, `d0b453a`, on 2026-09-18. Later changes are commits
-in this repository; the private repository's history is not part of it. No
-release or tag has been published yet; see
-[docs/release-checklist.md](docs/release-checklist.md).
+`91775e52e2d282e2c2280143a257fcdd5e44a9f8` (untagged, package version 0.8.0),
+plus the public packaging changes reviewed on 2026-09-17. It was published as
+this repository's first commit, `d0b453a`, on 2026-09-18. Later changes are
+commits in this repository; the private repository's history is not part of
+it. Public releases are tagged `vX.Y.Z` and listed on this repository's GitHub
+Releases page; see [docs/release-checklist.md](docs/release-checklist.md).
 
 Included:
 
@@ -49,4 +49,4 @@ Public-edition differences:
 `SOURCE_MANIFEST.sha256` lists the SHA-256 of every tracked file except
 itself. Regenerate it whenever a tracked file changes, with the command in the
 [release checklist](docs/release-checklist.md), and check it with
-`sha256sum -c --quiet SOURCE_MANIFEST.sha256`.
+`shasum -a 256 -c --quiet SOURCE_MANIFEST.sha256`.

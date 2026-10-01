@@ -3,19 +3,23 @@
 Use this for every public source release of this edition. Work from a clean
 checkout with Node.js 24.20.0 (`.nvmrc`) and npm 11.6.2.
 
-1. **Copy only public source.** Bring over changes from the private base commit
-   only for the included paths in [SOURCE_PROVENANCE.md](../SOURCE_PROVENANCE.md).
+1. **Copy only public source.** Bring over changes from the new private
+   commit only for the included paths in
+   [SOURCE_PROVENANCE.md](../SOURCE_PROVENANCE.md).
    Never copy server or Worker code, Cloudflare bindings or migrations,
    provisioning or deployment scripts, `.env*`, `.dev.vars*`,
    `.bundled-client.json`, tokens, owner data, internal paths or operational
    evidence.
 2. **Bump one version everywhere.** Use the same version in `package.json`,
-   every workspace `package.json`, `apps/extension/manifest.json` and
-   `package-lock.json`, and add a dated [CHANGELOG](../CHANGELOG.md) entry.
+   every workspace `package.json`, the `@provenance-lens/shared` dependency
+   pin in `apps/extension/package.json`, `apps/extension/manifest.json`,
+   `package-lock.json` and the ZIP name in `README.md`, and add a dated
+   [CHANGELOG](../CHANGELOG.md) entry.
 3. **Run every check.**
 
    ```sh
    npm ci
+   npx playwright install chromium
    npm run check
    npm run test:e2e
    npm run package:public
