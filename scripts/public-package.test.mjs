@@ -17,7 +17,9 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
+import * as esbuild from "esbuild";
 
+import { buildOptions } from "../apps/extension/scripts/build.mjs";
 import { packageExtension, validatePackageInputs } from "./package.mjs";
 import { scanExtensionDirectory } from "./scan-extension.mjs";
 
@@ -78,7 +80,6 @@ test("public build and ZIP ignore an owner config canary", async (context) => {
     "utf8",
   );
   assert.match(notices, /do not license\s+Provenance Lens itself\./u);
-  assert.match(notices, /zod 4\.5\.4/u);
 
   const secondPackage = await packageExtension({ rootDirectory: root });
   assert.equal(secondPackage, firstPackage);
@@ -114,6 +115,39 @@ test("public packaging refuses a personalized build", async (context) => {
     validatePackageInputs({ rootDirectory: root }),
     /Refusing to package a non-public extension build/u,
   );
+});
+
+test("third-party notices list exactly the packages esbuild bundles", async () => {
+  const { metafile } = await esbuild.build({
+    ...buildOptions,
+    absWorkingDir: repositoryRoot,
+    write: false,
+    metafile: true,
+    logLevel: "silent",
+  });
+  const packageDirectories = new Set();
+  for (const output of Object.values(metafile.outputs)) {
+    for (const [path, { bytesInOutput }] of Object.entries(output.inputs)) {
+      const match = /^(.*node_modules\/(?:@[^/]+\/)?[^/]+)\//u.exec(path);
+      if (match && bytesInOutput > 0) packageDirectories.add(match[1]);
+    }
+  }
+  const bundled = await Promise.all(
+    [...packageDirectories].map(async (directory) => {
+      const { name, version } = JSON.parse(
+        await readFile(join(repositoryRoot, directory, "package.json"), "utf8"),
+      );
+      return `${name} ${version}`;
+    }),
+  );
+  const lines = (
+    await readFile(join(repositoryRoot, "THIRD_PARTY_NOTICES.txt"), "utf8")
+  ).split("\n");
+  const headings = lines.filter((_, index) =>
+    lines[index + 1]?.startsWith("Declared license:"),
+  );
+
+  assert.deepEqual(bundled.sort(), headings.sort());
 });
 
 test("extension scan permits only the documented workers.dev host", async (context) => {
