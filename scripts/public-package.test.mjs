@@ -13,7 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
@@ -27,6 +27,10 @@ const execFileAsync = promisify(execFile);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const canaryPrefix = "PUBLIC_PACKAGE_CANARY_";
 const canary = `${canaryPrefix}${"A".repeat(64 - canaryPrefix.length)}`;
+const { version } = JSON.parse(
+  await readFile(join(repositoryRoot, "package.json"), "utf8"),
+);
+const zipName = `provenance-lens-extension-v${version}-public.zip`;
 
 test("public build and ZIP ignore an owner config canary", async (context) => {
   const root = await createBuildFixture();
@@ -57,7 +61,7 @@ test("public build and ZIP ignore an owner config canary", async (context) => {
   const { outputPath } = await validatePackageInputs({
     rootDirectory: root,
   });
-  assert.match(outputPath, /provenance-lens-extension-v0\.8\.0-public\.zip$/u);
+  assert.equal(basename(outputPath), zipName);
   assert.equal(
     JSON.parse(
       await readFile(
@@ -80,6 +84,13 @@ test("public build and ZIP ignore an owner config canary", async (context) => {
   const secondPackage = await packageExtension({ rootDirectory: root });
   assert.equal(secondPackage, firstPackage);
   assert.equal((await stat(secondPackage)).isFile(), true);
+});
+
+test("README names the public ZIP for the current version", async () => {
+  const readme = await readFile(join(repositoryRoot, "README.md"), "utf8");
+  const names = readme.match(/provenance-lens-extension-v\S+?-public\.zip/gu);
+  assert.ok(names, "README.md must name the public ZIP");
+  assert.deepEqual([...new Set(names)], [zipName]);
 });
 
 test("public packaging refuses a personalized build", async (context) => {
@@ -176,7 +187,10 @@ async function createBuildFixture() {
     ),
     cp(join(repositoryRoot, "LICENSE"), join(root, "LICENSE")),
   ]);
-  await writeFile(join(root, "package.json"), '{"version":"0.8.0"}\n');
+  await writeFile(
+    join(root, "package.json"),
+    `${JSON.stringify({ version })}\n`,
+  );
   await symlink(
     join(repositoryRoot, "node_modules"),
     join(root, "node_modules"),

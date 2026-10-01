@@ -1,9 +1,11 @@
 a6b98ea7cb6d61ed8d430dd0dffa46c87012b5cf859d4ce7207898954951fdcd  ./.editorconfig
 05ed3d1cb492da11bc8052a154e4e8ad6f226c06188b93b80ea27e8f1837b36f  ./.github/workflows/ci.yml
 0ec47b097f003aa52a2c4cbf400457dd03d706c502463e31a8e5b0786918b661  ./.gitignore
+7151cf397def0c2cb0ab65643701d27d335a72c90f775675b5f826bc7005818a  ./.npmrc
 5b9d0e73029969ae9000117cb877f17bb9841c1279bfe8024e294acfcf017800  ./.nvmrc
 c445975c2bdc40a972ae494e96e88b2347055679e8b4dac0a9555c96b8638dfe  ./.prettierignore
 cb75dac56fb076b5ac17b714412f2e9945e92a26a1b2a3d1fa0552efb6cc7872  ./CHANGELOG.md
+c61cca4a954c07a1d08f0a64263a32275fe57e6942e7b2ad472a08963b049529  ./CLAUDE.md
 b7d35f9202a9e47d4a747744631daa208068daf8432c143c1866bca2c21b0336  ./LICENSE
 e36735e1c9cac994a34833369af1f8b1677d6cd4958eeb639c8b870e59143b7c  ./README.md
 0f89a6f0ec5bd88ba61db48945a6931d923610ab934a46e3fbabd1bc60ef3106  ./SOURCE_PROVENANCE.md
@@ -95,10 +97,10 @@ b6620934d498f84564d797bee69eb9bfb56720d2ce10c05ecc60bbc500b330c3  ./apps/extensi
 c9b5e93b7440339a4c6a9fc52b693bf096e552fb9bb0e2f14d488af9b5da542d  ./apps/extension/tsconfig.json
 7d91dc8d7cfdf11c16d290dadd2f3354877fc1c5ef4170680249926526b14eaf  ./apps/extension/vitest.config.ts
 38cbea07636f1c20169f339692f3acd63c931abe56021eff9b98cae71986f600  ./docs/portfolio-demo.md
-7ebc8c393be99bae7c61fc207cbb3ebe6e4bee343ba4a00314ca099e16229790  ./docs/release-checklist.md
+801065ff27814f12a234b97a31e0960e6e0f856a66df5e7ad5dc81723367d03a  ./docs/release-checklist.md
 e858905287d8e82a519167678a5d507278c2801e1405a1892edf4447c0a87e52  ./eslint.config.js
 a307e0c6fb9d5bf56d74e7fb14e6f05d474c9cc5ed27e0689ca3daddfeb6bde6  ./package-lock.json
-5dbd67a828896ba482961ec420eba426cc0205f1e4662213be002bf39e291964  ./package.json
+04adc34d2d63d63f46eef837977bd6664b020b10864a4dad7334a1ed0d597453  ./package.json
 3bb41304ad9781522e238fa5ddb613dfde2574340cdd2f720c37dd6d0cb36cb1  ./packages/shared/package.json
 ef3b8ab8df31516808e5f658e56f004378261b3af7ff717975a8e09253222a32  ./packages/shared/src/audio-validation.ts
 6d4e8268add0cb1e45da80864beb39885ae9b8b64ad0a6fedc3b02465a00ff84  ./packages/shared/src/constants.ts
@@ -137,10 +139,11 @@ c4e888ea448a6c5d73e247e38f7bf1e4de53a6aaec6c00037b0ffa2000b3b9d1  ./packages/sha
 e5bd0b7731c516492c844fb8af234af1287147f24f4805cb2705c0f7fca930f2  ./packages/shared/tsconfig.json
 ab2e643a7951ef45a95f6c1e609cac06bfa2473f3dee896d5f41be439c21b6f8  ./scripts/audit-extension.mjs
 fefd04764e0fecbf444fea949906d3b362998645b67287f3d574b8d5a39ebfd1  ./scripts/package.mjs
-262aefa6234f7ceb40f0e3cbcb2e74a28dfe29a4e350981ec9b0f1c114fd9e33  ./scripts/public-package.test.mjs
+45ab86afa3dce1d89d43556876d294a0cf79e0d89586a8c0c2c16778a2a17095  ./scripts/public-package.test.mjs
 24e15ddda75bd84d0a65df21b0cd9f88e409f5a9e8eade0d70c014ff7a63b548  ./scripts/scan-extension.mjs
 aca765fe3e754a08f01306264672b7d24f873bb9e718ab778c15f7c4fd213058  ./scripts/start-extension.mjs
 b9d45bc198d4e50adf28d7d76d21781d3ac3541a30b27617257000735a90f800  ./scripts/start-extension.test.mjs
+d16ea7c4aa32440c962895c77aaa898f7b25e13df94342a24297eca97196671e  ./scripts/version-sync.test.mjs
 7951028cdc87a7ea74cb7c1c309c4078b00351bab2803c0102429f450b7a9aa2  ./start-provenance-lens.command
 574f3f7dbcfca5b538a6ac61086c594ed028afe547489cdeab9e80e8a3322c6c  ./tsconfig.base.json
 2b5a1d248ace3790208b6ec3e1d3d311105cbf8e384cb7d655ca9a8cd65aff10  ./tsconfig.json
