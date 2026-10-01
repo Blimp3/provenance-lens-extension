@@ -1,9 +1,12 @@
 # Source provenance and publication boundary
 
-This public source candidate derives from private repository base
-`91775e52e2d282e2c2280143a257fcdd5e44a9f8`, plus the locally reviewed public
-packaging changes recorded on 2026-09-17. It has no Git metadata and no commit
-was created.
+This public source edition derives from private repository base
+`91775e52e2d282e2c2280143a257fcdd5e44a9f8` (Provenance Lens 0.8.0), plus the
+public packaging changes reviewed on 2026-09-17. It was published as this
+repository's first commit, `d0b453a`, on 2026-09-18. Later changes are commits
+in this repository; the private repository's history is not part of it. No
+release or tag has been published yet; see
+[docs/release-checklist.md](docs/release-checklist.md).
 
 Included:
 
@@ -13,12 +16,14 @@ Included:
   provenance wording, test fixtures, and their existing licenses/notices;
 - root build, lint, typecheck, test, public-package, local-launcher, and CI
   configuration;
+- `docs`: the local portfolio demo and the public release checklist;
 - the project MIT license in `LICENSE`;
 - exact third-party notices for the 14 packages bundled into extension code.
 
 Excluded:
 
-- `.git`, private branches/history, issues, releases, and historical ZIPs;
+- the private repository's Git history, branches, issues, releases, and
+  historical ZIPs;
 - `.env*`, `.dev.vars*`, `.bundled-client.json`, API keys, account/client
   bearers, cookies, media, databases, and operational data;
 - `apps/server`, `apps/worker`, Cloudflare bindings/migrations, deployment and
@@ -41,5 +46,7 @@ Public-edition differences:
 - the project source is licensed under MIT as stated in `LICENSE`; third-party
   notices and file-specific terms do not extend that grant to those materials.
 
-`SOURCE_MANIFEST.sha256` is generated after verification and is the exact
-allowlist of files in the review candidate.
+`SOURCE_MANIFEST.sha256` lists the SHA-256 of every tracked file except
+itself. Regenerate it whenever a tracked file changes, with the command in the
+[release checklist](docs/release-checklist.md), and check it with
+`sha256sum -c --quiet SOURCE_MANIFEST.sha256`.
