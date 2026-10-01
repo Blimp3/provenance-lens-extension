@@ -61,15 +61,17 @@ Telegram, DigiBot, or a production verification backend. See
 
 - `activeTab`, `contextMenus`, `scripting` and `storage` run the picker on the
   current tab after a direct user action, add the **Check OpenAI provenance**
-  image context-menu entry, and keep settings and local results.
+  image context-menu entry, and keep settings and local results. `activeTab`
+  also lets the opt-in **Verify a screenshot copy** fallback capture the
+  visible tab; that fallback is off by default in Settings.
 - The one required host permission is the DigiBot gateway above. It grants no
   access to other sites.
 - Optional `downloads` saves the exact selected file in Website review mode or
   the API manual fallback.
 - Optional `http://*/*` and `https://*/*` let Lens retrieve a user-selected
   image from its host. **Grant optional access** in the popup or Settings asks
-  the browser for both optional grants at once; Settings can instead grant one
-  exact origin, such as an image host or a user-controlled backend.
+  the browser for site access and downloads at once; Settings can instead
+  grant one exact origin, such as an image host or a user-controlled backend.
 
 ## Privacy and limits
 

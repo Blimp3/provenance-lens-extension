@@ -40,10 +40,12 @@ private commit chosen for it.
    `scripts/scan-extension.mjs`, in every tracked file except the scanner's
    own test. Fix every hit rather than adding an exclusion.
 5. **Update the records.** In `SOURCE_PROVENANCE.md`, record the new private
-   base commit, the review date, the sync status and any new public-edition
-   difference, and update the matching status lines in `README.md`,
-   `CLAUDE.md` and this checklist. Update `THIRD_PARTY_NOTICES.txt` when the
-   bundled packages change.
+   base commit, the review date and any new public-edition difference. Step 8
+   tags this same commit, so write the status lines in `SOURCE_PROVENANCE.md`,
+   `README.md`, `CLAUDE.md` and this checklist for the release being cut (for
+   example "vX.Y.Z source from private base `<sha>`") and remove the "No
+   public release has been tagged yet" lines. Update `THIRD_PARTY_NOTICES.txt`
+   when the bundled packages change.
 6. **Regenerate the manifest** after the last file change (stage new files
    first, since it lists tracked files), then check it:
 
