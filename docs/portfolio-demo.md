@@ -31,5 +31,5 @@ manual upload. It does not automate the website or create an API result.
 These checks establish the local source/package behavior. They do not establish
 production service availability, installed-browser user acceptance, or security
 of historical private releases and repository history. The project source in
-this candidate is licensed under MIT; the bundled notices and file-specific
+this edition is licensed under MIT; the bundled notices and file-specific
 terms remain separate.
