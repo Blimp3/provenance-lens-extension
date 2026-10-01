@@ -141,10 +141,11 @@ test("source scan walks tracked files and rejects leaked paths, keys and hosts",
     ].join("\n"),
   );
   await writeFile(
-    join(root, "scripts/scan-extension.mjs"),
+    join(root, "scripts/public-package.test.mjs"),
     'const excluded = "/Users/owner/private";\n',
   );
   await writeFile(join(root, "untracked.ts"), 'const path = "/home/owner";\n');
+  await assert.rejects(scanSourceFiles(root), /needs a git clone/u);
   await execFileAsync("git", ["add", "clean.ts", "scripts"], { cwd: root });
 
   const clean = await scanSourceFiles(root);
@@ -161,17 +162,30 @@ test("source scan walks tracked files and rejects leaked paths, keys and hosts",
       "",
     ].join("\n"),
   );
-  await execFileAsync("git", ["add", "leak.ts"], { cwd: root });
+  await writeFile(join(root, "gone.ts"), 'const path = "/home/owner";\n');
+  await symlink("/Users/owner/private/key", join(root, "link"));
+  await execFileAsync("git", ["add", "leak.ts", "gone.ts", "link"], {
+    cwd: root,
+  });
+  await rm(join(root, "gone.ts"));
 
   const { files, findings } = await scanSourceFiles(root);
-  assert.deepEqual(files, ["clean.ts", "leak.ts"]);
+  assert.deepEqual(files, ["clean.ts", "leak.ts", "link"]);
   assert.deepEqual(findings, [
     "unapproved workers.dev host synthetic-verifier.workers.dev in leak.ts",
     "local user path /Users/owner/Projects/lens in leak.ts:2",
     "local home path /home/owner/lens in leak.ts:3",
     "provider-key-shaped string in leak.ts:3",
+    "local user path /Users/owner/private/key in link:1",
   ]);
   assert.equal(findings.join("\n").includes(fakeKey), false);
+});
+
+test("source scan refuses to run outside a git clone", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "provenance-lens-source-copy-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, "clean.ts"), "export {};\n");
+  await assert.rejects(scanSourceFiles(root), /needs a git clone/u);
 });
 
 async function createBuildFixture() {

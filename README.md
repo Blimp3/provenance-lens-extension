@@ -22,6 +22,9 @@ npm run test:e2e
 npm run package:public
 ```
 
+`npm run check` needs a git clone, because its source scan walks the tracked
+files; it fails in a source ZIP or release archive.
+
 The package command creates
 `artifacts/provenance-lens-extension-v0.8.0-public.zip`. Load
 `apps/extension/dist` as an unpacked extension for local review.

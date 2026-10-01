@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, readlink, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -29,12 +29,11 @@ const sourceRules = [
     redact: true,
   },
 ];
-// These two contain every needle on purpose: the rules above and the
-// scanner's own test fixtures.
-const sourceScanExclusions = new Set([
-  "scripts/scan-extension.mjs",
-  "scripts/public-package.test.mjs",
-]);
+// The scanner's own test plants every needle on purpose. The scanner itself
+// needs no exclusion: its escaped regex literals match none of the rules.
+const sourceScanExclusions = new Set(["scripts/public-package.test.mjs"]);
+
+class SourceScanUnavailableError extends Error {}
 
 function unapprovedWorkersDevHosts(text) {
   const findings = [];
@@ -75,18 +74,48 @@ export async function scanExtensionDirectory(directory) {
   return findings;
 }
 
+// A tracked symlink publishes its link text, not its target. A tracked file
+// deleted from the working tree publishes nothing, so it is skipped.
+async function readTrackedFile(path) {
+  let metadata;
+  try {
+    metadata = await lstat(path);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  if (metadata.isSymbolicLink()) return readlink(path);
+  return readFile(path, "utf8");
+}
+
 export async function scanSourceFiles(repositoryRoot = root) {
-  const { stdout } = await execFileAsync("git", ["ls-files", "-z"], {
-    cwd: repositoryRoot,
-    maxBuffer: 10 * 1024 * 1024,
-  });
-  const files = stdout
+  let listing;
+  try {
+    listing = await execFileAsync("git", ["ls-files", "-z"], {
+      cwd: repositoryRoot,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  } catch (error) {
+    throw new SourceScanUnavailableError(
+      "scan:source needs a git clone of this repository (git ls-files failed).",
+      { cause: error },
+    );
+  }
+  const tracked = listing.stdout
     .split("\0")
     .filter((file) => file !== "" && !sourceScanExclusions.has(file));
+  if (tracked.length === 0) {
+    throw new SourceScanUnavailableError(
+      "scan:source needs a git clone of this repository (git ls-files found no tracked files).",
+    );
+  }
+  const files = [];
   const findings = [];
 
-  for (const file of files) {
-    const text = await readFile(resolve(repositoryRoot, file), "utf8");
+  for (const file of tracked) {
+    const text = await readTrackedFile(resolve(repositoryRoot, file));
+    if (text === null) continue;
+    files.push(file);
     for (const finding of unapprovedWorkersDevHosts(text)) {
       findings.push(`${finding} in ${file}`);
     }
@@ -107,15 +136,21 @@ const isDirectRun =
   resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 
 if (isDirectRun && process.argv.includes("--source")) {
-  const { files, findings } = await scanSourceFiles();
-  if (findings.length > 0) {
-    console.error("Forbidden tracked-source content found:");
-    for (const finding of findings) console.error(`- ${finding}`);
+  try {
+    const { files, findings } = await scanSourceFiles();
+    if (findings.length > 0) {
+      console.error("Forbidden tracked-source content found:");
+      for (const finding of findings) console.error(`- ${finding}`);
+      process.exitCode = 1;
+    } else {
+      console.log(
+        `Source scan passed: ${sourceRules.map((rule) => rule.label).join(", ")} and unapproved workers.dev hosts were not found in ${files.length} tracked files.`,
+      );
+    }
+  } catch (error) {
+    if (!(error instanceof SourceScanUnavailableError)) throw error;
+    console.error(error.message);
     process.exitCode = 1;
-  } else {
-    console.log(
-      `Source scan passed: ${sourceRules.map((rule) => rule.label).join(", ")} and unapproved workers.dev hosts were not found in ${files.length} tracked files.`,
-    );
   }
 } else if (isDirectRun) {
   const findings = await scanExtensionDirectory(extensionDirectory);

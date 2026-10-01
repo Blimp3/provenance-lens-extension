@@ -11,8 +11,8 @@ repository's guide.
   jsdom) and browser tests (Playwright).
 - `packages/shared/`: schemas, validation, exact-byte hashing, provenance
   wording and integration contracts.
-- `scripts/`: manifest audit, built-extension scan, ZIP packaging and the
-  local launcher.
+- `scripts/`: manifest audit, built-extension scan, tracked-source scan, ZIP
+  packaging and the local launcher.
 
 ## Commands
 
@@ -21,7 +21,7 @@ Use Node.js 24.20.0 (`.nvmrc`) and npm 11.6.2. In a cloud session, prepend
 
 ```sh
 npm ci
-npm run check            # format, lint, typecheck, unit tests, build
+npm run check            # format, lint, typecheck, unit tests, build, source scan
 npm run test:e2e         # Playwright browser tests (needs Chromium)
 npm run package:public   # manifest audit, built-extension scan, ZIP
 ```
