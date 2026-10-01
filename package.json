@@ -20,7 +20,7 @@
     "build:extension": "npm run build --workspace @provenance-lens/shared && npm run build --workspace @provenance-lens/extension",
     "test": "npm run test:unit",
     "test:unit": "npm run build --workspace @provenance-lens/shared && vitest run --config vitest.config.ts && npm run test --workspace @provenance-lens/extension && npm run test:launcher",
-    "test:launcher": "node --test scripts/start-extension.test.mjs scripts/public-package.test.mjs",
+    "test:launcher": "node --test scripts/start-extension.test.mjs scripts/public-package.test.mjs scripts/version-sync.test.mjs",
     "test:e2e": "npm run build:extension && npm run test:e2e --workspace @provenance-lens/extension",
     "lint": "npm run build --workspace @provenance-lens/shared && eslint .",
     "typecheck": "npm run build --workspace @provenance-lens/shared && npm run typecheck --workspaces --if-present",

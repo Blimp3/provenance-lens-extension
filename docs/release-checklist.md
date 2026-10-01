@@ -14,7 +14,8 @@ checkout with Node.js 24.20.0 (`.nvmrc`) and npm 11.6.2.
    every workspace `package.json`, the `@provenance-lens/shared` dependency
    pin in `apps/extension/package.json`, `apps/extension/manifest.json`,
    `package-lock.json` and the ZIP name in `README.md`, and add a dated
-   [CHANGELOG](../CHANGELOG.md) entry.
+   [CHANGELOG](../CHANGELOG.md) entry. `npm run check` fails if any of these
+   versions disagree; the CHANGELOG entry stays manual.
 3. **Run every check.**
 
    ```sh

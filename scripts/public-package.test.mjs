@@ -13,11 +13,13 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { test } from "node:test";
+import * as esbuild from "esbuild";
 
+import { buildOptions } from "../apps/extension/scripts/build.mjs";
 import { packageExtension, validatePackageInputs } from "./package.mjs";
 import { scanExtensionDirectory, scanSourceFiles } from "./scan-extension.mjs";
 
@@ -25,6 +27,10 @@ const execFileAsync = promisify(execFile);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const canaryPrefix = "PUBLIC_PACKAGE_CANARY_";
 const canary = `${canaryPrefix}${"A".repeat(64 - canaryPrefix.length)}`;
+const { version } = JSON.parse(
+  await readFile(join(repositoryRoot, "package.json"), "utf8"),
+);
+const zipName = `provenance-lens-extension-v${version}-public.zip`;
 
 test("public build and ZIP ignore an owner config canary", async (context) => {
   const root = await createBuildFixture();
@@ -55,7 +61,7 @@ test("public build and ZIP ignore an owner config canary", async (context) => {
   const { outputPath } = await validatePackageInputs({
     rootDirectory: root,
   });
-  assert.match(outputPath, /provenance-lens-extension-v0\.8\.0-public\.zip$/u);
+  assert.equal(basename(outputPath), zipName);
   assert.equal(
     JSON.parse(
       await readFile(
@@ -74,11 +80,17 @@ test("public build and ZIP ignore an owner config canary", async (context) => {
     "utf8",
   );
   assert.match(notices, /do not license\s+Provenance Lens itself\./u);
-  assert.match(notices, /zod 4\.5\.4/u);
 
   const secondPackage = await packageExtension({ rootDirectory: root });
   assert.equal(secondPackage, firstPackage);
   assert.equal((await stat(secondPackage)).isFile(), true);
+});
+
+test("README names the public ZIP for the current version", async () => {
+  const readme = await readFile(join(repositoryRoot, "README.md"), "utf8");
+  const names = readme.match(/provenance-lens-extension-v\S+?-public\.zip/gu);
+  assert.ok(names, "README.md must name the public ZIP");
+  assert.deepEqual([...new Set(names)], [zipName]);
 });
 
 test("public packaging refuses a personalized build", async (context) => {
@@ -103,6 +115,39 @@ test("public packaging refuses a personalized build", async (context) => {
     validatePackageInputs({ rootDirectory: root }),
     /Refusing to package a non-public extension build/u,
   );
+});
+
+test("third-party notices list exactly the packages esbuild bundles", async () => {
+  const { metafile } = await esbuild.build({
+    ...buildOptions,
+    absWorkingDir: repositoryRoot,
+    write: false,
+    metafile: true,
+    logLevel: "silent",
+  });
+  const packageDirectories = new Set();
+  for (const output of Object.values(metafile.outputs)) {
+    for (const [path, { bytesInOutput }] of Object.entries(output.inputs)) {
+      const match = /^(.*node_modules\/(?:@[^/]+\/)?[^/]+)\//u.exec(path);
+      if (match && bytesInOutput > 0) packageDirectories.add(match[1]);
+    }
+  }
+  const bundled = await Promise.all(
+    [...packageDirectories].map(async (directory) => {
+      const { name, version } = JSON.parse(
+        await readFile(join(repositoryRoot, directory, "package.json"), "utf8"),
+      );
+      return `${name} ${version}`;
+    }),
+  );
+  const lines = (
+    await readFile(join(repositoryRoot, "THIRD_PARTY_NOTICES.txt"), "utf8")
+  ).split("\n");
+  const headings = lines.filter((_, index) =>
+    lines[index + 1]?.startsWith("Declared license:"),
+  );
+
+  assert.deepEqual(bundled.sort(), headings.sort());
 });
 
 test("extension scan permits only the documented workers.dev host", async (context) => {
@@ -204,7 +249,10 @@ async function createBuildFixture() {
     ),
     cp(join(repositoryRoot, "LICENSE"), join(root, "LICENSE")),
   ]);
-  await writeFile(join(root, "package.json"), '{"version":"0.8.0"}\n');
+  await writeFile(
+    join(root, "package.json"),
+    `${JSON.stringify({ version })}\n`,
+  );
   await symlink(
     join(repositoryRoot, "node_modules"),
     join(root, "node_modules"),
