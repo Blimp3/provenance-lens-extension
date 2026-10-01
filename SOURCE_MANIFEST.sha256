@@ -6,7 +6,7 @@ c445975c2bdc40a972ae494e96e88b2347055679e8b4dac0a9555c96b8638dfe  ./.prettierign
 cb75dac56fb076b5ac17b714412f2e9945e92a26a1b2a3d1fa0552efb6cc7872  ./CHANGELOG.md
 b7d35f9202a9e47d4a747744631daa208068daf8432c143c1866bca2c21b0336  ./LICENSE
 e36735e1c9cac994a34833369af1f8b1677d6cd4958eeb639c8b870e59143b7c  ./README.md
-ae86240b921351f814a8175690368ff754cd372bcb4116f514e8f7f5f56cdcb5  ./SOURCE_PROVENANCE.md
+0f89a6f0ec5bd88ba61db48945a6931d923610ab934a46e3fbabd1bc60ef3106  ./SOURCE_PROVENANCE.md
 2b372473ba5364d51eff3076a07458a41a1527a2f8cc4141cf32b1152c600e47  ./THIRD_PARTY_NOTICES.txt
 66d23326ecdd327a83626ca8e951e150bab0dbd257049c66083424319509cf65  ./apps/extension/e2e/integration.smoke.spec.ts
 49be4b0b38ed1a4e18b1c5d2c3de6b97bb84f2fdbc50c51026587582fa1f04a5  ./apps/extension/e2e/media.smoke.spec.ts
@@ -95,6 +95,7 @@ b6620934d498f84564d797bee69eb9bfb56720d2ce10c05ecc60bbc500b330c3  ./apps/extensi
 c9b5e93b7440339a4c6a9fc52b693bf096e552fb9bb0e2f14d488af9b5da542d  ./apps/extension/tsconfig.json
 7d91dc8d7cfdf11c16d290dadd2f3354877fc1c5ef4170680249926526b14eaf  ./apps/extension/vitest.config.ts
 38cbea07636f1c20169f339692f3acd63c931abe56021eff9b98cae71986f600  ./docs/portfolio-demo.md
+7ebc8c393be99bae7c61fc207cbb3ebe6e4bee343ba4a00314ca099e16229790  ./docs/release-checklist.md
 e858905287d8e82a519167678a5d507278c2801e1405a1892edf4447c0a87e52  ./eslint.config.js
 a307e0c6fb9d5bf56d74e7fb14e6f05d474c9cc5ed27e0689ca3daddfeb6bde6  ./package-lock.json
 5dbd67a828896ba482961ec420eba426cc0205f1e4662213be002bf39e291964  ./package.json
