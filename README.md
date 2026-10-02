@@ -15,7 +15,11 @@ history, and historical release assets.
 
 This edition is the v1.0.0 source from private base `4978fa8`, synced and
 reviewed on 2026-10-02; see [SOURCE_PROVENANCE.md](SOURCE_PROVENANCE.md) for
-the exact publication boundary and the public-edition differences. The owner
+the exact publication boundary and the public-edition differences. The v1.0.0
+release was published on 2026-10-02: tag `v1.0.0` on `c3aaf32` and a
+[GitHub Release](https://github.com/Blimp3/provenance-lens-extension/releases/tag/v1.0.0)
+with the public ZIP attached (SHA-256
+`627035ac41b91875769a35c25a90d2987bdfe6f6a23c8f4b94b475a0a826382e`). The owner
 tags each release `vX.Y.Z` following
 [docs/release-checklist.md](docs/release-checklist.md).
 
