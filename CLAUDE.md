@@ -5,7 +5,8 @@ extension. This repository is public: everything committed here is published.
 This guide is written for this edition; don't replace it with another
 repository's guide.
 
-It is the v1.0.0 source from private base `4978fa8`;
+It is the v1.0.0 source from private base `4978fa8`, released on 2026-10-02
+as tag `v1.0.0` on `c3aaf32`;
 [SOURCE_PROVENANCE.md](SOURCE_PROVENANCE.md) records the sync status, and a
 sync follows the release checklist.
 

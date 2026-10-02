@@ -1,7 +1,7 @@
 # Source provenance and publication boundary
 
 This public source edition derives from private repository base
-`4978fa81dad8c13ee8ac5cff1512e0486e0fbcc0` (untagged, package version 1.0.0),
+`4978fa81dad8c13ee8ac5cff1512e0486e0fbcc0` (package version 1.0.0),
 reviewed for publication on 2026-10-02. The edition was first published from
 private base `91775e5` (package version 0.8.0) as this repository's first
 commit, `d0b453a`, on 2026-09-18, and synced to the 1.0.0 base on 2026-10-02.
@@ -10,16 +10,16 @@ is not part of it. Public releases are tagged `vX.Y.Z` and listed on this
 repository's GitHub Releases page; see
 [docs/release-checklist.md](docs/release-checklist.md).
 
-Sync status on 2026-10-02: v1.0.0 source from private base `4978fa8`. The
-included paths below match that base except for the public-edition differences
-listed at the end and three comments in `packages/shared/tests`, which name no
-private pull request or private repository path. Compared with the 0.8.0
-source, the sync brings the popup order and the background's extension-page-only
-message gate, the connected-check fixes, the **Send this page's link to
-Telegram** button with its **Send to Telegram as** dropdown, the **Pick a video
-on this page** picker, the link-download options and the DigiBot gateway
-contract fixture; the [CHANGELOG](CHANGELOG.md) describes each by its effect
-for users.
+Sync status on 2026-10-02: v1.0.0 source from private base `4978fa8`, released
+on 2026-10-02 as tag `v1.0.0` on `c3aaf32`. The included paths below match that
+base except for the public-edition differences listed at the end and three
+comments in `packages/shared/tests`, which name no private pull request or
+private repository path. Compared with the 0.8.0 source, the sync brings the
+popup order and the background's extension-page-only message gate, the
+connected-check fixes, the **Send this page's link to Telegram** button with its
+**Send to Telegram as** dropdown, the **Pick a video on this page** picker, the
+link-download options and the DigiBot gateway contract fixture; the
+[CHANGELOG](CHANGELOG.md) describes each by its effect for users.
 
 Included:
 
