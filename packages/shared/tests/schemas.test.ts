@@ -1,12 +1,18 @@
 import {
   ACTION_ID,
+  ActionIdSchema,
+  AUDIO_ACTION_ID,
+  DOWNLOAD_ACTION_ID,
   ExtensionMessageSchema,
   ExtensionSettingsSchema,
   ImageSelectionSchema,
+  LINK_ACTION_ID,
   NormalizedProvenanceResultSchema,
+  PICK_VIDEO_ACTION_ID,
   PICKER_RUNTIME_VERSION,
   PickerRuntimeMessageSchema,
   ResultToastBindingsSchema,
+  WorkflowStateSchema,
 } from "../src/index.js";
 
 describe("shared runtime schemas", () => {
@@ -22,6 +28,100 @@ describe("shared runtime schemas", () => {
       actionId: ACTION_ID,
       trigger: "popup",
     });
+  });
+
+  it("lists the page-link action and its sending workflow state", () => {
+    expect(ActionIdSchema.options).toEqual([
+      ACTION_ID,
+      AUDIO_ACTION_ID,
+      DOWNLOAD_ACTION_ID,
+      LINK_ACTION_ID,
+      PICK_VIDEO_ACTION_ID,
+    ]);
+    expect(
+      ExtensionMessageSchema.parse({
+        type: "start-action",
+        actionId: LINK_ACTION_ID,
+        trigger: "popup",
+      }),
+    ).toMatchObject({ actionId: "send-page-link" });
+    expect(
+      WorkflowStateSchema.parse({
+        status: "sending",
+        actionId: LINK_ACTION_ID,
+        message: "Sending this page's link to DigiBot…",
+        updatedAt: "2026-10-01T20:00:00.000Z",
+      }).status,
+    ).toBe("sending");
+  });
+
+  it("carries link-download options on a start-action message", () => {
+    const start = {
+      type: "start-action",
+      actionId: LINK_ACTION_ID,
+      trigger: "popup",
+    };
+    expect(ExtensionMessageSchema.parse(start)).toEqual(start);
+    for (const options of [
+      { output: "mp3" },
+      { startSeconds: 65, endSeconds: 120 },
+    ]) {
+      expect(ExtensionMessageSchema.parse({ ...start, options })).toEqual({
+        ...start,
+        options,
+      });
+    }
+    for (const options of [
+      { startSeconds: 65 },
+      { startSeconds: 120, endSeconds: 65 },
+      { output: "m4a" },
+      { output: "mp3", quality: "320k" },
+    ]) {
+      expect(
+        ExtensionMessageSchema.safeParse({ ...start, options }).success,
+        JSON.stringify(options),
+      ).toBe(false);
+    }
+    expect(
+      ExtensionMessageSchema.safeParse({
+        type: "cancel-active",
+        options: { output: "mp3" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts a link-mode picker start and a picked link from the bound session", () => {
+    const start = {
+      type: "picker-start",
+      runtimeVersion: PICKER_RUNTIME_VERSION,
+      sessionToken: "123e4567-e89b-42d3-a456-426614174000",
+    };
+    expect(PickerRuntimeMessageSchema.parse(start)).toEqual(start);
+    expect(
+      PickerRuntimeMessageSchema.parse({ ...start, mode: "link" }),
+    ).toEqual({ ...start, mode: "link" });
+    expect(
+      PickerRuntimeMessageSchema.safeParse({ ...start, mode: "audio" }).success,
+    ).toBe(false);
+
+    const picked = {
+      type: "picker-link-selected",
+      sessionToken: start.sessionToken,
+      url: "https://x.com/alice/status/123",
+    };
+    expect(ExtensionMessageSchema.parse(picked)).toEqual(picked);
+    for (const invalid of [
+      { ...picked, url: "" },
+      { ...picked, url: "x".repeat(2_049) },
+      { ...picked, sessionToken: "session-1" },
+      { ...picked, selection: {} },
+      { type: "picker-link-selected", sessionToken: start.sessionToken },
+    ]) {
+      expect(
+        ExtensionMessageSchema.safeParse(invalid).success,
+        JSON.stringify(invalid).slice(0, 80),
+      ).toBe(false);
+    }
   });
 
   it("rejects unknown extension messages", () => {

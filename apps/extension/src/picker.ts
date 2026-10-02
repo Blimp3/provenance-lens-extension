@@ -10,12 +10,20 @@ import {
 } from "@provenance-lens/shared";
 
 import { readBoundedResponseBytes } from "./bounded-response.js";
+import {
+  linkCandidateFor,
+  type LinkCandidate,
+} from "./page-link-candidates.js";
 
-type PickCandidate = {
+type ImageCandidate = {
+  kind: "image";
   element: Element;
   url: string;
   sourceKind: ImageSelection["sourceKind"];
 };
+/** Image mode picks an image's bytes; link mode picks a post or page link. */
+type PickCandidate = ImageCandidate | ({ kind: "link" } & LinkCandidate);
+type PickerMode = "image" | "link";
 
 type PickerOverlay = {
   root: HTMLElement;
@@ -27,6 +35,7 @@ type PickerOverlay = {
 
 type PickerState = {
   sessionToken: string;
+  mode: PickerMode;
   overlay: PickerOverlay;
   previousCursor: string;
   candidate: PickCandidate | null;
@@ -60,7 +69,7 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
         return;
       case "picker-start":
         if (boundSessionToken !== parsed.data.sessionToken) return;
-        startPicker(parsed.data.sessionToken);
+        startPicker(parsed.data.sessionToken, parsed.data.mode ?? "image");
         return;
       case "picker-stop":
         if (activePicker?.sessionToken === parsed.data.sessionToken) {
@@ -76,14 +85,15 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     }
   });
 
-  function startPicker(sessionToken: string): void {
+  function startPicker(sessionToken: string, mode: PickerMode): void {
     activePicker?.cleanup();
-    const overlay = createPickerOverlay();
+    const overlay = createPickerOverlay(mode);
 
     const previousCursor = document.documentElement.style.cursor;
     document.documentElement.style.cursor = "crosshair";
     const state: PickerState = {
       sessionToken,
+      mode,
       overlay,
       previousCursor,
       candidate: null,
@@ -99,7 +109,7 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       pendingFrame = null;
       pendingFrameKind = null;
       if (closed || !latestPointer) return;
-      const candidate = candidateAt(latestPointer.x, latestPointer.y);
+      const candidate = candidateAt(latestPointer.x, latestPointer.y, mode);
       state.candidate = candidate;
       if (candidate) {
         renderOverlay(overlay, candidate);
@@ -191,12 +201,22 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
 
     function onClick(event: MouseEvent): void {
       if (closed || !event.isTrusted) return;
-      const candidate = candidateAt(event.clientX, event.clientY);
+      const candidate = candidateAt(event.clientX, event.clientY, mode);
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
       if (!candidate) return;
       state.candidate = candidate;
+      if (candidate.kind === "link") {
+        cleanup();
+        activePicker = null;
+        void chrome.runtime.sendMessage({
+          type: "picker-link-selected",
+          sessionToken,
+          url: candidate.url,
+        });
+        return;
+      }
       const selection = makeSelection(candidate);
       cleanup();
       activePicker = null;
@@ -230,10 +250,10 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     }
   }
 
-  function createPickerOverlay(): PickerOverlay {
+  function createPickerOverlay(mode: PickerMode): PickerOverlay {
     const root = document.createElement("div");
     root.dataset["provenanceLensPicker"] = "overlay";
-    root.setAttribute("aria-label", "Provenance Lens image picker");
+    root.setAttribute("aria-label", pickerName(mode));
     setImportantStyles(root, {
       all: "initial",
       position: "fixed",
@@ -545,15 +565,22 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
 
     const width = Math.max(1, Math.round(rect.width));
     const height = Math.max(1, Math.round(rect.height));
-    const labelText = `${pickerKindLabel(candidate.sourceKind)} · ${width} × ${height} px · Click to select · Esc to cancel`;
+    const labelText =
+      candidate.kind === "link"
+        ? `Post link · ${candidate.host} · Click to send · Esc to cancel`
+        : `${pickerKindLabel(candidate.sourceKind)} · ${width} × ${height} px · Click to select · Esc to cancel`;
     overlay.label.textContent = labelText;
     overlay.root.setAttribute(
       "aria-label",
-      `Provenance Lens image picker. ${labelText}`,
+      `${pickerName(candidate.kind)}. ${labelText}`,
     );
-    overlay.label.dataset["imageKind"] = candidate.sourceKind;
-    overlay.label.dataset["imageWidth"] = String(width);
-    overlay.label.dataset["imageHeight"] = String(height);
+    if (candidate.kind === "link") {
+      overlay.label.dataset["linkHost"] = candidate.host;
+    } else {
+      overlay.label.dataset["imageKind"] = candidate.sourceKind;
+      overlay.label.dataset["imageWidth"] = String(width);
+      overlay.label.dataset["imageHeight"] = String(height);
+    }
     overlay.label.style.display = "block";
 
     const labelWidth = Math.max(
@@ -595,6 +622,12 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     );
   }
 
+  function pickerName(mode: PickerMode): string {
+    return mode === "link"
+      ? "Provenance Lens video picker"
+      : "Provenance Lens image picker";
+  }
+
   function pickerKindLabel(sourceKind: ImageSelection["sourceKind"]): string {
     switch (sourceKind) {
       case "background-image":
@@ -612,23 +645,37 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     }
   }
 
-  function candidateAt(clientX: number, clientY: number): PickCandidate | null {
+  function candidateAt(
+    clientX: number,
+    clientY: number,
+    mode: PickerMode,
+  ): PickCandidate | null {
     const seen = new Set<Element>();
+    // Each hit-test chain climbs until the page root, the overlay or an
+    // ancestor an earlier chain already covered.
+    const visit = (element: Element): boolean => {
+      if (
+        element === document.body ||
+        element === document.documentElement ||
+        isPickerOverlayElement(element) ||
+        seen.has(element)
+      )
+        return false;
+      seen.add(element);
+      return true;
+    };
     for (const element of deepestElementsFromPoint(
       document,
       clientX,
       clientY,
     )) {
+      if (mode === "link") {
+        const link = linkCandidateFor(element, document.baseURI, visit);
+        if (link) return { kind: "link", ...link };
+        continue;
+      }
       let current: Element | null = element;
-      while (current) {
-        if (
-          current === document.body ||
-          current === document.documentElement ||
-          isPickerOverlayElement(current)
-        )
-          break;
-        if (seen.has(current)) break;
-        seen.add(current);
+      while (current && visit(current)) {
         const candidate = candidateForElement(current);
         if (candidate) return candidate;
         current = current.parentElement;
@@ -688,11 +735,12 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     return flattened;
   }
 
-  function candidateForElement(element: Element): PickCandidate | null {
+  function candidateForElement(element: Element): ImageCandidate | null {
     if (element instanceof HTMLImageElement) {
       const url = imageUrl(element);
       return url
         ? {
+            kind: "image",
             element,
             url,
             sourceKind: sourceKindForUrl(
@@ -706,19 +754,30 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       const image = element.querySelector("img");
       const url = image ? imageUrl(image) : null;
       return url && image
-        ? { element: image, url, sourceKind: sourceKindForUrl(url, "picture") }
+        ? {
+            kind: "image",
+            element: image,
+            url,
+            sourceKind: sourceKindForUrl(url, "picture"),
+          }
         : null;
     }
     if (element instanceof HTMLVideoElement && element.poster) {
       const url = resolveUrl(element.poster);
       return url
-        ? { element, url, sourceKind: sourceKindForUrl(url, "video-poster") }
+        ? {
+            kind: "image",
+            element,
+            url,
+            sourceKind: sourceKindForUrl(url, "video-poster"),
+          }
         : null;
     }
     if (element instanceof HTMLElement) {
       const background = backgroundImageUrl(element);
       if (background) {
         return {
+          kind: "image",
           element,
           url: background,
           sourceKind: sourceKindForUrl(background, "background-image"),
@@ -767,7 +826,7 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     return defaultKind;
   }
 
-  function makeSelection(candidate: PickCandidate): ImageSelection {
+  function makeSelection(candidate: ImageCandidate): ImageSelection {
     const rect = candidate.element.getBoundingClientRect();
     const width = Math.max(1, rect.width);
     const height = Math.max(1, rect.height);

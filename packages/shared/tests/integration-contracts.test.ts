@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import {
@@ -9,12 +10,14 @@ import {
   type IntegrationOperationInputV1,
 } from "../src/index.js";
 
-const fixtureJson = JSON.parse(
-  readFileSync(
-    new URL("./fixtures/integration-envelope-v1.json", import.meta.url),
-    "utf8",
-  ),
-) as unknown;
+// DigiBot and the public edition pin the same bytes.
+const fixtureSha256 =
+  "df1145520283e067c1d35262cdd95202fc2e1be5b5290af0519dac197f46159c";
+const fixtureText = readFileSync(
+  new URL("./fixtures/integration-envelope-v1.json", import.meta.url),
+  "utf8",
+);
+const fixtureJson = JSON.parse(fixtureText) as unknown;
 const fixture = IntegrationEnvelopeV1Schema.parse(fixtureJson);
 
 function clone<T>(value: T): T {
@@ -79,6 +82,9 @@ function audioEnvelope(): IntegrationEnvelopeV1 {
 
 describe("integration contract v1", () => {
   it("parses the representative server envelope and keeps public input strict", () => {
+    expect(createHash("sha256").update(fixtureText).digest("hex")).toBe(
+      fixtureSha256,
+    );
     expect(fixture.version).toBe(1);
     expect(fixture.result?.evidence.requestId).not.toBe(fixture.operationId);
     expect(

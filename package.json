@@ -1,6 +1,6 @@
 {
   "name": "provenance-lens-public",
-  "version": "0.8.0",
+  "version": "1.0.0",
   "private": true,
   "license": "MIT",
   "description": "Credential-free public source edition of the Provenance Lens Chromium extension.",

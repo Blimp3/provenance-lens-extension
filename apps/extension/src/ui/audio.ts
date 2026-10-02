@@ -69,10 +69,9 @@ async function check(): Promise<void> {
     if (connected) {
       const outcome = await runIntegratedAudioFileAction(file);
       renderIntegratedResult(outcome.status);
-      status.textContent =
-        outcome.status.state === "completed"
-          ? "Connected audio check complete. The result was saved to DigiBot History."
-          : "Connected audio check is still processing. DigiBot History will update.";
+      status.textContent = outcome.status.envelope?.result
+        ? "Connected audio check complete. The result was saved to DigiBot History."
+        : "Connected audio check is still processing. DigiBot History will update.";
       status.className =
         outcome.status.state === "failed" ? "status error" : "status success";
       return;
@@ -137,10 +136,9 @@ async function checkVideoSegment(): Promise<void> {
     }
     const outcome = await runIntegratedAudioSegmentAction(source, start, end);
     renderIntegratedResult(outcome.status);
-    status.textContent =
-      outcome.status.state === "completed"
-        ? "Audio segment check complete. The result was saved to DigiBot History."
-        : "Audio segment check is still processing. DigiBot History will update.";
+    status.textContent = outcome.status.envelope?.result
+      ? "Audio segment check complete. The result was saved to DigiBot History."
+      : "Audio segment check is still processing. DigiBot History will update.";
     status.className =
       outcome.status.state === "failed" ? "status error" : "status success";
   } catch (error: unknown) {

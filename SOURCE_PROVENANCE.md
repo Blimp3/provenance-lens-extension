@@ -1,31 +1,25 @@
 # Source provenance and publication boundary
 
 This public source edition derives from private repository base
-`91775e52e2d282e2c2280143a257fcdd5e44a9f8` (untagged, package version 0.8.0),
-plus the public packaging changes reviewed on 2026-09-17. It was published as
-this repository's first commit, `d0b453a`, on 2026-09-18. Later changes are
-commits in this repository; the private repository's history is not part of
-it. Public releases are tagged `vX.Y.Z` and listed on this repository's GitHub
-Releases page; see [docs/release-checklist.md](docs/release-checklist.md).
+`4978fa81dad8c13ee8ac5cff1512e0486e0fbcc0` (untagged, package version 1.0.0),
+reviewed for publication on 2026-10-02. The edition was first published from
+private base `91775e5` (package version 0.8.0) as this repository's first
+commit, `d0b453a`, on 2026-09-18, and synced to the 1.0.0 base on 2026-10-02.
+Later changes are commits in this repository; the private repository's history
+is not part of it. Public releases are tagged `vX.Y.Z` and listed on this
+repository's GitHub Releases page; see
+[docs/release-checklist.md](docs/release-checklist.md).
 
-Sync status on 2026-10-01: this edition is still the 0.8.0 source from base
-`91775e5`. The private edition's main is now versioned 0.8.1. None of the
-private changes after the base have been brought over. The commits here since
-`d0b453a` add docs, checks and tests only; `apps/extension/src`,
-`apps/extension/public`, the manifest and `packages/shared/src` are unchanged.
-No public release has been tagged yet.
-
-For users, private 0.8.1 differs from this source in two ways:
-
-- the background worker accepts the messages that start, resume, cancel or
-  retry a verification only from the extension's own pages (popup, result
-  details and disclosure), not from the page picker or other content scripts;
-- the popup lists **Verify an image on this page** first, renamed from **Pick
-  an image on this page**, and **Pick an image to download** second.
-
-Its other changes are checks and tests, the version number, and dependency
-updates in the excluded server and Worker workspaces; `npm audit` reports no
-findings in this edition.
+Sync status on 2026-10-02: v1.0.0 source from private base `4978fa8`. The
+included paths below match that base except for the public-edition differences
+listed at the end and three comments in `packages/shared/tests`, which name no
+private pull request or private repository path. Compared with the 0.8.0
+source, the sync brings the popup order and the background's extension-page-only
+message gate, the connected-check fixes, the **Send this page's link to
+Telegram** button with its **Send to Telegram as** dropdown, the **Pick a video
+on this page** picker, the link-download options and the DigiBot gateway
+contract fixture; the [CHANGELOG](CHANGELOG.md) describes each by its effect
+for users.
 
 Included:
 
@@ -58,8 +52,9 @@ Public-edition differences:
   `https://provenance-backend.example.invalid` placeholder;
 - the production verification host permission is absent; a user-controlled
   backend requires explicit exact-origin permission;
-- the optional DigiBot gateway remains because pairing is a public v0.8 product
-  feature. Its URL is not a credential, and a fresh profile makes no request;
+- the optional DigiBot gateway remains because pairing and page-link delivery
+  are public product features. Its URL is not a credential, and a fresh profile
+  makes no request;
 - the artifact scanner allows that documented gateway and rejects every other
   `workers.dev` hostname without retaining a private endpoint literal;
 - the private backend/Worker workspaces, their tests, and all provisioning and

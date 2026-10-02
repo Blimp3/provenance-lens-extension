@@ -122,6 +122,14 @@ export const IntegrationApiErrorSchema = z
   .strict();
 export type IntegrationApiError = z.infer<typeof IntegrationApiErrorSchema>;
 
+/** DigiBot's answer to a page link: the queued Telegram download job, which is not a pollable operation. */
+export const IntegrationLinkDownloadResponseSchema = z
+  .object({ jobId: z.string().uuid(), state: z.literal("queued") })
+  .strict();
+export type IntegrationLinkDownloadResponse = z.infer<
+  typeof IntegrationLinkDownloadResponseSchema
+>;
+
 export const IntegrationOperationStatusSchema = z
   .object({
     version: z.literal(INTEGRATION_API_VERSION),

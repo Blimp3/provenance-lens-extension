@@ -1,6 +1,7 @@
 import { chromium, expect, test, type Route } from "@playwright/test";
 import {
   DOWNLOAD_ACTION_ID,
+  LINK_ACTION_ID,
   VERIFICATION_POLICY_VERSION,
   sha256Hex,
 } from "@provenance-lens/shared";
@@ -147,7 +148,7 @@ function awaitingStatus(input: OperationInput): OperationStatus {
   };
 }
 
-test("pairs DigiBot, separates image Check and Download operations, and renders connected History", async () => {
+test("pairs DigiBot, separates image Check and Download operations, sends a page link, and renders connected History", async () => {
   const imageBytes = await readFile(
     resolve(process.cwd(), "tests/fixtures/image-fixture.png"),
   );
@@ -155,6 +156,7 @@ test("pairs DigiBot, separates image Check and Download operations, and renders 
 
   const operationInputs: OperationInput[] = [];
   const operationStatuses = new Map<string, OperationStatus>();
+  const linkDownloads: { operationId: string; sourceUrl: string }[] = [];
   let verificationCalls = 0;
   let sequence = 0;
   const context = await chromium.launchPersistentContext(
@@ -214,6 +216,25 @@ test("pairs DigiBot, separates image Check and Download operations, and renders 
         refreshExpiresAt: fixtureTime(7 * 86_400_000),
         absoluteExpiresAt: fixtureTime(30 * 86_400_000),
       });
+      return;
+    }
+    if (
+      path === "/api/integration/link-downloads" &&
+      request.method() === "POST"
+    ) {
+      const body = JSON.parse(request.postData() ?? "{}") as {
+        operationId: string;
+        sourceUrl: string;
+      };
+      linkDownloads.push(body);
+      await json(
+        route,
+        {
+          jobId: `55555555-5555-4555-8555-00000000000${linkDownloads.length}`,
+          state: "queued",
+        },
+        202,
+      );
       return;
     }
     if (path === "/api/integration/operations" && request.method() === "POST") {
@@ -345,14 +366,7 @@ test("pairs DigiBot, separates image Check and Download operations, and renders 
     const imageBox = await image.boundingBox();
     expect(imageBox).not.toBeNull();
 
-    const startAction = async (actionId: string): Promise<void> => {
-      const popup = await context.newPage();
-      await popup.goto(`chrome-extension://${extensionId}/popup.html`);
-      const actionButton = popup.locator(
-        `button[data-action-id="${actionId}"]`,
-      );
-      await expect(actionButton).toBeVisible();
-      await expect(actionButton).toBeEnabled();
+    const activateTargetTab = async (): Promise<void> => {
       await targetPage.bringToFront();
       const targetTab = await worker.evaluate(async (targetUrl) => {
         const tabs = await chrome.tabs.query({});
@@ -365,6 +379,17 @@ test("pairs DigiBot, separates image Check and Download operations, and renders 
         return { id: tab.id, active: true };
       }, targetPage.url());
       expect(targetTab.active).toBe(true);
+    };
+
+    const startAction = async (actionId: string): Promise<void> => {
+      const popup = await context.newPage();
+      await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+      const actionButton = popup.locator(
+        `button[data-action-id="${actionId}"]`,
+      );
+      await expect(actionButton).toBeVisible();
+      await expect(actionButton).toBeEnabled();
+      await activateTargetTab();
       await popup.evaluate((id) => {
         const button = document.querySelector<HTMLButtonElement>(
           `button[data-action-id="${id}"]`,
@@ -402,6 +427,30 @@ test("pairs DigiBot, separates image Check and Download operations, and renders 
       operationInputs[1]?.operationId,
     );
     expect(verificationCalls).toBe(0);
+
+    // The page-link action sends only the active tab's address, creates no
+    // operation, and reports back inside the popup, which stays open.
+    const linkPopup = await context.newPage();
+    await linkPopup.goto(`chrome-extension://${extensionId}/popup.html`);
+    const linkButton = linkPopup.locator(
+      `button[data-action-id="${LINK_ACTION_ID}"]`,
+    );
+    await expect(linkButton).toBeEnabled();
+    await activateTargetTab();
+    await linkButton.evaluate((button) =>
+      (button as HTMLButtonElement).click(),
+    );
+    await expect.poll(() => linkDownloads.length).toBe(1);
+    expect(linkDownloads[0]?.sourceUrl).toBe(targetPage.url());
+    expect(operationIdPattern.test(linkDownloads[0]?.operationId ?? "")).toBe(
+      true,
+    );
+    await expect(linkPopup.locator("#workflow-status")).toHaveText(
+      "Queued in DigiBot; the result arrives in your Telegram chat.",
+    );
+    expect(linkPopup.isClosed()).toBe(false);
+    expect(operationInputs).toHaveLength(2);
+    await linkPopup.close();
 
     const history = await context.newPage();
     await history.goto(`chrome-extension://${extensionId}/history.html`);

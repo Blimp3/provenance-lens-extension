@@ -101,7 +101,8 @@ function renderIntegrationStats(summary: IntegrationStats): void {
     `Checks ${summary.checksCompleted}/${summary.checksRequested} (${summary.checksFailed} failed, ${summary.freshChecks} fresh, ${summary.cachedChecks} cached) · ` +
     `Downloads ${summary.downloadsConfirmed}/${summary.downloadsRequested} (${summary.downloadsFailed} failed) · ` +
     `${summary.uniqueMedia} unique media · ${summary.savedOriginals} saved originals · ` +
-    `${summary.unresolvedArchives} archive${summary.unresolvedArchives === 1 ? "" : "s"} unresolved`;
+    `${summary.unresolvedArchives} archive${summary.unresolvedArchives === 1 ? "" : "s"} unresolved · ` +
+    "Page links sent to Telegram are delivered in your DigiBot chat and are not counted here.";
 }
 
 function renderIntegrationRecord(

@@ -176,6 +176,12 @@ h3 {
   gap: 8px;
 }
 
+.clip-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 button,
 a.button {
   display: inline-flex;
@@ -251,6 +257,11 @@ select {
   background: var(--surface-subtle);
   color: inherit;
   font: inherit;
+}
+
+/* Outranks the shared input rule above, so an invalid clip bound turns red. */
+input[type="text"][aria-invalid="true"] {
+  border-color: var(--negative);
 }
 
 input[type="checkbox"] {

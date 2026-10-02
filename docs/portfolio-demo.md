@@ -13,8 +13,9 @@ npm run package:public
 
 The five browser flows cover the popup/settings surface, first and repeated
 picker activation, exact image and audio bytes, C2PA trust wording, and
-synthetic connected Check/Download operations. Check and Download remain
-separate: Download delivers the original without invoking verification.
+synthetic connected Check, Download and page-link operations. Check and
+Download remain separate: Download delivers the original without invoking
+verification, and the page-link send carries only the page address.
 
 For a manual Website-mode walkthrough, serve the fixtures locally:
 

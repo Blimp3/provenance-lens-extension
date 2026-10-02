@@ -4,7 +4,9 @@ import {
   DOWNLOAD_ACTION_ID,
   ExtensionMessageSchema,
   ImageSelectionSchema,
+  LinkDownloadOptionsSchema,
   MAX_IMAGE_BYTES,
+  PICK_VIDEO_ACTION_ID,
   PICKER_RUNTIME_VERSION,
   ResultToastBindingsSchema,
   VerificationModeSchema,
@@ -13,14 +15,22 @@ import {
   parseAllowedImageUrl,
   sanitizeDisplayText,
   sha256Hex,
+  type ActionId,
   type ExtensionMessage,
   type ErrorCode,
   type ImageSelection,
+  type LinkDownloadOptions,
   type PickerRuntimeMessage,
   type VerificationMode,
 } from "@provenance-lens/shared";
 
 import { getActionDefinition } from "./actions/registry.js";
+import {
+  PAGE_LINK_QUEUED_MESSAGE,
+  pageLinkErrorMessage,
+  type PageLinkSource,
+} from "./actions/integration-link.js";
+import { pickedLinkUrl } from "./page-link-candidates.js";
 import {
   createHistoryRecord,
   ExtensionWorkflowError,
@@ -97,11 +107,25 @@ type PageTarget = {
 
 type ImageActionId = typeof ACTION_ID | typeof DOWNLOAD_ACTION_ID;
 
-type PickerSession = PageTarget & {
+/** Sends one page link: the registry's page-link and video-pick handlers. */
+type PageLinkSender = (
+  page: PageLinkSource,
+  options: LinkDownloadOptions,
+) => Promise<void>;
+
+type ImagePickerSession = {
+  mode: "image";
   actionId: ImageActionId;
   trigger: ActionTrigger;
   verificationMode: VerificationMode;
 };
+/** A video pick: the clicked post's link goes out with the popup's output. */
+type LinkPickerSession = {
+  mode: "link";
+  options: LinkDownloadOptions;
+  send: PageLinkSender;
+};
+type PickerSession = PageTarget & (ImagePickerSession | LinkPickerSession);
 
 type PendingDisclosure = {
   id: string;
@@ -115,6 +139,13 @@ type PendingDisclosure = {
 };
 
 const PENDING_DISCLOSURES_KEY = "provenanceLens.pendingDisclosures";
+/**
+ * Link picks outlive the service worker: Chrome stops an idle worker after
+ * about 30 s, and a user scrolls a timeline before clicking. Image picks need
+ * no record; their selection arrives with the page still bound.
+ */
+const LINK_PICKER_SESSIONS_KEY = "provenanceLens.linkPickerSessions";
+const MAX_LINK_PICKER_SESSIONS = 8;
 
 type FallbackImage = {
   image: RetrievedImage;
@@ -155,6 +186,9 @@ type CapturedPageSnapshot = Omit<
 };
 
 const pickerSessions = new Map<string, PickerSession>();
+/** Link picks already taken or cancelled; a replay is refused after the guard. */
+const spentLinkPicks = new Set<string>();
+const MAX_SPENT_LINK_PICKS = 32;
 const pendingDisclosures = new Map<string, PendingDisclosure>();
 const activeVerifications = new VerificationRunRegistry();
 const fallbackImages = new Map<string, FallbackImage>();
@@ -197,12 +231,34 @@ if (contextMenus) {
   });
 }
 
+// Messages that start, resume, cancel or retry a verification come only from
+// the extension's own pages (popup, details, disclosure). Picker and result
+// toast messages come from content scripts and keep their tab, frame and
+// document binding checks instead.
+const EXTENSION_PAGE_MESSAGE_TYPES: ReadonlySet<ExtensionMessage["type"]> =
+  new Set([
+    "start-action",
+    "resume-permission",
+    "verify-screenshot",
+    "download-fallback",
+    "cancel-active",
+  ]);
+
 chrome.runtime.onMessage.addListener((message: unknown, sender) => {
   const parsed = ExtensionMessageSchema.safeParse(message);
   if (!parsed.success) return false;
+  if (
+    EXTENSION_PAGE_MESSAGE_TYPES.has(parsed.data.type) &&
+    !isExtensionPageSender(sender)
+  )
+    return false;
   void handleExtensionMessage(parsed.data, sender);
   return false;
 });
+
+function isExtensionPageSender(sender: chrome.runtime.MessageSender): boolean {
+  return sender.url?.startsWith(chrome.runtime.getURL("")) === true;
+}
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (
@@ -231,6 +287,17 @@ async function handleExtensionMessage(
         }
         return;
       }
+      if (action?.inputType === "page-link") {
+        await sendPageLinkFromActiveTab(action.handler, message.options ?? {});
+        return;
+      }
+      if (action?.inputType === "video-pick") {
+        await startVideoPickFromActiveTab(
+          action.handler,
+          message.options ?? {},
+        );
+        return;
+      }
       if (action?.inputType !== "image-file") return;
       await startFromActiveTab(
         message.trigger,
@@ -246,6 +313,9 @@ async function handleExtensionMessage(
       return;
     case "picker-cancelled":
       await handlePickerCancelled(message, sender);
+      return;
+    case "picker-link-selected":
+      await handlePickerLinkSelected(message, sender);
       return;
     case "cancel-active":
       await cancelActiveVerification(sender.tab?.id);
@@ -281,6 +351,142 @@ async function startFromActiveTab(
     return;
   }
   await requestActionOnTab(tab.id, 0, trigger, null, actionId);
+}
+
+/** Whether a page link is being sent; a repeated click meanwhile is ignored. */
+let pageLinkInFlight = false;
+
+/** Why a picked link was refused before any request; shown on the page. */
+const PICKED_LINK_MESSAGE =
+  "That link cannot be sent to Telegram. Pick a post that shows a video, a YouTube video or a page link.";
+const PAGE_LINK_SENT_TITLE = "Sent to DigiBot";
+const PAGE_LINK_FAILED_TITLE = "Page link not sent";
+
+/**
+ * The page-link action reports through the workflow state, so the popup stays
+ * open; only the toolbar badge is handled here, where its timer lives. The
+ * options (an MP3 output or a clip range) travel with the link unchanged.
+ */
+async function sendPageLinkFromActiveTab(
+  send: PageLinkSender,
+  options: LinkDownloadOptions = {},
+): Promise<void> {
+  if (pageLinkInFlight) return;
+  const tabs = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
+  const tab = tabs[0];
+  await deliverPageLink(send, { url: tab?.url }, options, tab?.id, null);
+}
+
+/**
+ * Sends one link through the page-link action with the in-flight guard and
+ * the badge. A picked link also reports on its page, since the popup closed
+ * when the picker started; the popup path passes no page target.
+ */
+async function deliverPageLink(
+  send: PageLinkSender,
+  page: PageLinkSource,
+  options: LinkDownloadOptions,
+  tabId: number | undefined,
+  pageTarget: PageTarget | null,
+): Promise<void> {
+  if (pageLinkInFlight) {
+    await showPageToast(pageTarget, {
+      tone: "error",
+      title: PAGE_LINK_FAILED_TITLE,
+      message: "Another page link is still being sent.",
+      resultId: null,
+    });
+    return;
+  }
+  pageLinkInFlight = true;
+  try {
+    let failure: string | null = null;
+    try {
+      await send(page, options);
+    } catch (error: unknown) {
+      // The action already stored this message in the workflow state.
+      failure = pageLinkErrorMessage(error);
+    }
+    if (tabId !== undefined)
+      await (failure === null ? clearBadge(tabId) : setBadge(tabId, "!")).catch(
+        () => undefined,
+      );
+    await showPageToast(
+      pageTarget,
+      failure === null
+        ? {
+            tone: "detected",
+            title: PAGE_LINK_SENT_TITLE,
+            message: PAGE_LINK_QUEUED_MESSAGE,
+            resultId: null,
+          }
+        : {
+            tone: "error",
+            title: PAGE_LINK_FAILED_TITLE,
+            message: failure,
+            resultId: null,
+          },
+    );
+  } finally {
+    pageLinkInFlight = false;
+  }
+}
+
+/**
+ * Starts the picker in link mode on the active tab. The popup closes when it
+ * asks, so a refusal here goes to the badge and the workflow state, and the
+ * pick itself reports on the page.
+ */
+async function startVideoPickFromActiveTab(
+  send: PageLinkSender,
+  options: LinkDownloadOptions,
+): Promise<void> {
+  const tabs = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
+  const tab = tabs[0];
+  if (!tab?.id) {
+    await notifyStandaloneError(
+      "protected_page",
+      "No active browser page is available.",
+    );
+    return;
+  }
+  const tabId = tab.id;
+  if (isProtectedPage(tab.url ?? "")) {
+    await notifyStandaloneError(
+      "protected_page",
+      "Video picking is not supported on this browser page.",
+      { tabId },
+    );
+    return;
+  }
+  if (!(await isIntegrationConnected())) {
+    await notifyStandaloneError(
+      "backend_configuration_missing",
+      "Connect Provenance Lens to DigiBot in Settings before picking a video.",
+      { tabId },
+    );
+    return;
+  }
+  try {
+    await injectPicker(tabId, 0, { mode: "link", options, send });
+    await setWorkflow(
+      "picking",
+      "Click a post with a video to send its link to Telegram.",
+      PICK_VIDEO_ACTION_ID,
+    );
+  } catch {
+    await notifyStandaloneError(
+      "permission_denied",
+      "The video picker could not access this page.",
+      { tabId },
+    );
+  }
 }
 
 async function requestActionOnTab(
@@ -353,9 +559,8 @@ async function requestActionOnTab(
     return;
   }
   try {
-    await injectPicker({
-      tabId,
-      frameId,
+    await injectPicker(tabId, frameId, {
+      mode: "image",
       actionId,
       trigger,
       verificationMode: settings.verificationMode,
@@ -425,9 +630,8 @@ async function resumeDisclosure(
         pageTarget: pending.pageTarget,
       });
     } else {
-      await injectPicker({
-        tabId: pending.tabId,
-        frameId: pending.frameId,
+      await injectPicker(pending.tabId, pending.frameId, {
+        mode: "image",
         actionId: pending.actionId,
         trigger: pending.trigger,
         verificationMode: acknowledgedMode,
@@ -548,6 +752,111 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+async function persistLinkPickerSession(
+  session: PageTarget & LinkPickerSession,
+): Promise<void> {
+  try {
+    const values = await chrome.storage.session.get(LINK_PICKER_SESSIONS_KEY);
+    const current = isRecord(values[LINK_PICKER_SESSIONS_KEY])
+      ? values[LINK_PICKER_SESSIONS_KEY]
+      : {};
+    // Only the serialisable coordinates; the handler is rebuilt on restore.
+    const { sessionToken, tabId, frameId, documentId, mode, options } = session;
+    current[sessionToken] = {
+      sessionToken,
+      tabId,
+      frameId,
+      documentId,
+      mode,
+      options,
+    };
+    const entries = Object.entries(current).slice(-MAX_LINK_PICKER_SESSIONS);
+    await chrome.storage.session.set({
+      [LINK_PICKER_SESSIONS_KEY]: Object.fromEntries(entries),
+    });
+  } catch {
+    // The in-memory map still serves the pick while this worker lives.
+  }
+}
+
+/**
+ * A link pick this worker no longer holds, rebuilt around the registry's
+ * video-pick handler; null when nothing valid was stored for the token.
+ */
+async function restoreLinkPickerSession(
+  sessionToken: string,
+): Promise<PickerSession | null> {
+  try {
+    const values = await chrome.storage.session.get(LINK_PICKER_SESSIONS_KEY);
+    const current = values[LINK_PICKER_SESSIONS_KEY];
+    if (!isRecord(current)) return null;
+    const stored = current[sessionToken];
+    if (
+      !isRecord(stored) ||
+      stored["sessionToken"] !== sessionToken ||
+      stored["mode"] !== "link" ||
+      typeof stored["tabId"] !== "number" ||
+      typeof stored["frameId"] !== "number" ||
+      typeof stored["documentId"] !== "string"
+    )
+      return null;
+    const options = LinkDownloadOptionsSchema.safeParse(
+      stored["options"] ?? {},
+    );
+    if (!options.success) return null;
+    const action = getActionDefinition(PICK_VIDEO_ACTION_ID);
+    if (action?.inputType !== "video-pick") return null;
+    return {
+      mode: "link",
+      sessionToken,
+      tabId: stored["tabId"],
+      frameId: stored["frameId"],
+      documentId: stored["documentId"],
+      options: options.data,
+      send: action.handler,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function forgetLinkPickerSession(sessionToken: string): Promise<void> {
+  try {
+    const values = await chrome.storage.session.get(LINK_PICKER_SESSIONS_KEY);
+    const current = values[LINK_PICKER_SESSIONS_KEY];
+    if (!isRecord(current) || !(sessionToken in current)) return;
+    delete current[sessionToken];
+    await chrome.storage.session.set({ [LINK_PICKER_SESSIONS_KEY]: current });
+  } catch {
+    // Best effort; a stale record is refused by the spent set or evicted.
+  }
+}
+
+/**
+ * The live or stored session for a picker message, before the sender guard.
+ * A spent token may still come back from storage; spendLinkPick refuses it.
+ */
+async function findPickerSession(
+  sessionToken: string,
+): Promise<PickerSession | undefined> {
+  return (
+    pickerSessions.get(sessionToken) ??
+    (await restoreLinkPickerSession(sessionToken)) ??
+    undefined
+  );
+}
+
+/** Claims a link pick once: false when it was already taken or cancelled. */
+function spendLinkPick(sessionToken: string): boolean {
+  if (spentLinkPicks.has(sessionToken)) return false;
+  spentLinkPicks.add(sessionToken);
+  if (spentLinkPicks.size > MAX_SPENT_LINK_PICKS) {
+    const oldest = spentLinkPicks.values().next().value;
+    if (oldest !== undefined) spentLinkPicks.delete(oldest);
+  }
+  return true;
+}
+
 async function bindPageTarget(
   tabId: number,
   frameId: number,
@@ -581,29 +890,32 @@ async function bindPageTarget(
   }
 }
 
-async function injectPicker(session: {
-  tabId: number;
-  frameId: number;
-  actionId: ImageActionId;
-  trigger: ActionTrigger;
-  verificationMode: VerificationMode;
-}): Promise<void> {
-  const target = await bindPageTarget(session.tabId, session.frameId);
-  if (!target) throw new Error("The image picker could not access this page.");
-  const pickerSession = { ...session, ...target };
-  pickerSessions.set(target.sessionToken, pickerSession);
+async function injectPicker(
+  tabId: number,
+  frameId: number,
+  session: ImagePickerSession | LinkPickerSession,
+): Promise<void> {
+  const target = await bindPageTarget(tabId, frameId);
+  if (!target) throw new Error("The picker could not access this page.");
+  pickerSessions.set(target.sessionToken, { ...session, ...target });
+  if (session.mode === "link")
+    await persistLinkPickerSession({ ...session, ...target });
   try {
     await chrome.tabs.sendMessage(
-      session.tabId,
+      tabId,
       {
         type: "picker-start",
         runtimeVersion: PICKER_RUNTIME_VERSION,
         sessionToken: target.sessionToken,
-      },
+        // An image pick is the runtime's default and keeps the older message.
+        ...(session.mode === "link" ? { mode: session.mode } : {}),
+      } satisfies PickerRuntimeMessage,
       { documentId: target.documentId },
     );
   } catch (error: unknown) {
     pickerSessions.delete(target.sessionToken);
+    if (session.mode === "link")
+      await forgetLinkPickerSession(target.sessionToken);
     throw error;
   }
 }
@@ -615,6 +927,7 @@ async function handlePickerSelected(
   const session = pickerSessions.get(message.sessionToken);
   if (
     !session ||
+    session.mode !== "image" ||
     sender.tab?.id !== session.tabId ||
     sender.frameId !== session.frameId ||
     sender.documentId !== session.documentId
@@ -654,7 +967,7 @@ async function handlePickerCancelled(
   message: Extract<ExtensionMessage, { type: "picker-cancelled" }>,
   sender: chrome.runtime.MessageSender,
 ): Promise<void> {
-  const session = pickerSessions.get(message.sessionToken);
+  const session = await findPickerSession(message.sessionToken);
   if (
     !session ||
     sender.tab?.id !== session.tabId ||
@@ -662,13 +975,64 @@ async function handlePickerCancelled(
     sender.documentId !== session.documentId
   )
     return;
+  if (session.mode === "link" && !spendLinkPick(message.sessionToken)) return;
   pickerSessions.delete(message.sessionToken);
   await stopPicker(session);
-  await setWorkflow("idle", "Image selection cancelled.");
+  await setWorkflow(
+    "idle",
+    session.mode === "link"
+      ? "Video pick cancelled."
+      : "Image selection cancelled.",
+  );
   await clearBadge(session.tabId);
 }
 
+/**
+ * A picked link from the bound picker session goes out like the page link,
+ * with the output chosen in the popup. The session may come back from storage
+ * after a worker restart; either way it is taken exactly once. The address is
+ * checked again here, so an X timeline or profile address is never sent.
+ */
+async function handlePickerLinkSelected(
+  message: Extract<ExtensionMessage, { type: "picker-link-selected" }>,
+  sender: chrome.runtime.MessageSender,
+): Promise<void> {
+  const session = await findPickerSession(message.sessionToken);
+  if (
+    !session ||
+    session.mode !== "link" ||
+    sender.tab?.id !== session.tabId ||
+    sender.frameId !== session.frameId ||
+    sender.documentId !== session.documentId
+  )
+    return;
+  if (!spendLinkPick(message.sessionToken)) return;
+  pickerSessions.delete(message.sessionToken);
+  await stopPicker(session);
+  const url = pickedLinkUrl(message.url);
+  if (url === null) {
+    await setWorkflow("error", PICKED_LINK_MESSAGE, PICK_VIDEO_ACTION_ID);
+    await setBadge(session.tabId, "!").catch(() => undefined);
+    await showPageToast(session, {
+      tone: "error",
+      title: PAGE_LINK_FAILED_TITLE,
+      message: PICKED_LINK_MESSAGE,
+      resultId: null,
+    });
+    return;
+  }
+  await deliverPageLink(
+    session.send,
+    { url },
+    session.options,
+    session.tabId,
+    session,
+  );
+}
+
 async function stopPicker(session: PickerSession): Promise<void> {
+  if (session.mode === "link")
+    await forgetLinkPickerSession(session.sessionToken);
   try {
     await chrome.tabs.sendMessage(
       session.tabId,
@@ -1869,7 +2233,7 @@ async function ensureTrustedStorageAccess(): Promise<void> {
 async function setWorkflow(
   status: "idle" | "picking" | "retrieving" | "verifying" | "error",
   message: string,
-  actionId: ImageActionId = ACTION_ID,
+  actionId: ActionId = ACTION_ID,
 ): Promise<void> {
   await setWorkflowState({
     status,

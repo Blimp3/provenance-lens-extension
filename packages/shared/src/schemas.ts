@@ -4,11 +4,14 @@ import {
   ACTION_ID,
   AUDIO_ACTION_ID,
   DOWNLOAD_ACTION_ID,
+  LINK_ACTION_ID,
+  PICK_VIDEO_ACTION_ID,
   MAX_IMAGE_BYTES,
   MAX_INLINE_IMAGE_BYTES,
   RESULT_SCHEMA_VERSION,
   VERIFICATION_POLICY_VERSION,
 } from "./constants.js";
+import { LinkDownloadOptionsSchema } from "./link-download.js";
 
 const boundedNullableString = z.string().trim().max(512).nullable();
 const nullableIsoDateTime = z.iso.datetime({ offset: true }).nullable();
@@ -41,6 +44,8 @@ export const ActionIdSchema = z.enum([
   ACTION_ID,
   AUDIO_ACTION_ID,
   DOWNLOAD_ACTION_ID,
+  LINK_ACTION_ID,
+  PICK_VIDEO_ACTION_ID,
 ]);
 export type ActionId = z.infer<typeof ActionIdSchema>;
 
@@ -533,7 +538,7 @@ export const AcknowledgedVerificationModesSchema = z
     "Each verification mode may only be acknowledged once.",
   );
 
-export const PICKER_RUNTIME_VERSION = "0.7.0" as const;
+export const PICKER_RUNTIME_VERSION = "0.8.0" as const;
 
 export const PickerRuntimeMessageSchema = z.discriminatedUnion("type", [
   z
@@ -548,6 +553,8 @@ export const PickerRuntimeMessageSchema = z.discriminatedUnion("type", [
       type: z.literal("picker-start"),
       runtimeVersion: z.literal(PICKER_RUNTIME_VERSION),
       sessionToken: z.string().uuid(),
+      // "link" picks a post or page link to send to DigiBot; omitted, an image.
+      mode: z.enum(["image", "link"]).optional(),
     })
     .strict(),
   z
@@ -591,6 +598,8 @@ export const ExtensionMessageSchema = z.discriminatedUnion("type", [
       type: z.literal("start-action"),
       actionId: ActionIdSchema,
       trigger: z.enum(["popup", "keyboard"]),
+      // The page link's output (MP3) or clip; the other actions take none.
+      options: LinkDownloadOptionsSchema.optional(),
     })
     .strict(),
   z
@@ -604,6 +613,14 @@ export const ExtensionMessageSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("picker-cancelled"),
       sessionToken: z.string().uuid(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("picker-link-selected"),
+      sessionToken: z.string().uuid(),
+      // The background validates the address again before anything is sent.
+      url: z.string().trim().min(1).max(2_048),
     })
     .strict(),
   z.object({ type: z.literal("cancel-active") }).strict(),
@@ -733,7 +750,14 @@ export type ExtensionSettings = z.infer<typeof ExtensionSettingsSchema>;
 
 export const WorkflowStateSchema = z
   .object({
-    status: z.enum(["idle", "picking", "retrieving", "verifying", "error"]),
+    status: z.enum([
+      "idle",
+      "picking",
+      "retrieving",
+      "verifying",
+      "sending",
+      "error",
+    ]),
     actionId: ActionIdSchema.nullable(),
     message: z.string().trim().max(512),
     updatedAt: z.iso.datetime({ offset: true }),
