@@ -2,6 +2,7 @@ import {
   IntegrationApiErrorSchema,
   IntegrationDeleteResponseSchema,
   IntegrationHistoryResponseSchema,
+  IntegrationLinkDownloadResponseSchema,
   IntegrationOperationInputV1Schema,
   IntegrationOperationStatusSchema,
   IntegrationPairingExchangeRequestSchema,
@@ -10,16 +11,19 @@ import {
   IntegrationRefreshRequestSchema,
   IntegrationSessionResponseSchema,
   IntegrationStatsSchema,
+  LinkDownloadOptionsSchema,
   MAX_INTEGRATION_CHECK_BYTES,
   INTEGRATION_DOWNLOAD_MAX_BYTES,
   sha256Hex,
   type IntegrationHistoryResponse,
+  type IntegrationLinkDownloadResponse,
   type IntegrationOperationInputV1,
   type IntegrationOperationStatus,
   type IntegrationPairingResponse,
   type IntegrationPeriod,
   type IntegrationSessionResponse,
   type IntegrationStats,
+  type LinkDownloadOptions,
   type Sha256,
   type SupportedMediaMime,
 } from "@provenance-lens/shared";
@@ -220,7 +224,7 @@ export async function createIntegrationOperation(
     true,
     expected,
   );
-  return parseResponse(response, IntegrationOperationStatusSchema);
+  return parseOperationStatus(response, parsed.operationId, expected);
 }
 
 export async function createAudioSegmentOperation(
@@ -251,7 +255,38 @@ export async function createAudioSegmentOperation(
     true,
     expected,
   );
-  return parseResponse(response, IntegrationOperationStatusSchema);
+  return parseOperationStatus(response, operationId, expected);
+}
+
+/** A page link is one small POST; a service worker must not hang on it. */
+const LINK_DOWNLOAD_TIMEOUT_MS = 30_000;
+
+/**
+ * Sends only the page link, plus the MP3 output or clip range when asked;
+ * DigiBot queues the download job a pasted Telegram link creates.
+ */
+export async function createLinkDownload(
+  operationId: string,
+  sourceUrl: string,
+  expectedSession?: IntegrationSessionExpectation,
+  options: LinkDownloadOptions = {},
+): Promise<IntegrationLinkDownloadResponse> {
+  // Only present option keys are sent: a Video request stays {operationId, sourceUrl}.
+  const parsedOptions = LinkDownloadOptionsSchema.parse(options);
+  const expected =
+    expectedSession ?? sessionExpectation(await requireIntegrationSession());
+  const response = await authenticatedRequest(
+    "/link-downloads",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operationId, sourceUrl, ...parsedOptions }),
+      signal: AbortSignal.timeout(LINK_DOWNLOAD_TIMEOUT_MS),
+    },
+    true,
+    expected,
+  );
+  return parseResponse(response, IntegrationLinkDownloadResponseSchema);
 }
 
 export async function uploadIntegrationMedia(
@@ -272,7 +307,7 @@ export async function uploadIntegrationMedia(
     true,
     expected,
   );
-  return parseResponse(response, IntegrationOperationStatusSchema);
+  return parseOperationStatus(response, operationId, expected);
 }
 
 export async function getIntegrationOperation(
@@ -294,7 +329,59 @@ async function getIntegrationOperationForSession(
     true,
     expected,
   );
-  return parseResponse(response, IntegrationOperationStatusSchema);
+  return parseOperationStatus(response, operationId, expected);
+}
+
+/**
+ * Every status endpoint answers for the operation named in its request. The
+ * envelope is checked against the status, but only the request knows which
+ * operation and account the status must describe.
+ */
+async function parseOperationStatus(
+  response: Response,
+  operationId: string,
+  expected: IntegrationSessionExpectation,
+): Promise<IntegrationOperationStatus> {
+  const status = await parseResponse(
+    response,
+    IntegrationOperationStatusSchema,
+  );
+  if (
+    status.operationId !== operationId ||
+    status.accountId !== expected.accountId
+  )
+    throw operationMismatchError();
+  return status;
+}
+
+/**
+ * Whether polling can stop: the operation completed or failed, or DigiBot has
+ * already saved a Check's verdict while its Telegram archive is still in
+ * flight. Downloads carry no result, so they settle only once they complete,
+ * and nothing is settled while DigiBot still awaits the media upload.
+ */
+export function isIntegrationOperationSettled(
+  status: IntegrationOperationStatus,
+): boolean {
+  if (status.state === "completed" || status.state === "failed") return true;
+  if (status.state === "awaiting_upload") return false;
+  return status.envelope !== null && status.envelope.result !== null;
+}
+
+/**
+ * Rejects a status that describes media other than the bytes this browser
+ * uploaded. A null digest only means DigiBot has not received them yet.
+ */
+export function assertIntegrationMediaDigest(
+  status: IntegrationOperationStatus,
+  uploadedSha256: string,
+): void {
+  if (status.mediaSha256 !== null && status.mediaSha256 !== uploadedSha256)
+    throw new IntegrationClientError(
+      "DigiBot answered for different media than this browser sent. Start the action again.",
+      "integration_media_mismatch",
+      false,
+    );
 }
 
 export async function waitForIntegrationOperation(
@@ -306,11 +393,7 @@ export async function waitForIntegrationOperation(
     expectedSession ?? (await operationSessionExpectation(operationId));
   const deadline = Date.now() + OPERATION_POLL_TIMEOUT_MS;
   let latest = await getIntegrationOperationForSession(operationId, expected);
-  while (
-    latest.state !== "completed" &&
-    latest.state !== "failed" &&
-    Date.now() < deadline
-  ) {
+  while (!isIntegrationOperationSettled(latest) && Date.now() < deadline) {
     await delay(OPERATION_POLL_MS, signal);
     latest = await getIntegrationOperationForSession(operationId, expected);
   }
@@ -327,7 +410,7 @@ export async function retryIntegrationOperation(
     true,
     expected,
   );
-  return parseResponse(response, IntegrationOperationStatusSchema);
+  return parseOperationStatus(response, operationId, expected);
 }
 
 export async function getIntegrationHistory(
@@ -662,7 +745,7 @@ export async function resumePendingIntegrationOperations(): Promise<void> {
           );
         }
       }
-      if (status.state === "completed" || status.state === "failed") {
+      if (isIntegrationOperationSettled(status)) {
         await removePendingIntegrationOperation(
           operation.accountId,
           operation.operationId,
@@ -903,6 +986,14 @@ function sessionChangedError(): IntegrationClientError {
   return new IntegrationClientError(
     "The connected DigiBot account changed. Start the action again.",
     "integration_session_changed",
+    false,
+  );
+}
+
+function operationMismatchError(): IntegrationClientError {
+  return new IntegrationClientError(
+    "DigiBot answered for a different operation or account. Start the action again.",
+    "integration_operation_mismatch",
     false,
   );
 }

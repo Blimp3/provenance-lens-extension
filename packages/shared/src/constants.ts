@@ -1,6 +1,8 @@
 export const ACTION_ID = "verify-openai-provenance" as const;
 export const AUDIO_ACTION_ID = "verify-openai-audio" as const;
 export const DOWNLOAD_ACTION_ID = "download-original-media" as const;
+export const LINK_ACTION_ID = "send-page-link" as const;
+export const PICK_VIDEO_ACTION_ID = "pick-video-link" as const;
 export const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
 export const MAX_CONTENT_CREDENTIALS_BYTES = 4 * 1024 * 1024;
 // ponytail: 4 MiB bounds parser memory for short compressed audio; raise it only

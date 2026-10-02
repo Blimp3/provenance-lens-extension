@@ -4,6 +4,7 @@ export * from "./file-validation.js";
 export * from "./hash.js";
 export * from "./integration-contracts.js";
 export * from "./integration-api.js";
+export * from "./link-download.js";
 export * from "./normalize.js";
 export * from "./result-label.js";
 export * from "./schemas.js";

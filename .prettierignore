@@ -5,3 +5,5 @@ artifacts
 package-lock.json
 apps/extension/public/icons/*.png
 output
+# Byte-for-byte copy of DigiBot's contract fixture; tests pin its SHA-256.
+packages/shared/tests/fixtures/integration-api-v1.json

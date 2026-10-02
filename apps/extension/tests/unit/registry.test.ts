@@ -1,4 +1,11 @@
-import { ACTION_ID, type ExtensionSettings } from "@provenance-lens/shared";
+import {
+  ACTION_ID,
+  AUDIO_ACTION_ID,
+  DOWNLOAD_ACTION_ID,
+  LINK_ACTION_ID,
+  PICK_VIDEO_ACTION_ID,
+  type ExtensionSettings,
+} from "@provenance-lens/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -59,11 +66,36 @@ describe("central action registry", () => {
     const action = getActionDefinition(ACTION_ID);
     expect(action).toBeDefined();
     expect(action?.id).toBe(ACTION_ID);
-    expect(action?.triggerLabel).toBe("Pick an image on this page");
+    expect(action?.triggerLabel).toBe("Verify an image on this page");
     expect(action?.resultType).toBe("mode-dependent");
     expect(action?.settings).toContain("verificationMode");
     expect(action?.handler).toBeTypeOf("function");
-    expect(ACTION_REGISTRY).toHaveLength(3);
+    expect(ACTION_REGISTRY).toHaveLength(5);
+    expect(ACTION_REGISTRY.map((action) => action.id)).toEqual([
+      ACTION_ID,
+      DOWNLOAD_ACTION_ID,
+      AUDIO_ACTION_ID,
+      LINK_ACTION_ID,
+      PICK_VIDEO_ACTION_ID,
+    ]);
+  });
+
+  it("lists the page-link action after the image actions and keeps it off the image picker", () => {
+    const action = getActionDefinition(LINK_ACTION_ID);
+    expect(action?.inputType).toBe("page-link");
+    expect(action?.triggerLabel).toBe("Send this page's link to Telegram");
+    expect(action?.resultType).toBe("telegram-delivery");
+    expect(action?.settings).toEqual([]);
+    expect(action?.handler).toBeTypeOf("function");
+  });
+
+  it("sends a picked video link through the page-link handler", () => {
+    const action = getActionDefinition(PICK_VIDEO_ACTION_ID);
+    expect(action?.inputType).toBe("video-pick");
+    expect(action?.triggerLabel).toBe("Pick a video on this page");
+    expect(action?.resultType).toBe("telegram-delivery");
+    expect(action?.settings).toEqual([]);
+    expect(action?.handler).toBe(getActionDefinition(LINK_ACTION_ID)?.handler);
   });
 
   it("uses the official OpenAI Verify website after a Website-mode pick", async () => {

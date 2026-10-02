@@ -83,26 +83,149 @@ function pickerStartDocument(): void {
   ).not.toBeNull();
 }
 
-describe("image picker lifecycle", () => {
-  beforeEach(() => {
-    vi.restoreAllMocks();
-    vi.resetModules();
-    document.body.replaceChildren();
-    document.documentElement.style.cursor = "";
-    document
-      .querySelectorAll('[data-provenance-lens-picker="overlay"]')
-      .forEach((element) => element.remove());
-    document
-      .querySelectorAll('[data-provenance-lens-toast="true"]')
-      .forEach((element) => element.remove());
-    Reflect.deleteProperty(document, "elementsFromPoint");
-    Reflect.deleteProperty(document, "elementFromPoint");
-    Reflect.deleteProperty(window, "requestAnimationFrame");
-    Reflect.deleteProperty(window, "cancelAnimationFrame");
-    (
-      window as Window & { __provenanceLensPickerInstalled?: boolean | string }
-    ).__provenanceLensPickerInstalled = false;
+function startLinkMessage(sendPickerMessage: (message: unknown) => void): void {
+  bindMessage(sendPickerMessage);
+  sendPickerMessage({
+    type: "picker-start",
+    runtimeVersion: PICKER_RUNTIME_VERSION,
+    sessionToken: SESSION_TOKEN,
+    mode: "link",
   });
+}
+
+type ClickListener = (event: MouseEvent) => void;
+
+/**
+ * The newest picker's capture-phase listener for one event type. Earlier
+ * tests leave their pickers' document listeners behind, so a dispatched event
+ * would reach those too.
+ */
+function listenerOf<T extends Event>(
+  addEventListener: { mock: { calls: unknown[][] } },
+  type: string,
+): (event: T) => void {
+  const listener = addEventListener.mock.calls
+    .slice()
+    .reverse()
+    .find(([registeredType]) => registeredType === type)?.[1];
+  if (typeof listener !== "function")
+    throw new Error(`Missing ${type} listener`);
+  return listener as (event: T) => void;
+}
+
+function clickListenerOf(addEventListener: {
+  mock: { calls: unknown[][] };
+}): ClickListener {
+  return listenerOf<MouseEvent>(addEventListener, "click");
+}
+
+/** jsdom never dispatches a trusted click, so the listener gets one directly. */
+function trustedClick(
+  listener: ClickListener,
+  clientX: number,
+  clientY: number,
+): void {
+  listener({
+    clientX,
+    clientY,
+    isTrusted: true,
+    preventDefault: vi.fn(),
+    stopPropagation: vi.fn(),
+    stopImmediatePropagation: vi.fn(),
+  } as unknown as MouseEvent);
+}
+
+function hitTest(elements: Element[]): void {
+  Object.defineProperty(document, "elementsFromPoint", {
+    configurable: true,
+    value: (): Element[] => elements,
+  });
+}
+
+/** Without requestAnimationFrame the picker renders on a zero timeout. */
+function flush(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function captureOverlayShadow(): { value: ShadowRoot | null } {
+  const originalAttachShadow = Object.getOwnPropertyDescriptor(
+    Element.prototype,
+    "attachShadow",
+  )?.value as (init: ShadowRootInit) => ShadowRoot;
+  const capture: { value: ShadowRoot | null } = { value: null };
+  vi.spyOn(Element.prototype, "attachShadow").mockImplementation(function (
+    this: Element,
+    init: ShadowRootInit,
+  ): ShadowRoot {
+    const shadow = Reflect.apply(originalAttachShadow, this, [init]);
+    if (
+      this instanceof HTMLElement &&
+      this.dataset["provenanceLensPicker"] === "overlay"
+    )
+      capture.value = shadow;
+    return shadow;
+  });
+  return capture;
+}
+
+/** An X post as rendered on the timeline: author link, time permalink, text. */
+function xPost(
+  status: string,
+  withVideo: boolean,
+): { article: HTMLElement; author: HTMLAnchorElement; text: HTMLElement } {
+  const article = document.createElement("article");
+  const header = document.createElement("div");
+  const author = document.createElement("a");
+  author.href = "https://x.com/alice";
+  author.textContent = "Alice";
+  const permalink = document.createElement("a");
+  permalink.href = status;
+  const time = document.createElement("time");
+  time.textContent = "2h";
+  permalink.append(time);
+  header.append(author, permalink);
+  const text = document.createElement("div");
+  text.textContent = "A post";
+  article.append(header, text);
+  if (withVideo) {
+    const player = document.createElement("div");
+    const video = document.createElement("video");
+    video.poster = "https://pbs.example/poster.jpg";
+    player.append(video);
+    article.append(player);
+  }
+  document.body.append(article);
+  return { article, author, text };
+}
+
+function overlayElement(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    '[data-provenance-lens-picker="overlay"]',
+  );
+}
+
+function resetPickerEnvironment(): void {
+  vi.restoreAllMocks();
+  vi.resetModules();
+  document.body.replaceChildren();
+  document.documentElement.style.cursor = "";
+  document
+    .querySelectorAll('[data-provenance-lens-picker="overlay"]')
+    .forEach((element) => element.remove());
+  document
+    .querySelectorAll('[data-provenance-lens-toast="true"]')
+    .forEach((element) => element.remove());
+  Reflect.deleteProperty(document, "elementsFromPoint");
+  Reflect.deleteProperty(document, "elementFromPoint");
+  Reflect.deleteProperty(window, "requestAnimationFrame");
+  Reflect.deleteProperty(window, "cancelAnimationFrame");
+  (
+    window as Window & { __provenanceLensPickerInstalled?: boolean | string }
+  ).__provenanceLensPickerInstalled = false;
+}
+
+describe("image picker lifecycle", () => {
+  beforeEach(resetPickerEnvironment);
 
   it("installs the current runtime over a legacy boolean marker", async () => {
     const { sendPickerMessage } = installChrome();
@@ -683,6 +806,212 @@ describe("image picker lifecycle", () => {
     expect(sendMessage.mock.calls[0]?.[0]).toMatchObject({
       type: "picker-selected",
       selection: { url: "https://page.example/shadow-image.png" },
+    });
+  });
+});
+
+describe("video picker (link mode)", () => {
+  beforeEach(resetPickerEnvironment);
+
+  it("sends an X post's own status link when the post shows a video", async () => {
+    const { sendMessage, sendPickerMessage } = installChrome();
+    const shadow = captureOverlayShadow();
+    const { author } = xPost("https://x.com/alice/status/123?s=20", true);
+    // Inside a post no other link counts, not even the author's profile.
+    hitTest([author]);
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    await import("../../src/picker.js");
+    startLinkMessage(sendPickerMessage);
+    const overlay = overlayElement();
+    expect(overlay?.getAttribute("aria-label")).toBe(
+      "Provenance Lens video picker",
+    );
+    expect(document.documentElement.style.cursor).toBe("crosshair");
+
+    document.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: 20, clientY: 30 }),
+    );
+    await flush();
+    const label = shadow.value?.querySelector<HTMLElement>(
+      "[data-picker-label]",
+    );
+    expect(label?.textContent).toBe(
+      "Post link · x.com · Click to send · Esc to cancel",
+    );
+    expect(label?.dataset["linkHost"]).toBe("x.com");
+    expect(overlay?.style.display).toBe("block");
+    expect(overlay?.getAttribute("aria-label")).toBe(
+      "Provenance Lens video picker. Post link · x.com · Click to send · Esc to cancel",
+    );
+
+    trustedClick(clickListenerOf(addEventListener), 20, 30);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith({
+      type: "picker-link-selected",
+      sessionToken: SESSION_TOKEN,
+      url: "https://x.com/alice/status/123",
+    });
+    expect(overlayElement()).toBeNull();
+    expect(document.documentElement.style.cursor).toBe("");
+  });
+
+  it("picks nothing from an X post without a video, and Escape cancels", async () => {
+    const { sendMessage, sendPickerMessage } = installChrome();
+    const { text } = xPost("https://x.com/alice/status/456", false);
+    hitTest([text]);
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    await import("../../src/picker.js");
+    startLinkMessage(sendPickerMessage);
+    document.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: 20, clientY: 30 }),
+    );
+    await flush();
+    const overlay = overlayElement();
+    expect(overlay?.style.display).toBe("none");
+
+    trustedClick(clickListenerOf(addEventListener), 20, 30);
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(overlay?.isConnected).toBe(true);
+
+    listenerOf<KeyboardEvent>(
+      addEventListener,
+      "keydown",
+    )({
+      key: "Escape",
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as KeyboardEvent);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith({
+      type: "picker-cancelled",
+      sessionToken: SESSION_TOKEN,
+    });
+    expect(overlayElement()).toBeNull();
+    expect(document.documentElement.style.cursor).toBe("");
+  });
+
+  it("sends a YouTube card's one watch link, even from its channel link", async () => {
+    const { sendMessage, sendPickerMessage } = installChrome();
+    const shadow = captureOverlayShadow();
+    const card = document.createElement("div");
+    const thumbnail = document.createElement("a");
+    thumbnail.href = "https://www.youtube.com/watch?v=abcdefghijk&t=5s";
+    const title = document.createElement("a");
+    title.href = "https://www.youtube.com/watch?v=abcdefghijk";
+    title.textContent = "A video";
+    const channel = document.createElement("a");
+    channel.href = "https://www.youtube.com/@channel";
+    channel.textContent = "A channel";
+    card.append(thumbnail, title, channel);
+    document.body.append(card);
+    hitTest([channel]);
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    await import("../../src/picker.js");
+    startLinkMessage(sendPickerMessage);
+    document.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: 20, clientY: 30 }),
+    );
+    await flush();
+    expect(
+      shadow.value?.querySelector<HTMLElement>("[data-picker-label]")
+        ?.textContent,
+    ).toBe("Post link · www.youtube.com · Click to send · Esc to cancel");
+
+    trustedClick(clickListenerOf(addEventListener), 20, 30);
+    expect(sendMessage).toHaveBeenCalledWith({
+      type: "picker-link-selected",
+      sessionToken: SESSION_TOKEN,
+      url: "https://www.youtube.com/watch?v=abcdefghijk",
+    });
+  });
+
+  it("picks nothing from a container that holds two YouTube videos", async () => {
+    const { sendMessage, sendPickerMessage } = installChrome();
+    const grid = document.createElement("div");
+    const heading = document.createElement("span");
+    heading.textContent = "Up next";
+    grid.append(heading);
+    for (const id of ["abcdefghijk", "zyxwvutsrqp"]) {
+      const link = document.createElement("a");
+      link.href = `https://www.youtube.com/watch?v=${id}`;
+      grid.append(link);
+    }
+    document.body.append(grid);
+    hitTest([heading]);
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    await import("../../src/picker.js");
+    startLinkMessage(sendPickerMessage);
+
+    trustedClick(clickListenerOf(addEventListener), 20, 30);
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(overlayElement()).not.toBeNull();
+  });
+
+  it("sends another site's nearest link without its fragment", async () => {
+    const { sendMessage, sendPickerMessage } = installChrome();
+    const shadow = captureOverlayShadow();
+    const link = document.createElement("a");
+    link.href = "https://page.example/post?id=1#comments";
+    const inner = document.createElement("span");
+    inner.textContent = "Open";
+    link.append(inner);
+    document.body.append(link);
+    hitTest([inner]);
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    await import("../../src/picker.js");
+    startLinkMessage(sendPickerMessage);
+    document.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: 20, clientY: 30 }),
+    );
+    await flush();
+    expect(
+      shadow.value?.querySelector<HTMLElement>("[data-picker-label]")
+        ?.textContent,
+    ).toBe("Post link · page.example · Click to send · Esc to cancel");
+
+    trustedClick(clickListenerOf(addEventListener), 20, 30);
+    expect(sendMessage).toHaveBeenCalledWith({
+      type: "picker-link-selected",
+      sessionToken: SESSION_TOKEN,
+      url: "https://page.example/post?id=1",
+    });
+  });
+
+  it("keeps image mode unchanged on a post that shows a video", async () => {
+    const { sendMessage, sendPickerMessage } = installChrome();
+    const shadow = captureOverlayShadow();
+    const { article } = xPost("https://x.com/alice/status/123", true);
+    const video = article.querySelector("video");
+    if (!video) throw new Error("Missing video");
+    Object.defineProperty(video, "getBoundingClientRect", {
+      configurable: true,
+      value: () => imageRect(10, 20, 320, 180),
+    });
+    hitTest([video]);
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    await import("../../src/picker.js");
+    startMessage(sendPickerMessage);
+    expect(overlayElement()?.getAttribute("aria-label")).toBe(
+      "Provenance Lens image picker",
+    );
+    document.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: 20, clientY: 30 }),
+    );
+    await flush();
+    expect(
+      shadow.value?.querySelector<HTMLElement>("[data-picker-label]")
+        ?.textContent,
+    ).toBe("Video poster · 320 × 180 px · Click to select · Esc to cancel");
+
+    trustedClick(clickListenerOf(addEventListener), 20, 30);
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+    expect(sendMessage.mock.calls[0]?.[0]).toMatchObject({
+      type: "picker-selected",
+      sessionToken: SESSION_TOKEN,
+      selection: {
+        url: "https://pbs.example/poster.jpg",
+        sourceKind: "video-poster",
+      },
     });
   });
 });

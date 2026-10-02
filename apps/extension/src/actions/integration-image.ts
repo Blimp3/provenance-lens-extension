@@ -6,10 +6,12 @@ import {
 
 import {
   addPendingIntegrationOperation,
+  assertIntegrationMediaDigest,
   createIntegrationOperation,
   getIntegrationSession,
   IntegrationClientError,
   hashIntegrationMedia,
+  isIntegrationOperationSettled,
   markIntegrationOutboxUploaded,
   removeIntegrationOutbox,
   removePendingIntegrationOperation,
@@ -101,18 +103,23 @@ export async function runIntegratedImageAction(
         image.mime,
         expectedSession,
       );
-      await markIntegrationOutboxUploaded(session.accountId, operationId);
-    } else {
-      await markIntegrationOutboxUploaded(session.accountId, operationId);
     }
-    if (status.state !== "completed" && status.state !== "failed") {
+    // As in the resume path, the outbox keeps the bytes until DigiBot no
+    // longer awaits them, so a later startup can still upload them.
+    if (status.state !== "awaiting_upload")
+      await markIntegrationOutboxUploaded(session.accountId, operationId);
+    if (!isIntegrationOperationSettled(status)) {
       status = await waitForIntegrationOperation(
         operationId,
         undefined,
         expectedSession,
       );
     }
-    if (status.state === "completed" || status.state === "failed") {
+    assertIntegrationMediaDigest(status, imageSha256);
+    // A saved Check verdict is final even while DigiBot still archives the
+    // original to Telegram: the bytes left the outbox when the upload was
+    // marked, and History reports the archive, so nothing local remains.
+    if (isIntegrationOperationSettled(status)) {
       await removePendingIntegrationOperation(session.accountId, operationId);
       await removeIntegrationOutbox(session.accountId, operationId);
       outboxSaved = false;

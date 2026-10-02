@@ -3,10 +3,9 @@
 Use this for every public source release of this edition. Work from a clean
 checkout with Node.js 24.20.0 (`.nvmrc`) and npm 11.6.2.
 
-No public release has been tagged yet. The source is still the 0.8.0 base
-recorded in [SOURCE_PROVENANCE.md](../SOURCE_PROVENANCE.md) and has not been
-synced to private 0.8.1, so the first release starts at step 1 with the
-private commit chosen for it.
+The current source is v1.0.0 from private base `4978fa8`, recorded in
+[SOURCE_PROVENANCE.md](../SOURCE_PROVENANCE.md). The next release starts at
+step 1 with the private commit chosen for it.
 
 1. **Copy only public source.** Bring over changes from the new private
    commit only for the included paths in
@@ -43,9 +42,8 @@ private commit chosen for it.
    base commit, the review date and any new public-edition difference. Step 8
    tags this same commit, so write the status lines in `SOURCE_PROVENANCE.md`,
    `README.md`, `CLAUDE.md` and this checklist for the release being cut (for
-   example "vX.Y.Z source from private base `<sha>`") and remove the "No
-   public release has been tagged yet" lines. Update `THIRD_PARTY_NOTICES.txt`
-   when the bundled packages change.
+   example "vX.Y.Z source from private base `<sha>`"). Update
+   `THIRD_PARTY_NOTICES.txt` when the bundled packages change.
 6. **Regenerate the manifest** after the last file change (stage new files
    first, since it lists tracked files), then check it:
 

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Provenance Lens",
   "description": "Check image Content Credentials and supported OpenAI image or short-audio provenance signals.",
-  "version": "0.8.0",
+  "version": "1.0.0",
   "permissions": ["activeTab", "contextMenus", "scripting", "storage"],
   "host_permissions": [
     "https://private-media-downloader.yellow-salad-bfde.workers.dev/*"

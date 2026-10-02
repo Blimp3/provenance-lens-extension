@@ -9,10 +9,12 @@ import {
 
 import {
   addPendingIntegrationOperation,
+  assertIntegrationMediaDigest,
   createAudioSegmentOperation,
   createIntegrationOperation,
   IntegrationClientError,
   getIntegrationSession,
+  isIntegrationOperationSettled,
   markIntegrationOutboxUploaded,
   removeIntegrationOutbox,
   removeIntegrationSegmentOutbox,
@@ -89,14 +91,16 @@ export async function runIntegratedAudioFileAction(
         expectedSession,
       );
     }
-    await markIntegrationOutboxUploaded(session.accountId, operationId);
-    if (status.state !== "completed" && status.state !== "failed")
+    if (status.state !== "awaiting_upload")
+      await markIntegrationOutboxUploaded(session.accountId, operationId);
+    if (!isIntegrationOperationSettled(status))
       status = await waitForIntegrationOperation(
         operationId,
         undefined,
         expectedSession,
       );
-    if (status.state === "completed" || status.state === "failed") {
+    assertIntegrationMediaDigest(status, mediaSha256);
+    if (isIntegrationOperationSettled(status)) {
       await removePendingIntegrationOperation(session.accountId, operationId);
       await removeIntegrationOutbox(session.accountId, operationId);
       outboxSaved = false;
@@ -166,13 +170,13 @@ export async function runIntegratedAudioSegmentAction(
       expectedSession,
     );
     await removeIntegrationSegmentOutbox(session.accountId, operationId);
-    if (status.state !== "completed" && status.state !== "failed")
+    if (!isIntegrationOperationSettled(status))
       status = await waitForIntegrationOperation(
         operationId,
         undefined,
         expectedSession,
       );
-    if (status.state === "completed" || status.state === "failed")
+    if (isIntegrationOperationSettled(status))
       await removePendingIntegrationOperation(session.accountId, operationId);
     return {
       status,

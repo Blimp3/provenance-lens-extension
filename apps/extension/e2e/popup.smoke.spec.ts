@@ -40,7 +40,7 @@ test("loads the unpacked extension popup", async () => {
     await page.goto(`chrome-extension://${extensionId}/popup.html`);
     await expect(page).toHaveTitle(/Provenance Lens/u);
     await expect(
-      page.getByRole("button", { name: "Pick an image on this page" }),
+      page.getByRole("button", { name: "Verify an image on this page" }),
     ).toBeVisible();
     const popupModeSummary = page.locator("#verification-mode-summary");
     await expect(popupModeSummary).toContainText(/^(Website|API) mode:/u);
