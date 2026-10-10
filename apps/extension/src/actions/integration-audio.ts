@@ -138,6 +138,7 @@ export async function runIntegratedAudioSegmentAction(
     sessionId: session.sessionId,
   };
   const source = parseVideoSourceUrl(sourceUrl);
+  source.hash = "";
   const segment = IntegrationSegmentSchema.parse({
     startSeconds,
     endSeconds,

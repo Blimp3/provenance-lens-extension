@@ -50,8 +50,10 @@ export async function openAudioCheck(): Promise<void> {
         ["http:", "https:"].includes(parsed.protocol) &&
         !parsed.username &&
         !parsed.password
-      )
+      ) {
+        parsed.hash = "";
         sourceUrl = parsed.toString();
+      }
     }
   } catch {
     // The audio page still supports manually entering a video URL.

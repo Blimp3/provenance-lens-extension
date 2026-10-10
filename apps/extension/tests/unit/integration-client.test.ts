@@ -205,6 +205,491 @@ describe("connected integration request contract", () => {
     ]);
   });
 
+  it("bounds both successful and error JSON responses", async () => {
+    installChrome();
+    const oversizedHeaders = {
+      "Content-Type": "application/json",
+      "Content-Length": String(1024 * 1024 + 1),
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            pairId: "pair-fixture",
+            confirmationCode: "ABC-123",
+            expiresAt: "2099-09-16T10:10:00.000Z",
+          }),
+          { headers: oversizedHeaders },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "forbidden",
+              message: "Not allowed.",
+              retryable: false,
+            },
+          }),
+          { status: 403, headers: oversizedHeaders },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { createPairing } = await import("../../src/integration-client.js");
+
+    await expect(createPairing()).rejects.toMatchObject({
+      name: "ResponseBodyTooLargeError",
+    });
+    await expect(createPairing()).rejects.toMatchObject({
+      code: "integration_request_failed",
+      status: 403,
+    });
+  });
+
+  it("allows history above 1 MiB and rejects it above the 4 MiB cap", async () => {
+    const { local } = installChrome();
+    await local.set({ [sessionKey]: session });
+    const body = `${JSON.stringify({ operations: [], nextCursor: null })}${" ".repeat(1024 * 1024 + 1)}`;
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(body))
+        .mockResolvedValueOnce(
+          new Response("{}", {
+            headers: { "Content-Length": String(4 * 1024 * 1024 + 1) },
+          }),
+        ),
+    );
+    const { getIntegrationHistory } =
+      await import("../../src/integration-client.js");
+
+    await expect(getIntegrationHistory("30d")).resolves.toEqual({
+      operations: [],
+      nextCursor: null,
+    });
+    await expect(getIntegrationHistory("30d")).rejects.toMatchObject({
+      name: "ResponseBodyTooLargeError",
+    });
+  });
+
+  it("aborts every request at the shared transport deadline", async () => {
+    installChrome();
+    const deadline = new AbortController();
+    const timeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockReturnValue(deadline.signal);
+    const fetchMock = vi.fn(
+      (_url: string, init: RequestInit = {}) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Timed out", "TimeoutError")),
+            { once: true },
+          );
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { createPairing } = await import("../../src/integration-client.js");
+
+    const pending = createPairing();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    deadline.abort(new DOMException("Timed out", "TimeoutError"));
+
+    await expect(pending).rejects.toMatchObject({
+      code: "request_timeout",
+      retryable: true,
+    });
+    expect(timeout).toHaveBeenCalledWith(30_000);
+  });
+
+  it.each([
+    { source: "caller", code: "user_cancelled", retryable: false },
+    { source: "deadline", code: "request_timeout", retryable: true },
+  ] as const)(
+    "maps a $source abort while reading JSON",
+    async ({ source, code, retryable }) => {
+      const { local } = installChrome();
+      await local.set({ [sessionKey]: session });
+      const caller = new AbortController();
+      const deadline = new AbortController();
+      vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+      const cancel = vi.fn();
+      let startReading!: () => void;
+      const reading = new Promise<void>((resolve) => {
+        startReading = resolve;
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          () =>
+            new Response(
+              new ReadableStream<Uint8Array>({
+                pull() {
+                  startReading();
+                },
+                cancel,
+              }),
+              { headers: { "Content-Type": "application/json" } },
+            ),
+        ),
+      );
+      const { createIntegrationOperation } =
+        await import("../../src/integration-client.js");
+
+      const pending = createIntegrationOperation(
+        operationInput(),
+        "2026-09-16T10:01:02.000Z",
+        undefined,
+        caller.signal,
+      );
+      await reading;
+      (source === "caller" ? caller : deadline).abort(
+        new DOMException("Stopped", "AbortError"),
+      );
+
+      await expect(pending).rejects.toMatchObject({ code, retryable });
+      expect(cancel).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("allows a longer bounded deadline for media upload", async () => {
+    const { local } = installChrome();
+    await local.set({ [sessionKey]: session });
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(awaitingUpload)));
+    const { uploadIntegrationMedia } =
+      await import("../../src/integration-client.js");
+
+    await uploadIntegrationMedia(
+      operationId,
+      new Uint8Array([1, 2, 3, 4]),
+      "image/png",
+    );
+
+    expect(timeout).toHaveBeenLastCalledWith(120_000);
+  });
+
+  it("scales the media upload deadline at 64 KiB per second", async () => {
+    const { local } = installChrome();
+    await local.set({ [sessionKey]: session });
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(awaitingUpload)));
+    const { uploadIntegrationMedia } =
+      await import("../../src/integration-client.js");
+
+    await uploadIntegrationMedia(
+      operationId,
+      new Uint8Array(8 * 1024 * 1024),
+      "image/png",
+    );
+
+    expect(timeout).toHaveBeenLastCalledWith(128_000);
+  });
+
+  it("uses the shared deadline for link downloads", async () => {
+    const { local } = installChrome();
+    await local.set({ [sessionKey]: session });
+    const deadline = new AbortController();
+    const timeout = vi
+      .spyOn(AbortSignal, "timeout")
+      .mockReturnValue(deadline.signal);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init: RequestInit = {}) =>
+          new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener(
+              "abort",
+              () => reject(new DOMException("Timed out", "TimeoutError")),
+              { once: true },
+            );
+          }),
+      ),
+    );
+    const { createLinkDownload } =
+      await import("../../src/integration-client.js");
+
+    const pending = createLinkDownload(
+      operationId,
+      "https://video.example/watch?v=fixture",
+    );
+    await vi.waitFor(() => expect(timeout).toHaveBeenCalledOnce());
+    deadline.abort(new DOMException("Timed out", "TimeoutError"));
+
+    await expect(pending).rejects.toMatchObject({
+      code: "request_timeout",
+      retryable: true,
+    });
+    expect(timeout).toHaveBeenCalledWith(30_000);
+  });
+
+  it("limits a late status request to the remaining poll budget", async () => {
+    const { local } = installChrome();
+    await local.set({ [sessionKey]: session });
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const input = operationInput(operationId, 4, "check");
+      const processing = {
+        ...awaitingUpload,
+        action: "check",
+        state: "processing",
+        mediaSha256: input.media.mediaSha256,
+      };
+      const deadlines: number[] = [];
+      vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+        deadlines.push(milliseconds);
+        return new AbortController().signal;
+      });
+      const fetchMock = vi
+        .fn()
+        .mockImplementationOnce(() => {
+          vi.setSystemTime(58_500);
+          return response(processing);
+        })
+        .mockImplementationOnce(() =>
+          response({
+            ...processing,
+            envelope: savedCheckEnvelope(input),
+          }),
+        );
+      vi.stubGlobal("fetch", fetchMock);
+      const { waitForIntegrationOperation } =
+        await import("../../src/integration-client.js");
+
+      const pending = waitForIntegrationOperation(operationId);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(pending).resolves.toMatchObject({ state: "processing" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(deadlines).toEqual([30_000, 500]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns the latest status when the final poll reaches the budget deadline", async () => {
+    const { local } = installChrome();
+    await local.set({ [sessionKey]: session });
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const processing = {
+        ...awaitingUpload,
+        state: "processing",
+      };
+      const deadlines: number[] = [];
+      vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+        deadlines.push(milliseconds);
+        const controller = new AbortController();
+        if (milliseconds === 500) {
+          setTimeout(
+            () =>
+              controller.abort(new DOMException("Timed out", "TimeoutError")),
+            milliseconds,
+          );
+        }
+        return controller.signal;
+      });
+      const fetchMock = vi.fn((_url: string, init: RequestInit = {}) => {
+        if (fetchMock.mock.calls.length === 1) {
+          vi.setSystemTime(58_500);
+          return response(processing);
+        }
+        return new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Timed out", "TimeoutError")),
+            { once: true },
+          );
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const { waitForIntegrationOperation } =
+        await import("../../src/integration-client.js");
+
+      const pending = waitForIntegrationOperation(operationId);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(500);
+
+      await expect(pending).resolves.toMatchObject({ state: "processing" });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(deadlines).toEqual([30_000, 500]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives refresh a fresh deadline during the final poll", async () => {
+    const { local } = installChrome();
+    await local.set({ [sessionKey]: session });
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const expiredSession = {
+        ...session,
+        accessExpiresAt: "1970-01-01T00:00:00.000Z",
+      };
+      const refreshedSession = {
+        ...session,
+        accessToken: "access-token-refreshed",
+        accessExpiresAt: "2099-09-16T10:15:00.000Z",
+        refreshToken: "refresh-token-refreshed",
+      };
+      const input = operationInput(operationId, 4, "check");
+      const processing = {
+        ...awaitingUpload,
+        action: "check",
+        state: "processing",
+        mediaSha256: input.media.mediaSha256,
+      };
+      const deadlines: number[] = [];
+      vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+        deadlines.push(milliseconds);
+        return new AbortController().signal;
+      });
+      const fetchMock = vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          vi.setSystemTime(58_500);
+          await local.set({ [sessionKey]: expiredSession });
+          return response(processing);
+        })
+        .mockImplementationOnce(() => response(refreshedSession))
+        .mockImplementationOnce(() =>
+          response({
+            ...processing,
+            envelope: savedCheckEnvelope(input),
+          }),
+        );
+      vi.stubGlobal("fetch", fetchMock);
+      const { waitForIntegrationOperation } =
+        await import("../../src/integration-client.js");
+
+      const pending = waitForIntegrationOperation(operationId);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(pending).resolves.toMatchObject({ state: "processing" });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(String(fetchMock.mock.calls[1]?.[0])).toContain(
+        "/sessions/refresh",
+      );
+      expect(deadlines).toEqual([30_000, 500, 30_000]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the request deadline around a fresh 401 refresh deadline", async () => {
+    const { local } = installChrome();
+    await local.set({ [sessionKey]: session });
+    const refreshedSession = {
+      ...session,
+      accessToken: "access-token-refreshed",
+      accessExpiresAt: "2099-09-16T10:15:00.000Z",
+      refreshToken: "refresh-token-refreshed",
+    };
+    const deadlines: AbortSignal[] = [];
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+      const deadline = new AbortController();
+      deadlines.push(deadline.signal);
+      return deadline.signal;
+    });
+    const signals: (AbortSignal | null | undefined)[] = [];
+    const fetchMock = vi.fn((url: string, init: RequestInit = {}) => {
+      signals.push(init.signal);
+      if (url.includes("/sessions/refresh")) return response(refreshedSession);
+      return fetchMock.mock.calls.length === 1
+        ? response({}, 401)
+        : response(awaitingUpload);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { createIntegrationOperation } =
+      await import("../../src/integration-client.js");
+
+    await expect(
+      createIntegrationOperation(operationInput(), "2026-09-16T10:01:02.000Z"),
+    ).resolves.toMatchObject({ operationId });
+
+    expect(timeout).toHaveBeenCalledTimes(2);
+    expect(timeout).toHaveBeenNthCalledWith(1, 30_000);
+    expect(timeout).toHaveBeenNthCalledWith(2, 30_000);
+    expect(signals).toEqual([deadlines[0], deadlines[1], deadlines[0]]);
+  });
+
+  it.each([
+    { source: "caller", code: "user_cancelled", retryable: false },
+    { source: "deadline", code: "request_timeout", retryable: true },
+  ] as const)(
+    "maps a queued refresh lock $source abort",
+    async ({ source, code, retryable }) => {
+      const { local } = installChrome();
+      await local.set({
+        [sessionKey]: {
+          ...session,
+          accessExpiresAt: "1970-01-01T00:00:00.000Z",
+        },
+      });
+      const caller = new AbortController();
+      const deadline = new AbortController();
+      vi.spyOn(AbortSignal, "timeout").mockReturnValue(deadline.signal);
+      const lockRequest = vi.fn(
+        (
+          _name: string,
+          options: LockOptions,
+          _callback: () => Promise<unknown>,
+        ) => {
+          void _callback;
+          return new Promise<unknown>((_resolve, reject) => {
+            options.signal?.addEventListener(
+              "abort",
+              () => reject(new DOMException("Timed out", "TimeoutError")),
+              { once: true },
+            );
+          });
+        },
+      );
+      Object.defineProperty(navigator, "locks", {
+        configurable: true,
+        value: { request: lockRequest },
+      });
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const { createIntegrationOperation } =
+        await import("../../src/integration-client.js");
+
+      const pending = createIntegrationOperation(
+        operationInput(),
+        "2026-09-16T10:01:02.000Z",
+        undefined,
+        source === "caller" ? caller.signal : undefined,
+      );
+      await vi.waitFor(() => expect(lockRequest).toHaveBeenCalledOnce());
+      (source === "caller" ? caller : deadline).abort(
+        new DOMException(
+          source === "caller" ? "Stopped" : "Timed out",
+          source === "caller" ? "AbortError" : "TimeoutError",
+        ),
+      );
+
+      await expect(pending).rejects.toMatchObject({
+        code,
+        retryable,
+      });
+      const lockOptions = lockRequest.mock.calls[0]?.[1];
+      expect(lockOptions?.signal?.aborted).toBe(true);
+      if (source === "caller") {
+        expect(lockOptions?.signal).not.toBe(caller.signal);
+        expect(lockOptions?.signal).not.toBe(deadline.signal);
+      } else {
+        expect(lockOptions?.signal).toBe(deadline.signal);
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
   it("refuses a one-sided or inverted clip before any request", async () => {
     const { local } = installChrome();
     await local.set({ [sessionKey]: session });
@@ -438,6 +923,52 @@ describe("connected integration request contract", () => {
     ).toBeNull();
   });
 
+  it("strips fragments from legacy segment outbox URLs during recovery", async () => {
+    const { local } = installChrome();
+    const createdAt = "2026-09-16T10:01:02.000Z";
+    await local.set({
+      [sessionKey]: session,
+      [pendingOperationsKey]: [
+        {
+          accountId: session.accountId,
+          sessionId: session.sessionId,
+          operationId,
+          createdAt,
+        },
+      ],
+    });
+    await rawOutboxPut(`${session.accountId}:segment:${operationId}`, {
+      accountId: session.accountId,
+      sessionId: session.sessionId,
+      operationId,
+      createdAt,
+      expiresAt: "2099-09-17T10:00:00.000Z",
+      sourceUrl:
+        "https://video.example/watch?id=fixture&signature=a%2Bb#private-state",
+      startSeconds: 5,
+      endSeconds: 35,
+    });
+    let sentBody: unknown;
+    const fetchMock = vi.fn((_url: string, init: RequestInit = {}) => {
+      if (typeof init.body !== "string") throw new Error("Expected JSON body");
+      sentBody = JSON.parse(init.body) as unknown;
+      return response({
+        ...awaitingUpload,
+        action: "check",
+        state: "processing",
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { resumePendingIntegrationOperations } =
+      await import("../../src/integration-client.js");
+
+    await resumePendingIntegrationOperations();
+
+    expect(sentBody).toMatchObject({
+      sourceUrl: "https://video.example/watch?id=fixture&signature=a%2Bb",
+    });
+  });
+
   it("keeps the outbox and pending entry while an upload is still awaited despite a saved result", async () => {
     const { local } = installChrome();
     await local.set({ [sessionKey]: session });
@@ -604,6 +1135,65 @@ describe("connected integration request contract", () => {
     ).rejects.toMatchObject({ code: "integration_session_changed" });
     expect(local.values[sessionKey]).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("stores rotated tokens when the caller aborts during refresh", async () => {
+    const { local } = installChrome();
+    const expiredSession = {
+      ...session,
+      accessExpiresAt: "2000-01-01T00:00:00.000Z",
+    };
+    const refreshedSession = {
+      ...session,
+      accessToken: "access-token-refreshed",
+      accessExpiresAt: "2099-09-16T10:15:00.000Z",
+      refreshToken: "refresh-token-refreshed",
+    };
+    await local.set({ [sessionKey]: expiredSession });
+    const caller = new AbortController();
+    const deadlines: AbortSignal[] = [];
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+      const deadline = new AbortController();
+      deadlines.push(deadline.signal);
+      return deadline.signal;
+    });
+    let startRefresh!: () => void;
+    let finishRefresh!: (value: Response) => void;
+    const refreshStarted = new Promise<void>((resolve) => {
+      startRefresh = resolve;
+    });
+    const refreshResponse = new Promise<Response>((resolve) => {
+      finishRefresh = resolve;
+    });
+    let refreshSignal: AbortSignal | null | undefined;
+    const fetchMock = vi.fn((url: string, init: RequestInit = {}) => {
+      if (url.includes("/sessions/refresh")) {
+        refreshSignal = init.signal;
+        startRefresh();
+        return refreshResponse;
+      }
+      return init.signal?.aborted
+        ? Promise.reject(new DOMException("Stopped", "AbortError"))
+        : Promise.resolve(response(awaitingUpload));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { createIntegrationOperation } =
+      await import("../../src/integration-client.js");
+
+    const pending = createIntegrationOperation(
+      operationInput(),
+      "2026-09-16T10:01:02.000Z",
+      undefined,
+      caller.signal,
+    );
+    await refreshStarted;
+    caller.abort(new DOMException("Stopped", "AbortError"));
+    finishRefresh(response(refreshedSession));
+
+    await expect(pending).rejects.toMatchObject({ code: "user_cancelled" });
+    expect(refreshSignal).toBe(deadlines[1]);
+    expect(refreshSignal).not.toBe(caller.signal);
+    expect(local.values[sessionKey]).toEqual(refreshedSession);
   });
 
   it("serializes refresh across callers and reuses the rotated session", async () => {

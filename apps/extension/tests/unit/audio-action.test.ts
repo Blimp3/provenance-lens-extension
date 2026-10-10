@@ -8,7 +8,10 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { findLocalCache, saveLocalCache } from "../../src/cache.js";
-import { verifyAudioFile } from "../../src/actions/verify-openai-audio.js";
+import {
+  openAudioCheck,
+  verifyAudioFile,
+} from "../../src/actions/verify-openai-audio.js";
 
 vi.mock("../../src/cache.js", () => ({
   findLocalCache: vi.fn(),
@@ -31,6 +34,37 @@ const settings: ExtensionSettings = {
   localCacheLimit: 100,
   disclosureVersion: 2,
 };
+
+it("removes the active tab fragment before prefilling a video URL", async () => {
+  const create = vi
+    .fn<(properties: chrome.tabs.CreateProperties) => Promise<void>>()
+    .mockResolvedValue(undefined);
+  Object.defineProperty(globalThis, "chrome", {
+    configurable: true,
+    value: {
+      runtime: {
+        getURL: (path: string) => `chrome-extension://fixture/${path}`,
+      },
+      tabs: {
+        query: vi.fn().mockResolvedValue([
+          {
+            url: "https://video.example/watch?id=fixture&sig=query-secret#access_token=fragment-secret",
+          },
+        ]),
+        create,
+      },
+    },
+  });
+
+  await openAudioCheck();
+
+  const created = create.mock.calls[0]?.[0];
+  if (!created?.url) throw new Error("Audio page was not opened.");
+  const opened = new URL(created.url);
+  expect(opened.searchParams.get("source")).toBe(
+    "https://video.example/watch?id=fixture&sig=query-secret",
+  );
+});
 
 function audioFile(): File {
   const sampleRate = 8_000;

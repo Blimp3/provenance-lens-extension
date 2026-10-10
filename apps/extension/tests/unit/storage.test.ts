@@ -129,25 +129,50 @@ describe("history and transient latest retention", () => {
     });
   });
 
+  it("migrates the legacy default backend to the public default", async () => {
+    await currentLocal.set({
+      [STORAGE_KEYS.settings]: {
+        ...defaultSettings,
+        backendBaseUrl: "http://127.0.0.1:8787",
+      },
+    });
+
+    await expect(getSettings()).resolves.toMatchObject({
+      backendBaseUrl: PRODUCTION_BACKEND_URL,
+    });
+    expect(currentLocal.values[STORAGE_KEYS.settings]).toMatchObject({
+      backendBaseUrl: PRODUCTION_BACKEND_URL,
+    });
+  });
+
+  it("keeps a legacy local backend with its user token", async () => {
+    const settings = {
+      ...defaultSettings,
+      backendBaseUrl: "http://127.0.0.1:8787",
+      clientToken: "local-client-token",
+    };
+    await currentLocal.set({ [STORAGE_KEYS.settings]: settings });
+
+    await expect(getSettings()).resolves.toEqual(settings);
+    expect(currentLocal.values[STORAGE_KEYS.settings]).toEqual(settings);
+  });
+
   it.each([
     "http://127.0.0.1:8787",
     "http://localhost:8787",
     "http://[::1]:8787",
-  ])(
-    "migrates the saved loopback backend %s to the public default",
-    async (url) => {
-      await currentLocal.set({
-        [STORAGE_KEYS.settings]: { ...defaultSettings, backendBaseUrl: url },
-      });
+  ])("preserves the explicitly saved loopback backend %s", async (url) => {
+    const settings = {
+      ...defaultSettings,
+      backendBaseUrl: url,
+      clientToken: "local-client-token",
+    };
 
-      await expect(getSettings()).resolves.toMatchObject({
-        backendBaseUrl: PRODUCTION_BACKEND_URL,
-      });
-      expect(currentLocal.values[STORAGE_KEYS.settings]).toMatchObject({
-        backendBaseUrl: PRODUCTION_BACKEND_URL,
-      });
-    },
-  );
+    await saveSettings(settings);
+
+    await expect(getSettings()).resolves.toEqual(settings);
+    expect(currentLocal.values[STORAGE_KEYS.settings]).toEqual(settings);
+  });
 
   it("preserves an explicitly configured remote backend", async () => {
     const settings = {
