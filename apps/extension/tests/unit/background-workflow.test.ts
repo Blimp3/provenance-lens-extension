@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   updateSettings: vi.fn(),
   openActionPopup: vi.fn(),
   isIntegrationConnected: vi.fn(),
+  runIntegratedImageAction: vi.fn(),
 }));
 
 vi.mock("../../src/actions/registry.js", () => ({
@@ -66,6 +67,10 @@ vi.mock("../../src/action-popup.js", () => ({
   openActionPopup: mocks.openActionPopup,
 }));
 
+vi.mock("../../src/actions/integration-image.js", () => ({
+  runIntegratedImageAction: mocks.runIntegratedImageAction,
+}));
+
 // The real client has no storage here, so only the connection check is faked.
 vi.mock("../../src/integration-client.js", async (importOriginal) => ({
   ...(await importOriginal<typeof IntegrationClient>()),
@@ -97,6 +102,9 @@ const TAB_ID = 7;
 const WINDOW_ID = 11;
 const PAGE_URL = "https://page.example/";
 const IMAGE_URL = "https://page.example/image.png";
+const DATA_IMAGE_URL = "data:image/png;base64,iVBORw0KGgo=";
+const BLOB_IMAGE_URL =
+  "blob:https://page.example/123e4567-e89b-42d3-a456-426614174000";
 const FIRST_RESULT_ID = "123e4567-e89b-42d3-a456-426614174000";
 const SECOND_RESULT_ID = "223e4567-e89b-42d3-a456-426614174000";
 const DOCUMENT_ID = "document-1";
@@ -377,6 +385,93 @@ describe("background verification workflow boundaries", () => {
     },
   );
 
+  it.each([
+    { url: IMAGE_URL, sourceKind: "img" },
+    { url: DATA_IMAGE_URL, sourceKind: "data-url" },
+  ])(
+    "keeps $sourceKind context-menu images on the direct path",
+    async ({ url, sourceKind }) => {
+      const chromeState = setupChrome();
+      mocks.actionHandler.mockResolvedValue({
+        kind: "api",
+        outcome: detectedOutcome(),
+      });
+      await loadBackground();
+
+      const listener = chromeState.onContextMenuClicked.addListener.mock
+        .calls[0]?.[0] as (
+        info: chrome.contextMenus.OnClickData,
+        tab: chrome.tabs.Tab,
+      ) => void;
+      listener(
+        {
+          menuItemId: ACTION_ID,
+          srcUrl: url,
+          frameId: 0,
+        } as chrome.contextMenus.OnClickData,
+        { id: TAB_ID, url: PAGE_URL, windowId: WINDOW_ID } as chrome.tabs.Tab,
+      );
+
+      await waitForCall(mocks.actionHandler, 1);
+      const input = mocks.actionHandler.mock.calls[0]?.[0] as {
+        selection: { sourceKind: string; url: string };
+      };
+      expect(input.selection).toMatchObject({ sourceKind, url });
+      expect(
+        chromeState.sendMessage.mock.calls.some(
+          ([, message]) =>
+            (message as { type?: string })?.type === "picker-start",
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("starts the picker for a blob context-menu image and asks for a fresh selection", async () => {
+    const chromeState = setupChrome();
+    chromeState.executeScript.mockResolvedValue([
+      { frameId: 0, documentId: DOCUMENT_ID },
+    ]);
+    await loadBackground();
+
+    const listener = chromeState.onContextMenuClicked.addListener.mock
+      .calls[0]?.[0] as (
+      info: chrome.contextMenus.OnClickData,
+      tab: chrome.tabs.Tab,
+    ) => void;
+    listener(
+      {
+        menuItemId: ACTION_ID,
+        srcUrl: BLOB_IMAGE_URL,
+        frameId: 0,
+      } as chrome.contextMenus.OnClickData,
+      { id: TAB_ID, url: PAGE_URL, windowId: WINDOW_ID } as chrome.tabs.Tab,
+    );
+
+    await vi.waitFor(() =>
+      expect(
+        chromeState.sendMessage.mock.calls.some(
+          ([, message]) =>
+            (message as { type?: string })?.type === "picker-start",
+        ),
+      ).toBe(true),
+    );
+    await vi.waitFor(() =>
+      expect(mocks.setWorkflowState).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          status: "picking",
+          actionId: ACTION_ID,
+          message: "Select that image again to verify.",
+        }),
+      ),
+    );
+    expect(mocks.actionHandler).not.toHaveBeenCalled();
+    expect(
+      mocks.setWorkflowState.mock.calls.some(([state]) =>
+        isErrorWorkflowState(state),
+      ),
+    ).toBe(false);
+  });
+
   it("does not append a false error record after a saved result's UI fails", async () => {
     const chromeState = setupChrome();
     mocks.actionHandler.mockResolvedValue({
@@ -412,6 +507,102 @@ describe("background verification workflow boundaries", () => {
     expect(chromeState.setBadgeText).toHaveBeenCalledWith({
       tabId: TAB_ID,
       text: "!",
+    });
+  });
+
+  it("reports connected cancellation as stopping the wait, not rolling back DigiBot", async () => {
+    const chromeState = setupChrome();
+    chromeState.setBadgeText.mockResolvedValue(undefined);
+    mocks.isIntegrationConnected.mockResolvedValue(true);
+    const { IntegrationClientError } =
+      await import("../../src/integration-client.js");
+    const message =
+      "Stopped waiting for DigiBot. If it accepted the request, it may still finish and appear in History.";
+    mocks.runIntegratedImageAction.mockRejectedValue(
+      new IntegrationClientError(message, "user_cancelled", false),
+    );
+    await loadBackground();
+
+    const listener = chromeState.onContextMenuClicked.addListener.mock
+      .calls[0]?.[0] as (
+      info: chrome.contextMenus.OnClickData,
+      tab: chrome.tabs.Tab,
+    ) => void;
+    listener(
+      {
+        menuItemId: ACTION_ID,
+        srcUrl: IMAGE_URL,
+        frameId: 0,
+      } as chrome.contextMenus.OnClickData,
+      { id: TAB_ID, url: PAGE_URL, windowId: WINDOW_ID } as chrome.tabs.Tab,
+    );
+
+    await vi.waitFor(() =>
+      expect(mocks.setWorkflowState).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          status: "idle",
+          actionId: null,
+          message,
+        }),
+      ),
+    );
+    expect(
+      mocks.setWorkflowState.mock.calls.some(([state]) =>
+        isErrorWorkflowState(state),
+      ),
+    ).toBe(false);
+    expect(chromeState.setBadgeText).toHaveBeenCalledWith({
+      tabId: TAB_ID,
+      text: "",
+    });
+  });
+
+  it("treats image retrieval cancellation before submission as a clean stop", async () => {
+    const chromeState = setupChrome();
+    chromeState.setBadgeText.mockResolvedValue(undefined);
+    mocks.isIntegrationConnected.mockResolvedValue(true);
+    const { ExtensionWorkflowError } =
+      await import("../../src/actions/verify-openai-provenance.js");
+    const message = "Image retrieval was cancelled.";
+    mocks.runIntegratedImageAction.mockRejectedValue(
+      new ExtensionWorkflowError("user_cancelled", message),
+    );
+    await loadBackground();
+
+    const listener = chromeState.onContextMenuClicked.addListener.mock
+      .calls[0]?.[0] as (
+      info: chrome.contextMenus.OnClickData,
+      tab: chrome.tabs.Tab,
+    ) => void;
+    listener(
+      {
+        menuItemId: ACTION_ID,
+        srcUrl: IMAGE_URL,
+        frameId: 0,
+      } as chrome.contextMenus.OnClickData,
+      { id: TAB_ID, url: PAGE_URL, windowId: WINDOW_ID } as chrome.tabs.Tab,
+    );
+
+    await vi.waitFor(() =>
+      expect(mocks.setWorkflowState).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: "idle", actionId: null, message }),
+      ),
+    );
+    expect(mocks.createHistoryRecord).not.toHaveBeenCalled();
+    expect(mocks.appendHistory).not.toHaveBeenCalled();
+    expect(
+      mocks.setWorkflowState.mock.calls.some(([state]) =>
+        isErrorWorkflowState(state),
+      ),
+    ).toBe(false);
+    expect(
+      chromeState.sendMessage.mock.calls.some(
+        ([, sent]) => (sent as { type?: string }).type === "show-toast",
+      ),
+    ).toBe(false);
+    expect(chromeState.setBadgeText).toHaveBeenCalledWith({
+      tabId: TAB_ID,
+      text: "",
     });
   });
 

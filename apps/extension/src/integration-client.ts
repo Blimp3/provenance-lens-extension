@@ -28,6 +28,8 @@ import {
   type SupportedMediaMime,
 } from "@provenance-lens/shared";
 
+import { readBoundedResponseBytes } from "./bounded-response.js";
+
 export const INTEGRATION_API_BASE_URL =
   "https://private-media-downloader.yellow-salad-bfde.workers.dev/api/integration";
 
@@ -43,6 +45,20 @@ const OUTBOX_STORE = "operations";
 const SEGMENT_OUTBOX_PREFIX = "segment:";
 const OPERATION_POLL_MS = 1_000;
 const OPERATION_POLL_TIMEOUT_MS = 60_000;
+const REQUEST_TIMEOUT_MS = 30_000;
+const UPLOAD_TIMEOUT_MS = 120_000;
+const JSON_RESPONSE_MAX_BYTES = 1024 * 1024;
+const HISTORY_RESPONSE_MAX_BYTES = 4 * JSON_RESPONSE_MAX_BYTES;
+const STOP_WAITING_MESSAGE =
+  "Stopped waiting for DigiBot. If it accepted the request, it may still finish and appear in History.";
+const responseSignals = new WeakMap<
+  Response,
+  {
+    caller: AbortSignal | null;
+    deadline: AbortSignal;
+    combined: AbortSignal;
+  }
+>();
 const EXPIRY_SKEW_MS = 15_000;
 const MAX_HISTORY_PAGES = 50;
 const SESSION_LOCK = "provenance-lens-integration-session";
@@ -207,6 +223,7 @@ export async function createIntegrationOperation(
   input: IntegrationOperationInputV1,
   createdAt: string,
   expectedSession?: IntegrationSessionExpectation,
+  signal?: AbortSignal,
 ): Promise<IntegrationOperationStatus> {
   const parsed = IntegrationOperationInputV1Schema.parse(input);
   const expected =
@@ -220,6 +237,7 @@ export async function createIntegrationOperation(
         "X-Integration-Created-At": createdAt,
       },
       body: JSON.stringify(parsed),
+      signal: signal ?? null,
     },
     true,
     expected,
@@ -237,6 +255,9 @@ export async function createAudioSegmentOperation(
 ): Promise<IntegrationOperationStatus> {
   const expected =
     expectedSession ?? (await operationSessionExpectation(operationId));
+  const fragmentIndex = sourceUrl.indexOf("#");
+  const sanitizedSourceUrl =
+    fragmentIndex === -1 ? sourceUrl : sourceUrl.slice(0, fragmentIndex);
   const response = await authenticatedRequest(
     "/audio-segments",
     {
@@ -247,7 +268,7 @@ export async function createAudioSegmentOperation(
       },
       body: JSON.stringify({
         operationId,
-        sourceUrl,
+        sourceUrl: sanitizedSourceUrl,
         startSeconds,
         endSeconds,
       }),
@@ -257,9 +278,6 @@ export async function createAudioSegmentOperation(
   );
   return parseOperationStatus(response, operationId, expected);
 }
-
-/** A page link is one small POST; a service worker must not hang on it. */
-const LINK_DOWNLOAD_TIMEOUT_MS = 30_000;
 
 /**
  * Sends only the page link, plus the MP3 output or clip range when asked;
@@ -281,7 +299,6 @@ export async function createLinkDownload(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ operationId, sourceUrl, ...parsedOptions }),
-      signal: AbortSignal.timeout(LINK_DOWNLOAD_TIMEOUT_MS),
     },
     true,
     expected,
@@ -294,6 +311,7 @@ export async function uploadIntegrationMedia(
   bytes: Uint8Array,
   mimeType: SupportedMediaMime,
   expectedSession?: IntegrationSessionExpectation,
+  signal?: AbortSignal,
 ): Promise<IntegrationOperationStatus> {
   const expected =
     expectedSession ?? (await operationSessionExpectation(operationId));
@@ -303,9 +321,14 @@ export async function uploadIntegrationMedia(
       method: "PUT",
       headers: { "Content-Type": mimeType },
       body: new Blob([toArrayBuffer(bytes)], { type: mimeType }),
+      signal: signal ?? null,
     },
     true,
     expected,
+    Math.max(
+      UPLOAD_TIMEOUT_MS,
+      Math.ceil((bytes.byteLength / (64 * 1024)) * 1_000),
+    ),
   );
   return parseOperationStatus(response, operationId, expected);
 }
@@ -322,12 +345,15 @@ export async function getIntegrationOperation(
 async function getIntegrationOperationForSession(
   operationId: string,
   expected: IntegrationSessionExpectation,
+  signal?: AbortSignal,
+  timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<IntegrationOperationStatus> {
   const response = await authenticatedRequest(
     `/operations/${encodeURIComponent(operationId)}`,
-    { method: "GET" },
+    { method: "GET", signal: signal ?? null },
     true,
     expected,
+    timeoutMs,
   );
   return parseOperationStatus(response, operationId, expected);
 }
@@ -392,10 +418,28 @@ export async function waitForIntegrationOperation(
   const expected =
     expectedSession ?? (await operationSessionExpectation(operationId));
   const deadline = Date.now() + OPERATION_POLL_TIMEOUT_MS;
-  let latest = await getIntegrationOperationForSession(operationId, expected);
+  const poll = (): Promise<IntegrationOperationStatus> =>
+    getIntegrationOperationForSession(
+      operationId,
+      expected,
+      signal,
+      Math.max(1, Math.min(REQUEST_TIMEOUT_MS, deadline - Date.now())),
+    );
+  let latest = await poll();
   while (!isIntegrationOperationSettled(latest) && Date.now() < deadline) {
-    await delay(OPERATION_POLL_MS, signal);
-    latest = await getIntegrationOperationForSession(operationId, expected);
+    await delay(Math.min(OPERATION_POLL_MS, deadline - Date.now()), signal);
+    if (Date.now() >= deadline) break;
+    try {
+      latest = await poll();
+    } catch (error: unknown) {
+      if (
+        Date.now() >= deadline &&
+        error instanceof IntegrationClientError &&
+        error.code === "request_timeout"
+      )
+        return latest;
+      throw error;
+    }
   }
   return latest;
 }
@@ -422,7 +466,11 @@ export async function getIntegrationHistory(
   const response = await authenticatedRequest(`/history?${query.toString()}`, {
     method: "GET",
   });
-  return parseResponse(response, IntegrationHistoryResponseSchema);
+  return parseResponse(
+    response,
+    IntegrationHistoryResponseSchema,
+    HISTORY_RESPONSE_MAX_BYTES,
+  );
 }
 
 export async function getAllIntegrationHistory(
@@ -806,7 +854,9 @@ async function clearIntegrationSessionIfCurrent(
 }
 
 async function getFreshSession(
-  expected?: IntegrationSessionExpectation,
+  expected: IntegrationSessionExpectation | undefined,
+  signal: AbortSignal | undefined,
+  deadline: AbortSignal,
 ): Promise<IntegrationSession> {
   const session = await getIntegrationSession();
   if (!session) {
@@ -829,16 +879,22 @@ async function getFreshSession(
   if (Date.parse(session.accessExpiresAt) - EXPIRY_SKEW_MS > Date.now())
     return session;
   return (
-    (await refreshSession(sessionExpectation(session), session.refreshToken)) ??
-    session
+    (await refreshSession(
+      sessionExpectation(session),
+      session.refreshToken,
+      signal,
+      deadline,
+    )) ?? session
   );
 }
 
 async function refreshSession(
   expected: IntegrationSessionExpectation,
   staleRefreshToken: string,
+  signal: AbortSignal | undefined,
+  deadline: AbortSignal,
 ): Promise<IntegrationSession | null> {
-  return withSessionLock(async () => {
+  const refresh = async (): Promise<IntegrationSession | null> => {
     const current = await getIntegrationSession();
     if (!current) throw sessionChangedError();
     assertExpectedSession(current, expected);
@@ -846,16 +902,27 @@ async function refreshSession(
     const body = IntegrationRefreshRequestSchema.parse({
       refreshToken: current.refreshToken,
     });
+    const abortError = integrationAbortError(signal, deadline);
+    if (abortError) throw abortError;
+    const refreshDeadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     let next: IntegrationSession;
     try {
-      const response = await requestUnauthenticated("/sessions/refresh", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const response = await requestUnauthenticated(
+        "/sessions/refresh",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+        refreshDeadline,
+      );
       next = await parseResponse(response, IntegrationSessionResponseSchema);
     } catch (error: unknown) {
-      if (error instanceof IntegrationClientError && !error.retryable) {
+      if (
+        error instanceof IntegrationClientError &&
+        !error.retryable &&
+        error.code !== "user_cancelled"
+      ) {
         const latest = await getIntegrationSession();
         if (latest && sameSessionVersion(latest, current))
           await clearIntegrationStateUnlocked();
@@ -868,7 +935,21 @@ async function refreshSession(
       throw sessionChangedError();
     await chrome.storage.local.set({ [STORAGE_KEYS.session]: next });
     return next;
-  });
+  };
+  const lockSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  try {
+    return await navigator.locks.request(
+      SESSION_LOCK,
+      { signal: lockSignal },
+      refresh,
+    );
+  } catch (error: unknown) {
+    if (!(error instanceof IntegrationClientError)) {
+      const abortError = integrationAbortError(signal, deadline);
+      if (abortError) throw abortError;
+    }
+    throw error;
+  }
 }
 
 async function authenticatedRequest(
@@ -876,22 +957,37 @@ async function authenticatedRequest(
   init: RequestInit,
   retry = true,
   expected?: IntegrationSessionExpectation,
+  timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
-  const session = await getFreshSession(expected);
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const signal = init.signal ?? undefined;
+  const responseMaxBytes = path.startsWith("/history")
+    ? HISTORY_RESPONSE_MAX_BYTES
+    : JSON_RESPONSE_MAX_BYTES;
+  const session = await getFreshSession(expected, signal, deadline);
   const requestExpected = expected ?? sessionExpectation(session);
   const headers = new Headers(init.headers);
   headers.set("Authorization", `${session.tokenType} ${session.accessToken}`);
   headers.set("Accept", "application/json");
-  const response = await requestUnauthenticated(path, { ...init, headers });
+  const response = await requestUnauthenticated(
+    path,
+    { ...init, headers },
+    deadline,
+  );
   await requireIntegrationSession(
     requestExpected.accountId,
     requestExpected.sessionId,
   );
   if (response.status !== 401 || !retry) {
-    if (!response.ok) throw await responseError(response);
+    if (!response.ok) throw await responseError(response, responseMaxBytes);
     return response;
   }
-  const refreshed = await refreshSession(requestExpected, session.refreshToken);
+  const refreshed = await refreshSession(
+    requestExpected,
+    session.refreshToken,
+    signal,
+    deadline,
+  );
   if (!refreshed)
     throw new IntegrationClientError(
       "The DigiBot session expired.",
@@ -905,15 +1001,19 @@ async function authenticatedRequest(
     `${refreshed.tokenType} ${refreshed.accessToken}`,
   );
   retryHeaders.set("Accept", "application/json");
-  const retried = await requestUnauthenticated(path, {
-    ...init,
-    headers: retryHeaders,
-  });
+  const retried = await requestUnauthenticated(
+    path,
+    {
+      ...init,
+      headers: retryHeaders,
+    },
+    deadline,
+  );
   await requireIntegrationSession(
     requestExpected.accountId,
     requestExpected.sessionId,
   );
-  if (!retried.ok) throw await responseError(retried);
+  if (!retried.ok) throw await responseError(retried, responseMaxBytes);
   return retried;
 }
 
@@ -1023,8 +1123,12 @@ async function discardPendingIntegrationOperation(
 async function requestUnauthenticated(
   path: string,
   init: RequestInit,
+  deadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 ): Promise<Response> {
   let response: Response;
+  const signal = init.signal
+    ? AbortSignal.any([init.signal, deadline])
+    : deadline;
   try {
     const headers = new Headers(init.headers);
     headers.set("X-Integration-Client-Origin", integrationClientOrigin());
@@ -1032,14 +1136,22 @@ async function requestUnauthenticated(
       ...init,
       headers,
       credentials: "omit",
+      signal,
     });
   } catch {
+    const abortError = integrationAbortError(init.signal, deadline);
+    if (abortError) throw abortError;
     throw new IntegrationClientError(
       "The DigiBot integration server could not be reached.",
       "integration_unavailable",
       true,
     );
   }
+  responseSignals.set(response, {
+    caller: init.signal ?? null,
+    deadline,
+    combined: signal,
+  });
   return response;
 }
 
@@ -1049,11 +1161,13 @@ function integrationClientOrigin(): string {
 
 async function responseError(
   response: Response,
+  maxBytes = JSON_RESPONSE_MAX_BYTES,
 ): Promise<IntegrationClientError> {
   let payload: unknown = null;
   try {
-    payload = await response.json();
-  } catch {
+    payload = await readJsonResponse(response, maxBytes);
+  } catch (error: unknown) {
+    if (error instanceof IntegrationClientError) throw error;
     // Keep the bounded fallback below.
   }
   const parsed =
@@ -1080,10 +1194,56 @@ async function responseError(
 async function parseResponse<T>(
   response: Response,
   schema: { parse: (value: unknown) => T },
+  maxBytes = JSON_RESPONSE_MAX_BYTES,
 ): Promise<T> {
-  if (!response.ok) throw await responseError(response);
-  const payload = (await response.json()) as unknown;
+  if (!response.ok) throw await responseError(response, maxBytes);
+  const payload = await readJsonResponse(response, maxBytes);
   return schema.parse(payload);
+}
+
+async function readJsonResponse(
+  response: Response,
+  maxBytes = JSON_RESPONSE_MAX_BYTES,
+): Promise<unknown> {
+  const requestSignals = responseSignals.get(response);
+  let bytes: Uint8Array;
+  try {
+    bytes = await readBoundedResponseBytes(
+      response,
+      maxBytes,
+      requestSignals?.combined,
+    );
+  } catch (error: unknown) {
+    const abortError = requestSignals
+      ? integrationAbortError(requestSignals.caller, requestSignals.deadline)
+      : null;
+    if (abortError) throw abortError;
+    throw error;
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  } finally {
+    bytes.fill(0);
+  }
+}
+
+function integrationAbortError(
+  caller: AbortSignal | null | undefined,
+  deadline: AbortSignal,
+): IntegrationClientError | null {
+  if (caller?.aborted)
+    return new IntegrationClientError(
+      STOP_WAITING_MESSAGE,
+      "user_cancelled",
+      false,
+    );
+  return deadline.aborted
+    ? new IntegrationClientError(
+        "The DigiBot integration server took too long to respond.",
+        "request_timeout",
+        true,
+      )
+    : null;
 }
 
 function createVerifier(): string {
@@ -1140,7 +1300,7 @@ function delay(milliseconds: number, signal?: AbortSignal): Promise<void> {
       clearTimeout(timer);
       reject(
         new IntegrationClientError(
-          "The connected operation was cancelled.",
+          STOP_WAITING_MESSAGE,
           "user_cancelled",
           false,
         ),

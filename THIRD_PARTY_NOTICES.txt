@@ -180,7 +180,7 @@ SOFTWARE.
 
 ---
 
-music-metadata 11.15.0
+music-metadata 11.16.1
 Declared license: MIT
 
 The MIT License (MIT)

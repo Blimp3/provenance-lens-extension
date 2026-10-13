@@ -567,9 +567,11 @@ async function requestActionOnTab(
     });
     await setWorkflow(
       "picking",
-      actionId === DOWNLOAD_ACTION_ID
-        ? "Choose an image to download."
-        : "Choose an image to verify.",
+      trigger === "context-menu" && selection === null
+        ? "Select that image again to verify."
+        : actionId === DOWNLOAD_ACTION_ID
+          ? "Choose an image to download."
+          : "Choose an image to verify.",
       actionId,
     );
   } catch {
@@ -638,7 +640,9 @@ async function resumeDisclosure(
       });
       await setWorkflow(
         "picking",
-        "Choose an image to verify.",
+        pending.trigger === "context-menu"
+          ? "Select that image again to verify."
+          : "Choose an image to verify.",
         pending.actionId,
       );
     }
@@ -1054,7 +1058,7 @@ async function handleContextMenu(
 ): Promise<void> {
   const tabId = tab.id;
   if (tabId === undefined) return;
-  if (!info.srcUrl) {
+  if (!info.srcUrl || /^blob:/iu.test(info.srcUrl)) {
     await requestActionOnTab(tabId, info.frameId ?? 0, "context-menu");
     return;
   }
@@ -1081,11 +1085,7 @@ function contextMenuSelection(
       ? page.origin
       : "https://invalid.local";
     const sourceKind: ImageSelection["sourceKind"] =
-      url.protocol === "data:"
-        ? "data-url"
-        : url.protocol === "blob:"
-          ? "blob-url"
-          : "img";
+      url.protocol === "data:" ? "data-url" : "img";
     return ImageSelectionSchema.parse({
       url: srcUrl,
       sourceKind,
@@ -1277,6 +1277,15 @@ async function executeAction(
       await openActionPopup(tabId, record);
   } catch (error: unknown) {
     if (integratedAction) {
+      if (
+        (error instanceof IntegrationClientError ||
+          error instanceof ExtensionWorkflowError) &&
+        error.code === "user_cancelled"
+      ) {
+        await setWorkflow("idle", error.message, actionId);
+        await clearBadge(tabId).catch(() => undefined);
+        return;
+      }
       const message =
         error instanceof IntegrationClientError
           ? error.message

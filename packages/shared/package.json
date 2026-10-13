@@ -21,7 +21,7 @@
   "dependencies": {
     "@contentauth/c2pa-wasm": "0.11.5",
     "file-type": "21.3.4",
-    "music-metadata": "11.15.0",
+    "music-metadata": "11.16.1",
     "zod": "4.5.4"
   }
 }

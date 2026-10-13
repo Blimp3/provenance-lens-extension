@@ -60,6 +60,7 @@ type PageLinkControls = {
   error: HTMLElement;
 };
 let pageLinkControls: PageLinkControls | null = null;
+let stopsConnectedOperation = false;
 
 for (const action of ACTION_REGISTRY) {
   if (action.inputType === "page-link") {
@@ -90,10 +91,17 @@ for (const action of ACTION_REGISTRY) {
 
 cancelButton.addEventListener("click", () => {
   cancelButton.disabled = true;
-  workflowStatus.textContent = "Cancelling verification...";
+  workflowStatus.textContent = stopsConnectedOperation
+    ? "Stopping the wait..."
+    : "Cancelling verification...";
   void chrome.runtime.sendMessage({ type: "cancel-active" }).catch(() => {
     cancelButton.disabled = false;
-    setStatus("The active verification could not be cancelled.", true);
+    setStatus(
+      stopsConnectedOperation
+        ? "The active DigiBot wait could not be stopped."
+        : "The active verification could not be cancelled.",
+      true,
+    );
   });
 });
 
@@ -135,9 +143,10 @@ function refreshOptionalAccessFromBrowser(): void {
 }
 
 async function refreshPopup(): Promise<void> {
-  const [workflow, settings] = await Promise.all([
+  const [workflow, settings, connected] = await Promise.all([
     getWorkflowState(),
     getSettings(),
+    isIntegrationConnected().catch(() => false),
   ]);
   verificationModeSummary.textContent =
     settings.verificationMode === "website"
@@ -148,6 +157,10 @@ async function refreshPopup(): Promise<void> {
     workflow.status === "error" ? "status error" : "status";
   const cancellable =
     workflow.status === "retrieving" || workflow.status === "verifying";
+  stopsConnectedOperation = connected && cancellable;
+  cancelButton.textContent = stopsConnectedOperation
+    ? "Stop waiting"
+    : "Cancel verification";
   cancelButton.hidden = !cancellable;
   cancelButton.disabled = false;
 

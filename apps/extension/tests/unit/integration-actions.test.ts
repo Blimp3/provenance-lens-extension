@@ -685,6 +685,62 @@ describe("connected image actions", () => {
     expect(pendingIds(local)).toEqual([]);
     expect(await rawOutboxKeys()).toEqual([]);
   });
+
+  it.each(["create", "upload", "poll"] as const)(
+    "aborts the connected %s request and clears local retry state",
+    async (target) => {
+      const local = await connect();
+      const controller = new AbortController();
+      let reachedTarget!: () => void;
+      const reached = new Promise<void>((resolve) => {
+        reachedTarget = resolve;
+      });
+      let targetCall: ApiCall | undefined;
+      const calls = serveDigiBot((call) => {
+        const isTarget =
+          (target === "create" && call.method === "POST") ||
+          (target === "upload" && call.method === "PUT") ||
+          (target === "poll" && call.method === "GET");
+        if (isTarget) {
+          targetCall = call;
+          reachedTarget();
+          return new Promise<Response>((_resolve, reject) => {
+            if (!call.signal) throw new Error("Expected a request signal");
+            call.signal.addEventListener(
+              "abort",
+              () => reject(new DOMException("Stopped", "AbortError")),
+              { once: true },
+            );
+          });
+        }
+        const input = jsonBody<IntegrationOperationInputV1>(calls[0]);
+        return response(
+          pendingStatus(
+            input,
+            call.method === "POST" ? "awaiting_upload" : "processing",
+          ),
+        );
+      });
+      const { runIntegratedImageAction } =
+        await import("../../src/actions/integration-image.js");
+
+      const pending = runIntegratedImageAction("download", selection, {
+        ...imageRetrieval(),
+        signal: controller.signal,
+      });
+      await reached;
+      controller.abort("provenance-lens-user-cancelled");
+
+      await expect(pending).rejects.toMatchObject({
+        code: "user_cancelled",
+        retryable: false,
+      });
+      expect(targetCall?.signal).not.toBe(controller.signal);
+      expect(targetCall?.signal?.aborted).toBe(true);
+      expect(pendingIds(local)).toEqual([]);
+      expect(await rawOutboxKeys()).toEqual([]);
+    },
+  );
 });
 
 describe("connected audio file action", () => {
@@ -984,7 +1040,10 @@ describe("connected audio file action", () => {
 });
 
 describe("connected audio segment action", () => {
-  const sourceUrl = "https://video.example/watch?id=fixture";
+  const sourceUrl =
+    "https://video.example/watch?id=fixture&sig=query-secret#access_token=fragment-secret";
+  const sentSourceUrl =
+    "https://video.example/watch?id=fixture&sig=query-secret";
   const derivedSha256 = "b".repeat(64);
 
   function derivedInput(operationId: string): IntegrationOperationInputV1 {
@@ -1049,11 +1108,18 @@ describe("connected audio segment action", () => {
 
   it("stores the request, registers it, drops the request copy, and waits", async () => {
     const local = await connect();
+    const client = await import("../../src/integration-client.js");
     const seen: Record<string, unknown> = {};
     const calls = serveDigiBot(async (call) => {
       const { operationId } = jsonBody<{ operationId: string }>(calls[0]);
       if (call.method === "POST") {
         seen["outboxAtCreate"] = await rawOutboxKeys();
+        seen["outboxSourceUrl"] = (
+          await client.getIntegrationSegmentOutbox(
+            session.accountId,
+            operationId,
+          )
+        )?.sourceUrl;
         seen["pendingAtCreate"] = pendingIds(local);
         return response(queuedSegment(operationId));
       }
@@ -1073,13 +1139,14 @@ describe("connected audio segment action", () => {
     ]);
     expect(body).toEqual({
       operationId,
-      sourceUrl,
+      sourceUrl: sentSourceUrl,
       startSeconds: 30,
       endSeconds: 60,
     });
     expect(seen["outboxAtCreate"]).toEqual([
       `${session.accountId}:segment:${operationId}`,
     ]);
+    expect(seen["outboxSourceUrl"]).toBe(sentSourceUrl);
     expect(seen["pendingAtCreate"]).toEqual([operationId]);
     expect(seen["outboxAtWait"]).toEqual([]);
     expect(outcome.status).toMatchObject({ operationId, state: "completed" });

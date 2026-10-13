@@ -95,6 +95,7 @@ export async function runIntegratedImageAction(
       input,
       createdAt,
       expectedSession,
+      retrieval.signal,
     );
     if (status.state === "awaiting_upload") {
       status = await uploadIntegrationMedia(
@@ -102,6 +103,7 @@ export async function runIntegratedImageAction(
         image.bytes,
         image.mime,
         expectedSession,
+        retrieval.signal,
       );
     }
     // As in the resume path, the outbox keeps the bytes until DigiBot no
@@ -111,7 +113,7 @@ export async function runIntegratedImageAction(
     if (!isIntegrationOperationSettled(status)) {
       status = await waitForIntegrationOperation(
         operationId,
-        undefined,
+        retrieval.signal,
         expectedSession,
       );
     }

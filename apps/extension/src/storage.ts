@@ -24,6 +24,9 @@ export const STORAGE_KEYS = {
 } as const;
 
 const STORAGE_MUTATION_LOCK = "provenance-lens.storage-mutations";
+const SETTINGS_FORMAT_KEY = "provenanceLens.settingsFormat";
+const SETTINGS_FORMAT_VERSION = 1;
+const LEGACY_BACKEND_URL = "http://127.0.0.1:8787";
 
 const defaultClientToken = getBundledClientTokenForBackend(DEFAULT_BACKEND_URL);
 
@@ -47,22 +50,30 @@ export async function getSettings(): Promise<ExtensionSettings> {
   );
   if (!parsed.success) return { ...defaultSettings };
 
-  const hostname = new URL(parsed.data.backendBaseUrl).hostname;
-  const backendBaseUrl = ["127.0.0.1", "localhost", "[::1]"].includes(hostname)
-    ? DEFAULT_BACKEND_URL
-    : parsed.data.backendBaseUrl;
+  const format = await chrome.storage.local.get(SETTINGS_FORMAT_KEY);
+  const legacy = format[SETTINGS_FORMAT_KEY] === undefined;
+  const backendBaseUrl =
+    legacy &&
+    parsed.data.backendBaseUrl === LEGACY_BACKEND_URL &&
+    !parsed.data.clientToken
+      ? DEFAULT_BACKEND_URL
+      : parsed.data.backendBaseUrl;
   const migrated = applyBundledClientToken({
     ...parsed.data,
     backendBaseUrl,
   });
   if (
+    !legacy &&
     migrated.backendBaseUrl === parsed.data.backendBaseUrl &&
     migrated.clientToken === parsed.data.clientToken
   ) {
     return parsed.data;
   }
 
-  await chrome.storage.local.set({ [STORAGE_KEYS.settings]: migrated });
+  await chrome.storage.local.set({
+    [STORAGE_KEYS.settings]: migrated,
+    [SETTINGS_FORMAT_KEY]: SETTINGS_FORMAT_VERSION,
+  });
   return migrated;
 }
 
@@ -70,6 +81,7 @@ export async function saveSettings(settings: ExtensionSettings): Promise<void> {
   const parsed = ExtensionSettingsSchema.parse(settings);
   await chrome.storage.local.set({
     [STORAGE_KEYS.settings]: applyBundledClientToken(parsed),
+    [SETTINGS_FORMAT_KEY]: SETTINGS_FORMAT_VERSION,
   });
 }
 

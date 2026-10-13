@@ -17,9 +17,9 @@
       </header>
       <form id="audio-form" class="card stack">
         <p>
-          Check one original audio file or an explicit short segment from a
-          video URL. Lens checks supported OpenAI SynthID signals through your
-          configured API backend.
+          Check one original audio file through your configured API backend, or
+          through your paired DigiBot when connected. DigiBot can also extract
+          and check an explicit short segment from a video URL.
         </p>
         <label for="audio-source">Source</label>
         <select id="audio-source" name="audio-source">
@@ -47,6 +47,11 @@
               placeholder="https://example.com/video"
             />
           </label>
+          <p class="muted small">
+            Lens sends this URL to your paired DigiBot without the fragment
+            after #. The full query string, including signed or private-link
+            tokens, is sent because DigiBot may need it to retrieve the media.
+          </p>
           <div class="row">
             <label for="video-start-seconds">
               Start (seconds)

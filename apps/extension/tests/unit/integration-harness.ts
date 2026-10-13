@@ -76,10 +76,17 @@ export function installChrome(): {
   Object.defineProperty(navigator, "locks", {
     configurable: true,
     value: {
-      request<T>(name: string, callback: () => Promise<T>): Promise<T> {
-        const result = (lockTails.get(name) ?? Promise.resolve()).then(
-          callback,
-        );
+      request<T>(
+        name: string,
+        optionsOrCallback: LockOptions | (() => Promise<T>),
+        callback?: () => Promise<T>,
+      ): Promise<T> {
+        const work =
+          typeof optionsOrCallback === "function"
+            ? optionsOrCallback
+            : callback;
+        if (!work) return Promise.reject(new Error("Missing lock callback."));
+        const result = (lockTails.get(name) ?? Promise.resolve()).then(work);
         lockTails.set(
           name,
           result.then(

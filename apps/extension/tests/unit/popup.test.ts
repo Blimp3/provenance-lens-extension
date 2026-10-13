@@ -347,6 +347,44 @@ describe("popup optional-access setup card", () => {
     expect(button.disabled).toBe(true);
   });
 
+  it.each([
+    {
+      connected: false,
+      label: "Cancel verification",
+      progress: "Cancelling verification...",
+    },
+    {
+      connected: true,
+      label: "Stop waiting",
+      progress: "Stopping the wait...",
+    },
+  ])(
+    "uses $label while an image operation is active",
+    async ({ connected, label, progress }) => {
+      mocks.isIntegrationConnected.mockResolvedValue(connected);
+      mocks.getWorkflowState.mockResolvedValue({
+        status: "retrieving",
+        message: "Retrieving the original image bytes.",
+        updatedAt: new Date().toISOString(),
+      });
+      await loadPopup({ allSites: true, downloads: true, complete: true });
+      const cancel = document.getElementById("cancel-verification");
+      if (!(cancel instanceof HTMLButtonElement))
+        throw new Error("Missing active-operation control");
+
+      await vi.waitFor(() => expect(cancel.textContent).toBe(label));
+      expect(cancel.hidden).toBe(false);
+      cancel.click();
+
+      expect(document.getElementById("workflow-status")?.textContent).toBe(
+        progress,
+      );
+      expect(mocks.sendMessage).toHaveBeenCalledWith({
+        type: "cancel-active",
+      });
+    },
+  );
+
   async function pageLinkDisabledFor(
     status: "retrieving" | "picking",
     ageMs: number,

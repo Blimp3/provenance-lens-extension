@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+- Connected actions now stop waiting when cancelled; an accepted DigiBot job
+  may still finish and appear in History. Request deadlines scale with upload
+  size, and History JSON allows up to 4 MiB while other responses stay at 1 MiB.
+- Page and audio-segment links omit URL fragments. Blob context-menu images
+  reopen the picker so the user can select the image again.
+
 ## [1.0.0] - 2026-10-02
 
 First public source release. The extension and shared code are the private
