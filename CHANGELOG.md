@@ -2,11 +2,46 @@
 
 ## [Unreleased]
 
-- Connected actions now stop waiting when cancelled; an accepted DigiBot job
-  may still finish and appear in History. Request deadlines scale with upload
-  size, and History JSON allows up to 4 MiB while other responses stay at 1 MiB.
-- Page and audio-segment links omit URL fragments. Blob context-menu images
-  reopen the picker so the user can select the image again.
+### Changed
+
+- Connected DigiBot requests stop after 30 s, and the wait for an operation
+  status stops after 60 s. Before, a request or status wait that got no answer
+  did not stop.
+- When the last status request reaches the 60 s limit, Lens shows the latest
+  status and says that the check is still processing. It does not show a
+  timeout error.
+- Only the upload deadline changes with the file size. It is at least 120 s,
+  or 1 s for each 64 KiB of the file if that is longer.
+- **Stop waiting** replaces **Cancel verification** while a connected image
+  action runs. It stops the wait during operation creation, upload, status
+  polling and the response read, and removes the local pending state. DigiBot
+  can still finish a request that it accepted, and the result then shows in
+  History.
+- A blob context-menu image opens the picker to select the image again.
+
+### Fixed
+
+- **Stop waiting** during a token refresh stops at once, with no error toast.
+  The refresh continues with its own 30 s deadline, and Lens always saves the
+  new tokens.
+- A stop during image retrieval shows "Stopped before anything was sent." for
+  Verify and for Download.
+- Explicitly saved loopback backend URLs (`127.0.0.1`, `localhost` or `[::1]`)
+  stay unchanged. Only a legacy settings record with exactly
+  `http://127.0.0.1:8787` and no client token changes to the default backend
+  URL.
+
+### Security and privacy
+
+- Lens reads DigiBot JSON responses with a size limit: 4 MiB for History and
+  1 MiB for all other responses.
+- Video URLs for audio-segment checks do not include the URL fragment. This
+  applies to the audio page prefill, the outbox and the segment request. Lens
+  also removes the fragment from old outbox entries before it sends them again.
+  The audio page says that the query string goes with the video URL.
+- Dependency updates for security advisories: music-metadata 11.16.1
+  (CVE-2026-107391, CVE-2026-107389), sharp 0.35.5 (CVE-2026-96889) and
+  source-map-js 1.2.2 (CVE-2026-93749).
 
 ## [1.0.0] - 2026-10-02
 

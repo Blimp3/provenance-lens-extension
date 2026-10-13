@@ -1282,7 +1282,15 @@ async function executeAction(
           error instanceof ExtensionWorkflowError) &&
         error.code === "user_cancelled"
       ) {
-        await setWorkflow("idle", error.message, actionId);
+        // A workflow stop comes only from image retrieval, before any DigiBot
+        // request. Its own text names Verify, which is wrong for Download.
+        await setWorkflow(
+          "idle",
+          error instanceof IntegrationClientError
+            ? error.message
+            : "Stopped before anything was sent.",
+          actionId,
+        );
         await clearBadge(tabId).catch(() => undefined);
         return;
       }

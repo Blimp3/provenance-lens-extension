@@ -904,25 +904,18 @@ async function refreshSession(
     });
     const abortError = integrationAbortError(signal, deadline);
     if (abortError) throw abortError;
-    const refreshDeadline = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     let next: IntegrationSession;
     try {
-      const response = await requestUnauthenticated(
-        "/sessions/refresh",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-        refreshDeadline,
-      );
+      // Only the fresh default deadline of requestUnauthenticated bounds the
+      // rotation, never the caller signal, so a rotated pair is always saved.
+      const response = await requestUnauthenticated("/sessions/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
       next = await parseResponse(response, IntegrationSessionResponseSchema);
     } catch (error: unknown) {
-      if (
-        error instanceof IntegrationClientError &&
-        !error.retryable &&
-        error.code !== "user_cancelled"
-      ) {
+      if (error instanceof IntegrationClientError && !error.retryable) {
         const latest = await getIntegrationSession();
         if (latest && sameSessionVersion(latest, current))
           await clearIntegrationStateUnlocked();
@@ -937,18 +930,39 @@ async function refreshSession(
     return next;
   };
   const lockSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  // The lock signal cancels only a queued wait. A granted lock runs the
+  // rotation to its end, and a caller stop only ends this caller's wait.
+  const rotation = navigator.locks.request(
+    SESSION_LOCK,
+    { signal: lockSignal },
+    refresh,
+  );
+  rotation.catch(() => undefined);
+  let stopWaiting: (() => void) | undefined;
+  const stopped = signal
+    ? new Promise<never>((_, reject) => {
+        stopWaiting = () =>
+          reject(
+            new IntegrationClientError(
+              STOP_WAITING_MESSAGE,
+              "user_cancelled",
+              false,
+            ),
+          );
+        if (signal.aborted) stopWaiting();
+        else signal.addEventListener("abort", stopWaiting, { once: true });
+      })
+    : null;
   try {
-    return await navigator.locks.request(
-      SESSION_LOCK,
-      { signal: lockSignal },
-      refresh,
-    );
+    return await (stopped ? Promise.race([rotation, stopped]) : rotation);
   } catch (error: unknown) {
     if (!(error instanceof IntegrationClientError)) {
       const abortError = integrationAbortError(signal, deadline);
       if (abortError) throw abortError;
     }
     throw error;
+  } finally {
+    if (stopWaiting) signal?.removeEventListener("abort", stopWaiting);
   }
 }
 
@@ -961,9 +975,6 @@ async function authenticatedRequest(
 ): Promise<Response> {
   const deadline = AbortSignal.timeout(timeoutMs);
   const signal = init.signal ?? undefined;
-  const responseMaxBytes = path.startsWith("/history")
-    ? HISTORY_RESPONSE_MAX_BYTES
-    : JSON_RESPONSE_MAX_BYTES;
   const session = await getFreshSession(expected, signal, deadline);
   const requestExpected = expected ?? sessionExpectation(session);
   const headers = new Headers(init.headers);
@@ -979,7 +990,7 @@ async function authenticatedRequest(
     requestExpected.sessionId,
   );
   if (response.status !== 401 || !retry) {
-    if (!response.ok) throw await responseError(response, responseMaxBytes);
+    if (!response.ok) throw await responseError(response);
     return response;
   }
   const refreshed = await refreshSession(
@@ -1013,7 +1024,7 @@ async function authenticatedRequest(
     requestExpected.accountId,
     requestExpected.sessionId,
   );
-  if (!retried.ok) throw await responseError(retried, responseMaxBytes);
+  if (!retried.ok) throw await responseError(retried);
   return retried;
 }
 
@@ -1161,11 +1172,10 @@ function integrationClientOrigin(): string {
 
 async function responseError(
   response: Response,
-  maxBytes = JSON_RESPONSE_MAX_BYTES,
 ): Promise<IntegrationClientError> {
   let payload: unknown = null;
   try {
-    payload = await readJsonResponse(response, maxBytes);
+    payload = await readJsonResponse(response);
   } catch (error: unknown) {
     if (error instanceof IntegrationClientError) throw error;
     // Keep the bounded fallback below.
@@ -1196,7 +1206,7 @@ async function parseResponse<T>(
   schema: { parse: (value: unknown) => T },
   maxBytes = JSON_RESPONSE_MAX_BYTES,
 ): Promise<T> {
-  if (!response.ok) throw await responseError(response, maxBytes);
+  if (!response.ok) throw await responseError(response);
   const payload = await readJsonResponse(response, maxBytes);
   return schema.parse(payload);
 }

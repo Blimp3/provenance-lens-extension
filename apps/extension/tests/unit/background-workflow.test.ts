@@ -1,6 +1,7 @@
 import {
   ACTION_ID,
   DISCLOSURE_VERSION,
+  DOWNLOAD_ACTION_ID,
   LINK_ACTION_ID,
   PICK_VIDEO_ACTION_ID,
   makeIndeterminateResult,
@@ -557,54 +558,91 @@ describe("background verification workflow boundaries", () => {
     });
   });
 
-  it("treats image retrieval cancellation before submission as a clean stop", async () => {
-    const chromeState = setupChrome();
-    chromeState.setBadgeText.mockResolvedValue(undefined);
-    mocks.isIntegrationConnected.mockResolvedValue(true);
-    const { ExtensionWorkflowError } =
-      await import("../../src/actions/verify-openai-provenance.js");
-    const message = "Image retrieval was cancelled.";
-    mocks.runIntegratedImageAction.mockRejectedValue(
-      new ExtensionWorkflowError("user_cancelled", message),
-    );
-    await loadBackground();
+  it.each([
+    { action: "Verify", actionId: ACTION_ID },
+    { action: "Download", actionId: DOWNLOAD_ACTION_ID },
+  ])(
+    "treats a $action stop during image retrieval as a clean stop",
+    async ({ actionId }) => {
+      const chromeState = setupChrome();
+      chromeState.setBadgeText.mockResolvedValue(undefined);
+      chromeState.executeScript.mockResolvedValue([
+        { frameId: 0, documentId: DOCUMENT_ID },
+      ]);
+      mocks.isIntegrationConnected.mockResolvedValue(true);
+      const { ExtensionWorkflowError } =
+        await import("../../src/actions/verify-openai-provenance.js");
+      // The error image retrieval throws when the user stops it.
+      mocks.runIntegratedImageAction.mockRejectedValue(
+        new ExtensionWorkflowError(
+          "user_cancelled",
+          "Verification cancelled by the user.",
+        ),
+      );
+      await loadBackground();
 
-    const listener = chromeState.onContextMenuClicked.addListener.mock
-      .calls[0]?.[0] as (
-      info: chrome.contextMenus.OnClickData,
-      tab: chrome.tabs.Tab,
-    ) => void;
-    listener(
-      {
-        menuItemId: ACTION_ID,
-        srcUrl: IMAGE_URL,
-        frameId: 0,
-      } as chrome.contextMenus.OnClickData,
-      { id: TAB_ID, url: PAGE_URL, windowId: WINDOW_ID } as chrome.tabs.Tab,
-    );
+      const messageListener = chromeState.onMessage.addListener.mock
+        .calls[0]?.[0] as (
+        message: unknown,
+        sender: chrome.runtime.MessageSender,
+      ) => void;
+      messageListener(
+        { type: "start-action", actionId, trigger: "popup" },
+        extensionPageSender("popup.html"),
+      );
+      await vi.waitFor(() =>
+        expect(
+          chromeState.sendMessage.mock.calls.some(
+            ([, message]) =>
+              (message as { type?: string })?.type === "picker-start",
+          ),
+        ).toBe(true),
+      );
+      const pickerStart = chromeState.sendMessage.mock.calls.find(
+        ([, message]) =>
+          (message as { type?: string })?.type === "picker-start",
+      )?.[1] as { sessionToken: string };
+      messageListener(
+        {
+          type: "picker-selected",
+          sessionToken: pickerStart.sessionToken,
+          selection: selection(),
+        },
+        {
+          tab: { id: TAB_ID },
+          frameId: 0,
+          documentId: DOCUMENT_ID,
+        } as chrome.runtime.MessageSender,
+      );
 
-    await vi.waitFor(() =>
-      expect(mocks.setWorkflowState).toHaveBeenLastCalledWith(
-        expect.objectContaining({ status: "idle", actionId: null, message }),
-      ),
-    );
-    expect(mocks.createHistoryRecord).not.toHaveBeenCalled();
-    expect(mocks.appendHistory).not.toHaveBeenCalled();
-    expect(
-      mocks.setWorkflowState.mock.calls.some(([state]) =>
-        isErrorWorkflowState(state),
-      ),
-    ).toBe(false);
-    expect(
-      chromeState.sendMessage.mock.calls.some(
-        ([, sent]) => (sent as { type?: string }).type === "show-toast",
-      ),
-    ).toBe(false);
-    expect(chromeState.setBadgeText).toHaveBeenCalledWith({
-      tabId: TAB_ID,
-      text: "",
-    });
-  });
+      await waitForCall(mocks.runIntegratedImageAction, 1);
+      await vi.waitFor(() =>
+        expect(mocks.setWorkflowState).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            status: "idle",
+            actionId: null,
+            message: "Stopped before anything was sent.",
+          }),
+        ),
+      );
+      expect(mocks.createHistoryRecord).not.toHaveBeenCalled();
+      expect(mocks.appendHistory).not.toHaveBeenCalled();
+      expect(
+        mocks.setWorkflowState.mock.calls.some(([state]) =>
+          isErrorWorkflowState(state),
+        ),
+      ).toBe(false);
+      expect(
+        chromeState.sendMessage.mock.calls.some(
+          ([, sent]) => (sent as { type?: string }).type === "show-toast",
+        ),
+      ).toBe(false);
+      expect(chromeState.setBadgeText).toHaveBeenCalledWith({
+        tabId: TAB_ID,
+        text: "",
+      });
+    },
+  );
 
   it("reports a save failure without creating a synthetic backend error record", async () => {
     const chromeState = setupChrome();

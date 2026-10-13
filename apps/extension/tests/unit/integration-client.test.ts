@@ -1137,7 +1137,70 @@ describe("connected integration request contract", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("stores rotated tokens when the caller aborts during refresh", async () => {
+  it.each([
+    { outcome: "fails", code: "integration_unavailable" },
+    { outcome: "times out", code: "request_timeout" },
+  ] as const)(
+    "stops the caller at once when the refresh in flight then $outcome",
+    async ({ outcome, code }) => {
+      const { local } = installChrome();
+      const expiredSession = {
+        ...session,
+        accessExpiresAt: "2000-01-01T00:00:00.000Z",
+      };
+      await local.set({ [sessionKey]: expiredSession });
+      const caller = new AbortController();
+      const deadlines: AbortController[] = [];
+      vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+        const deadline = new AbortController();
+        deadlines.push(deadline);
+        return deadline.signal;
+      });
+      const lockRequest = vi.spyOn(navigator.locks, "request");
+      let startRefresh!: () => void;
+      const refreshStarted = new Promise<void>((resolve) => {
+        startRefresh = resolve;
+      });
+      let failRefresh!: (error: unknown) => void;
+      const fetchMock = vi.fn((url: string, init: RequestInit = {}) => {
+        expect(url).toContain("/sessions/refresh");
+        startRefresh();
+        return new Promise<Response>((_resolve, reject) => {
+          failRefresh = reject;
+          init.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Timed out", "TimeoutError")),
+            { once: true },
+          );
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const { createIntegrationOperation } =
+        await import("../../src/integration-client.js");
+
+      const pending = createIntegrationOperation(
+        operationInput(),
+        "2026-09-16T10:01:02.000Z",
+        undefined,
+        caller.signal,
+      );
+      await refreshStarted;
+      caller.abort(new DOMException("Stopped", "AbortError"));
+
+      // The refresh request is still open while the caller already stopped.
+      await expect(pending).rejects.toMatchObject({ code: "user_cancelled" });
+      if (outcome === "fails") failRefresh(new TypeError("Failed to fetch"));
+      else deadlines[1]?.abort(new DOMException("Timed out", "TimeoutError"));
+      await expect(lockRequest.mock.results[0]?.value).rejects.toMatchObject({
+        code,
+        retryable: true,
+      });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(local.values[sessionKey]).toEqual(expiredSession);
+    },
+  );
+
+  it("stores rotated tokens when the caller stops during refresh and uses them next", async () => {
     const { local } = installChrome();
     const expiredSession = {
       ...session,
@@ -1157,6 +1220,7 @@ describe("connected integration request contract", () => {
       deadlines.push(deadline.signal);
       return deadline.signal;
     });
+    const lockRequest = vi.spyOn(navigator.locks, "request");
     let startRefresh!: () => void;
     let finishRefresh!: (value: Response) => void;
     const refreshStarted = new Promise<void>((resolve) => {
@@ -1172,9 +1236,7 @@ describe("connected integration request contract", () => {
         startRefresh();
         return refreshResponse;
       }
-      return init.signal?.aborted
-        ? Promise.reject(new DOMException("Stopped", "AbortError"))
-        : Promise.resolve(response(awaitingUpload));
+      return Promise.resolve(response(awaitingUpload));
     });
     vi.stubGlobal("fetch", fetchMock);
     const { createIntegrationOperation } =
@@ -1188,11 +1250,98 @@ describe("connected integration request contract", () => {
     );
     await refreshStarted;
     caller.abort(new DOMException("Stopped", "AbortError"));
-    finishRefresh(response(refreshedSession));
 
     await expect(pending).rejects.toMatchObject({ code: "user_cancelled" });
+    expect(local.values[sessionKey]).toEqual(expiredSession);
+    finishRefresh(response(refreshedSession));
+    await expect(lockRequest.mock.results[0]?.value).resolves.toEqual(
+      refreshedSession,
+    );
     expect(refreshSignal).toBe(deadlines[1]);
     expect(refreshSignal).not.toBe(caller.signal);
+    expect(local.values[sessionKey]).toEqual(refreshedSession);
+
+    await expect(
+      createIntegrationOperation(operationInput(), "2026-09-16T10:01:02.000Z"),
+    ).resolves.toMatchObject({ operationId });
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(
+      urls.filter((url) => url.includes("/sessions/refresh")),
+    ).toHaveLength(1);
+    const operationCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).endsWith("/operations"),
+    );
+    expect(operationCalls).toHaveLength(1);
+    expect(
+      new Headers(operationCalls[0]?.[1]?.headers).get("Authorization"),
+    ).toBe("Bearer access-token-refreshed");
+  });
+
+  it("refreshes once when one caller stops while another waits on the lock", async () => {
+    const { local } = installChrome();
+    const expiredSession = {
+      ...session,
+      accessExpiresAt: "2000-01-01T00:00:00.000Z",
+    };
+    const refreshedSession = {
+      ...session,
+      accessToken: "access-token-refreshed",
+      accessExpiresAt: "2099-09-16T10:15:00.000Z",
+      refreshToken: "refresh-token-refreshed",
+    };
+    await local.set({ [sessionKey]: expiredSession });
+    const callerA = new AbortController();
+    const lockRequest = vi.spyOn(navigator.locks, "request");
+    let startRefresh!: () => void;
+    let finishRefresh!: (value: Response) => void;
+    const refreshStarted = new Promise<void>((resolve) => {
+      startRefresh = resolve;
+    });
+    const refreshResponse = new Promise<Response>((resolve) => {
+      finishRefresh = resolve;
+    });
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      void init;
+      if (url.includes("/sessions/refresh")) {
+        startRefresh();
+        return refreshResponse;
+      }
+      return Promise.resolve(response(awaitingUpload));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { createIntegrationOperation } =
+      await import("../../src/integration-client.js");
+
+    const pendingA = createIntegrationOperation(
+      operationInput(),
+      "2026-09-16T10:01:02.000Z",
+      undefined,
+      callerA.signal,
+    );
+    await refreshStarted;
+    const pendingB = createIntegrationOperation(
+      operationInput(),
+      "2026-09-16T10:01:02.000Z",
+    );
+    await vi.waitFor(() => expect(lockRequest).toHaveBeenCalledTimes(2));
+    callerA.abort(new DOMException("Stopped", "AbortError"));
+
+    await expect(pendingA).rejects.toMatchObject({ code: "user_cancelled" });
+    finishRefresh(response(refreshedSession));
+    await expect(pendingB).resolves.toMatchObject({ operationId });
+
+    expect(
+      fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes("/sessions/refresh"),
+      ),
+    ).toHaveLength(1);
+    const operationCalls = fetchMock.mock.calls.filter(([url]) =>
+      String(url).endsWith("/operations"),
+    );
+    expect(operationCalls).toHaveLength(1);
+    expect(
+      new Headers(operationCalls[0]?.[1]?.headers).get("Authorization"),
+    ).toBe("Bearer access-token-refreshed");
     expect(local.values[sessionKey]).toEqual(refreshedSession);
   });
 

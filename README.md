@@ -41,7 +41,7 @@ API mode needs three things:
 
 API keys stay on that backend. Lens never stores them.
 Lens migrates the legacy `http://127.0.0.1:8787` default only for an unmarked
-settings record with no client token; explicitly saved loopback backends stay
+settings record with no client token. Explicitly saved loopback backends stay
 unchanged.
 
 ## Optional DigiBot connection
