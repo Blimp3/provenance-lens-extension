@@ -12,6 +12,7 @@ import {
   PICKER_RUNTIME_VERSION,
   PickerRuntimeMessageSchema,
   ResultToastBindingsSchema,
+  SYNTHID_ACTION_ID,
   WorkflowStateSchema,
 } from "../src/index.js";
 
@@ -37,6 +38,7 @@ describe("shared runtime schemas", () => {
       DOWNLOAD_ACTION_ID,
       LINK_ACTION_ID,
       PICK_VIDEO_ACTION_ID,
+      SYNTHID_ACTION_ID,
     ]);
     expect(
       ExtensionMessageSchema.parse({
@@ -158,6 +160,84 @@ describe("shared runtime schemas", () => {
     ).toBe(false);
   });
 
+  it("accepts the toast tones and at most two distinct known buttons", () => {
+    const message = {
+      type: "show-toast",
+      runtimeVersion: PICKER_RUNTIME_VERSION,
+      sessionToken: "123e4567-e89b-42d3-a456-426614174000",
+      tone: "detected",
+      title: "OpenAI provenance detected",
+      message: "Detected signals: C2PA.",
+      resultId: null,
+    };
+    for (const tone of [
+      "success",
+      "detected",
+      "no-signal",
+      "pending",
+      "progress",
+      "error",
+    ])
+      expect(
+        PickerRuntimeMessageSchema.safeParse({ ...message, tone }).success,
+      ).toBe(true);
+    expect(
+      PickerRuntimeMessageSchema.safeParse({ ...message, tone: "rose" })
+        .success,
+    ).toBe(false);
+    expect(
+      PickerRuntimeMessageSchema.safeParse({
+        ...message,
+        actions: ["history", "check-synthid"],
+      }).success,
+    ).toBe(true);
+    for (const actions of [
+      ["history", "history"],
+      ["details", "history", "check-synthid"],
+      ["open-url"],
+    ])
+      expect(
+        PickerRuntimeMessageSchema.safeParse({ ...message, actions }).success,
+      ).toBe(false);
+    expect(
+      PickerRuntimeMessageSchema.safeParse({
+        type: "hide-toast",
+        runtimeVersion: PICKER_RUNTIME_VERSION,
+        sessionToken: message.sessionToken,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("names the armed picker with one of the four banner labels", () => {
+    const start = {
+      type: "picker-start",
+      runtimeVersion: PICKER_RUNTIME_VERSION,
+      sessionToken: "123e4567-e89b-42d3-a456-426614174000",
+    };
+    expect(PICKER_RUNTIME_VERSION).toBe("0.9.0");
+    for (const label of ["verify", "send-image", "send-video", "synthid"])
+      expect(
+        PickerRuntimeMessageSchema.safeParse({ ...start, label }).success,
+      ).toBe(true);
+    expect(
+      PickerRuntimeMessageSchema.safeParse({ ...start, label: "select" })
+        .success,
+    ).toBe(false);
+  });
+
+  it("accepts toast buttons from the page but not Details or unknown ones", () => {
+    const request = {
+      type: "toast-action",
+      sessionToken: "123e4567-e89b-42d3-a456-426614174000",
+      action: "check-synthid",
+    };
+    expect(ExtensionMessageSchema.safeParse(request).success).toBe(true);
+    for (const action of ["details", "open-url"])
+      expect(
+        ExtensionMessageSchema.safeParse({ ...request, action }).success,
+      ).toBe(false);
+  });
+
   it("accepts only strict UUID page bindings", () => {
     expect(
       PickerRuntimeMessageSchema.safeParse({
@@ -191,9 +271,29 @@ describe("shared runtime schemas", () => {
       documentId: "document-1",
     };
     expect(ResultToastBindingsSchema.safeParse([binding]).success).toBe(true);
+    expect(ResultToastBindingsSchema.parse([binding])[0]?.actions).toEqual([]);
+    expect(
+      ResultToastBindingsSchema.safeParse([
+        {
+          ...binding,
+          resultId: null,
+          actions: ["retry"],
+          retry: {
+            actionId: LINK_ACTION_ID,
+            url: "https://www.youtube.com/watch?v=abc",
+            options: { output: "mp3" },
+          },
+        },
+      ]).success,
+    ).toBe(true);
     expect(
       ResultToastBindingsSchema.safeParse([
         { ...binding, injected: "javascript:alert(1)" },
+      ]).success,
+    ).toBe(false);
+    expect(
+      ResultToastBindingsSchema.safeParse([
+        { ...binding, actions: ["history", "retry", "cancel"] },
       ]).success,
     ).toBe(false);
     expect(
@@ -216,7 +316,7 @@ describe("shared runtime schemas", () => {
     ).toBe(false);
   });
 
-  it.each(["website", "api"])(
+  it.each(["website", "api", "synthid"])(
     "accepts a resume-permission acknowledgement for %s mode",
     (verificationMode) => {
       expect(

@@ -87,6 +87,14 @@ for (const action of ACTION_REGISTRY) {
       });
   });
   actionList.append(button);
+  if (action.rowNote) {
+    const note = document.createElement("p");
+    note.id = `${action.id}-note`;
+    note.className = "muted small";
+    note.textContent = action.rowNote;
+    button.setAttribute("aria-describedby", note.id);
+    actionList.append(note);
+  }
 }
 
 cancelButton.addEventListener("click", () => {

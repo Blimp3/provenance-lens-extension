@@ -21,6 +21,8 @@ export const STORAGE_KEYS = {
   workflow: "provenanceLens.workflow",
   latest: "provenanceLens.latest",
   popupLatestByWindow: "provenanceLens.popupLatestByWindow",
+  // The acknowledged SynthID disclosure version, apart from the settings.
+  synthidDisclosure: "provenanceLens.synthidDisclosure",
 } as const;
 
 const STORAGE_MUTATION_LOCK = "provenance-lens.storage-mutations";
@@ -92,6 +94,23 @@ export async function updateSettings(
   const next = ExtensionSettingsSchema.parse({ ...settings, ...update });
   await saveSettings(next);
   return next;
+}
+
+/** The SynthID disclosure version the user acknowledged; null before that. */
+export async function getSynthIdDisclosureVersion(): Promise<number | null> {
+  const values = await chrome.storage.local.get(STORAGE_KEYS.synthidDisclosure);
+  const version = values[STORAGE_KEYS.synthidDisclosure];
+  return typeof version === "number" && Number.isSafeInteger(version)
+    ? version
+    : null;
+}
+
+export async function setSynthIdDisclosureVersion(
+  version: number,
+): Promise<void> {
+  await chrome.storage.local.set({
+    [STORAGE_KEYS.synthidDisclosure]: version,
+  });
 }
 
 export async function getHistory(): Promise<HistoryRecord[]> {

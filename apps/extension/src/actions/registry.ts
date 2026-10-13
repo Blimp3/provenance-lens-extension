@@ -4,6 +4,7 @@ import {
   DOWNLOAD_ACTION_ID,
   LINK_ACTION_ID,
   PICK_VIDEO_ACTION_ID,
+  SYNTHID_ACTION_ID,
   type ExtensionSettings,
   type ImageSelection,
   type LinkDownloadOptions,
@@ -18,6 +19,7 @@ import {
   verifySelectionOnWebsite,
   type WebsiteVerificationOutcome,
 } from "./verify-openai-website.js";
+import { checkSelectionOnSynthId } from "./check-synthid-website.js";
 import { openAudioCheck } from "./verify-openai-audio.js";
 import { runIntegratedImageAction } from "./integration-image.js";
 import { sendPageLink, type PageLinkSource } from "./integration-link.js";
@@ -52,12 +54,19 @@ interface ActionDescription {
     | "integration-operation"
     | "telegram-delivery";
   settings?: readonly (keyof ExtensionSettings)[];
+  /** Shown under the action's row or button, word for word. */
+  rowNote?: string;
 }
 export type ActionDefinition = ActionDescription &
   (
     | { id: typeof ACTION_ID; inputType: "image-file"; handler: ActionHandler }
     | {
         id: typeof DOWNLOAD_ACTION_ID;
+        inputType: "image-file";
+        handler: ActionHandler;
+      }
+    | {
+        id: typeof SYNTHID_ACTION_ID;
         inputType: "image-file";
         handler: ActionHandler;
       }
@@ -133,6 +142,22 @@ export const ACTION_REGISTRY: readonly ActionDefinition[] = Object.freeze([
     }),
   },
   {
+    id: SYNTHID_ACTION_ID,
+    displayName: "Check with Google SynthID",
+    triggerLabel: "Check with Google SynthID…",
+    description:
+      "Save the exact file of one selected image and open Google's SynthID Detector, where you upload it yourself. Lens uploads nothing to Google and keeps no result.",
+    iconRef: "icons/icon-48.png",
+    inputType: "image-file",
+    resultType: "website-handoff",
+    settings: [],
+    // Owner-approved text (docs/design/palette-2.0.md §3.4).
+    rowNote:
+      "Google has no SynthID API yet, so Lens opens Google's SynthID Detector with your file. Lens will check it directly once Google releases an API.",
+    handler: (context) =>
+      checkSelectionOnSynthId(context.selection, context.retrieval),
+  },
+  {
     id: AUDIO_ACTION_ID,
     displayName: "Check audio or video segment",
     triggerLabel: "Check audio or video segment",
@@ -184,6 +209,7 @@ export function getActionDefinition(
       | typeof AUDIO_ACTION_ID
       | typeof DOWNLOAD_ACTION_ID
       | typeof LINK_ACTION_ID
-      | typeof PICK_VIDEO_ACTION_ID,
+      | typeof PICK_VIDEO_ACTION_ID
+      | typeof SYNTHID_ACTION_ID,
   );
 }

@@ -376,7 +376,7 @@ test("selects the intended image through hostile page CSS and cancels cleanly", 
     );
     await expect(overlay).toHaveAttribute(
       "aria-label",
-      /Image · 320 × 180 px · Click to select · Esc to cancel/u,
+      /Image · 320 × 180 px · Click to verify · Esc to cancel/u,
     );
     await expect(overlay).toHaveCSS("pointer-events", "none");
 
@@ -439,7 +439,7 @@ test("selects the intended image through hostile page CSS and cancels cleanly", 
     );
     await expect(restartedOverlay).toHaveAttribute(
       "aria-label",
-      /Image · 320 × 180 px · Click to select · Esc to cancel/u,
+      /Image · 320 × 180 px · Click to verify · Esc to cancel/u,
     );
 
     await targetPage.keyboard.press("Escape");

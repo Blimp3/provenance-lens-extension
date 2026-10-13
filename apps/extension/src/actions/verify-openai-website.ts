@@ -24,11 +24,37 @@ export const WEBSITE_DOWNLOAD_PERMISSION_MESSAGE =
 export const WEBSITE_OPEN_ERROR_MESSAGE =
   "The exact image was downloaded, but OpenAI Verify could not be opened. Open it manually to upload the file.";
 
+/** Where a website handoff goes and what it tells the user. */
+export interface WebsiteHandoffTarget {
+  url: string;
+  /** The workflow line after the site opened. */
+  handoffMessage: string;
+  /** The page toast's line under "Exact image saved". */
+  toastMessage: string;
+  retrievalErrorMessage: string;
+  downloadPermissionMessage: string;
+  openErrorMessage: string;
+  cancelledMessage: string;
+}
+
+export const OPENAI_VERIFY_TARGET: WebsiteHandoffTarget = Object.freeze({
+  url: OPENAI_VERIFY_URL,
+  handoffMessage: WEBSITE_HANDOFF_MESSAGE,
+  toastMessage:
+    "Upload it to OpenAI Verify to review its supported provenance signals.",
+  retrievalErrorMessage:
+    "The selected image could not be retrieved for Website mode.",
+  downloadPermissionMessage: WEBSITE_DOWNLOAD_PERMISSION_MESSAGE,
+  openErrorMessage: WEBSITE_OPEN_ERROR_MESSAGE,
+  cancelledMessage: "Website verification was cancelled by the user.",
+});
+
 export type WebsiteVerificationOutcome =
   | {
       kind: "website";
       status: "opened";
-      message: typeof WEBSITE_HANDOFF_MESSAGE;
+      message: string;
+      toastMessage: string;
     }
   | {
       kind: "website";
@@ -51,16 +77,19 @@ export interface WebsiteBrowser {
 
 /**
  * Retrieve the selected original bytes, save those bytes as a browser
- * download, and open the official Verify page for a user-led upload.
+ * download, and open the target site (OpenAI Verify unless another target is
+ * given) for a user-led upload.
  *
- * This function never sends a request to OpenAI and never injects, fills, or
- * reads the Verify page. The data URL is a reversible transport for the exact
- * validated bytes; it is not an image conversion or re-encoding operation.
+ * This function never sends a request to the target and never injects,
+ * fills, or reads its page. The data URL is a reversible transport for the
+ * exact validated bytes; it is not an image conversion or re-encoding
+ * operation.
  */
 export async function verifySelectionOnWebsite(
   selection: ImageSelection,
   context: ImageRetrievalContext = {},
   browser: WebsiteBrowser = createChromeWebsiteBrowser(),
+  target: WebsiteHandoffTarget = OPENAI_VERIFY_TARGET,
 ): Promise<WebsiteVerificationOutcome> {
   let image;
   try {
@@ -68,14 +97,15 @@ export async function verifySelectionOnWebsite(
   } catch (error: unknown) {
     return websiteError(
       error,
-      "The selected image could not be retrieved for Website mode.",
+      target.retrievalErrorMessage,
       "image_retrieval_failed",
+      target,
     );
   }
 
   if (context.signal?.aborted) {
     image.bytes.fill(0);
-    return websiteCancelled();
+    return websiteCancelled(target);
   }
 
   try {
@@ -83,9 +113,9 @@ export async function verifySelectionOnWebsite(
       url: `data:${image.mime};base64,${toBase64(image.bytes)}`,
       filename: image.filename,
       conflictAction: "uniquify",
-      // Website mode is already initiated by the user's picker click. Save
-      // directly to the browser's Downloads directory so Verify opens without
-      // a second file chooser; uniquify prevents an existing file collision.
+      // The handoff is already initiated by the user's picker click. Save
+      // directly to the browser's Downloads directory so the site opens
+      // without a second file chooser; uniquify prevents a file collision.
       saveAs: false,
     });
   } catch {
@@ -94,27 +124,28 @@ export async function verifySelectionOnWebsite(
       kind: "website",
       status: "error",
       errorCode: "permission_denied",
-      message: WEBSITE_DOWNLOAD_PERMISSION_MESSAGE,
+      message: target.downloadPermissionMessage,
     };
   }
 
   image.bytes.fill(0);
-  if (context.signal?.aborted) return websiteCancelled();
+  if (context.signal?.aborted) return websiteCancelled(target);
   try {
-    await browser.createTab({ url: OPENAI_VERIFY_URL });
+    await browser.createTab({ url: target.url });
   } catch {
     return {
       kind: "website",
       status: "error",
       errorCode: "invalid_request",
-      message: WEBSITE_OPEN_ERROR_MESSAGE,
+      message: target.openErrorMessage,
     };
   }
 
   return {
     kind: "website",
     status: "opened",
-    message: WEBSITE_HANDOFF_MESSAGE,
+    message: target.handoffMessage,
+    toastMessage: target.toastMessage,
   };
 }
 
@@ -140,9 +171,10 @@ function websiteError(
   error: unknown,
   fallbackMessage: string,
   fallbackCode: ErrorCode,
+  target: WebsiteHandoffTarget,
 ): WebsiteVerificationOutcome {
   if (error instanceof ExtensionWorkflowError) {
-    if (error.code === "user_cancelled") return websiteCancelled();
+    if (error.code === "user_cancelled") return websiteCancelled(target);
     return {
       kind: "website",
       status: "error",
@@ -151,7 +183,7 @@ function websiteError(
     };
   }
   if (error instanceof DOMException && error.name === "AbortError") {
-    return websiteCancelled();
+    return websiteCancelled(target);
   }
   return {
     kind: "website",
@@ -161,10 +193,12 @@ function websiteError(
   };
 }
 
-function websiteCancelled(): WebsiteVerificationOutcome {
+function websiteCancelled(
+  target: WebsiteHandoffTarget,
+): WebsiteVerificationOutcome {
   return {
     kind: "website",
     status: "cancelled",
-    message: "Website verification was cancelled by the user.",
+    message: target.cancelledMessage,
   };
 }

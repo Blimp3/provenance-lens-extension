@@ -61,6 +61,14 @@ vi.mock("../../src/actions/registry.js", () => ({
       inputType: "image-file",
     },
     {
+      id: "check-synthid-website",
+      triggerLabel: "Check with Google SynthID…",
+      description: "Save the exact file and open Google's site.",
+      inputType: "image-file",
+      rowNote:
+        "Google has no SynthID API yet, so Lens opens Google's SynthID Detector with your file. Lens will check it directly once Google releases an API.",
+    },
+    {
       id: "send-page-link",
       triggerLabel: "Send this page's link to Telegram",
       description: "Send only this page's link to DigiBot.",
@@ -275,6 +283,27 @@ describe("popup optional-access setup card", () => {
       }),
     );
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the SynthID row note under its button and starts the SynthID picker", async () => {
+    vi.spyOn(window, "close").mockImplementation(() => undefined);
+    await loadPopup({ allSites: true, downloads: true, complete: true });
+    const button = document.querySelector<HTMLButtonElement>(
+      '#action-list button[data-action-id="check-synthid-website"]',
+    );
+    const note = button?.nextElementSibling;
+    expect(note?.textContent).toBe(
+      "Google has no SynthID API yet, so Lens opens Google's SynthID Detector with your file. Lens will check it directly once Google releases an API.",
+    );
+    expect(button?.getAttribute("aria-describedby")).toBe(note?.id);
+    button?.click();
+    await vi.waitFor(() =>
+      expect(mocks.sendMessage).toHaveBeenCalledWith({
+        type: "start-action",
+        actionId: "check-synthid-website",
+        trigger: "popup",
+      }),
+    );
   });
 
   function pageLinkButton(): HTMLButtonElement {

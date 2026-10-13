@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -19,6 +22,8 @@ describe("disclosure acknowledgement", () => {
       <div id="disclosure-status"></div>
       <div id="website-disclosure"></div>
       <div id="api-disclosure"></div>
+      <div id="synthid-disclosure"></div>
+      <h1 id="page-title">Before your first verification</h1>
       <button id="acknowledge" type="button"></button>
       <button id="cancel" type="button"></button>
     `;
@@ -79,6 +84,53 @@ describe("disclosure acknowledgement", () => {
     );
     expect(document.getElementById("disclosure-status")?.textContent).toBe(
       "Disclosure acknowledged. The picker is starting.",
+    );
+  });
+
+  it("asks once for the SynthID handoff and names Google, the saved copy and the 24-hour signature", async () => {
+    const page = readFileSync(
+      resolve(import.meta.dirname, "../../public/disclosure.html"),
+      "utf8",
+    );
+    const parsed = new DOMParser().parseFromString(page, "text/html");
+    const synthId = parsed.getElementById("synthid-disclosure");
+    expect(synthId?.hidden).toBe(true);
+    const text = synthId?.textContent.replace(/\s+/gu, " ") ?? "";
+    expect(text).toContain("Google's SynthID Detector");
+    expect(text).toContain(
+      "Your browser keeps the copy in its download folder",
+    );
+    expect(text).toContain(
+      "Google keeps a signature of each uploaded file for 24 hours",
+    );
+    expect(text).toContain("does not upload the file to Google");
+
+    history.replaceState(
+      null,
+      "",
+      `/disclosure.html?pending=${validPendingId}&kind=synthid`,
+    );
+    await import("../../src/ui/disclosure.js");
+
+    const acknowledge = document.getElementById("acknowledge");
+    await vi.waitFor(() =>
+      expect((acknowledge as HTMLButtonElement).disabled).toBe(false),
+    );
+    expect(document.getElementById("synthid-disclosure")?.hidden).toBe(false);
+    expect(document.getElementById("website-disclosure")?.hidden).toBe(true);
+    expect(document.getElementById("api-disclosure")?.hidden).toBe(true);
+    expect(document.getElementById("page-title")?.textContent).toBe(
+      "Before you check with Google SynthID",
+    );
+    // The handoff's disclosure does not depend on the verification mode.
+    expect(mocks.getSettings).not.toHaveBeenCalled();
+    acknowledge?.dispatchEvent(new MouseEvent("click"));
+    await vi.waitFor(() =>
+      expect(mocks.sendMessage).toHaveBeenCalledWith({
+        type: "resume-permission",
+        pendingId: validPendingId,
+        verificationMode: "synthid",
+      }),
     );
   });
 });

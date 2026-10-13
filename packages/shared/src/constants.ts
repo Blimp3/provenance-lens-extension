@@ -3,6 +3,7 @@ export const AUDIO_ACTION_ID = "verify-openai-audio" as const;
 export const DOWNLOAD_ACTION_ID = "download-original-media" as const;
 export const LINK_ACTION_ID = "send-page-link" as const;
 export const PICK_VIDEO_ACTION_ID = "pick-video-link" as const;
+export const SYNTHID_ACTION_ID = "check-synthid-website" as const;
 export const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
 export const MAX_CONTENT_CREDENTIALS_BYTES = 4 * 1024 * 1024;
 // ponytail: 4 MiB bounds parser memory for short compressed audio; raise it only
@@ -13,6 +14,7 @@ export const MAX_INLINE_IMAGE_BYTES = 8 * 1024 * 1024;
 export const DISCLOSURE_VERSION = 2;
 export const DEFAULT_BACKEND_URL = "https://provenance-backend.example.invalid";
 export const OPENAI_VERIFY_URL = "https://openai.com/research/verify/";
+export const SYNTHID_DETECTOR_URL = "https://synthid.com/";
 export const VERIFICATION_POLICY_VERSION = "openai-content-provenance-v1";
 export const RESULT_SCHEMA_VERSION = 1;
 // The pinned trust snapshot is part of the image policy so old cache entries

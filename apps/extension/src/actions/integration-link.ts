@@ -14,7 +14,7 @@ import { setWorkflowState } from "../storage.js";
 
 export const PAGE_LINK_SENDING_MESSAGE = "Sending this page's link to DigiBot…";
 export const PAGE_LINK_QUEUED_MESSAGE =
-  "Queued in DigiBot; the result arrives in your Telegram chat.";
+  "Queued in DigiBot. The result arrives in your Telegram chat.";
 const PAGE_LINK_URL_MESSAGE =
   "Only an HTTP or HTTPS page address can be sent to Telegram.";
 export const PAGE_LINK_OPTIONS_MESSAGE =
@@ -25,9 +25,13 @@ const PAGE_LINK_FAILED_MESSAGE = "The page link could not be sent to DigiBot.";
 export type PageLinkSource = { url?: string | undefined };
 
 export class PageLinkError extends Error {
-  public constructor(message: string) {
+  /** True when the fix is connecting Lens to DigiBot, not sending again. */
+  public readonly needsConnection: boolean;
+
+  public constructor(message: string, needsConnection = false) {
     super(message);
     this.name = "PageLinkError";
+    this.needsConnection = needsConnection;
   }
 }
 
@@ -46,6 +50,7 @@ export async function sendPageLink(
     if (!session)
       throw new PageLinkError(
         "Connect Provenance Lens to DigiBot before sending a page link.",
+        true,
       );
     const sourceUrl = pageLinkUrl(page.url);
     // DigiBot would refuse a one-sided or inverted clip anyway; say so first.

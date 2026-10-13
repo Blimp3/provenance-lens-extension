@@ -1,14 +1,22 @@
-import type { NormalizedProvenanceResult } from "@provenance-lens/shared";
+import type {
+  NormalizedProvenanceResult,
+  ResultToastBinding,
+} from "@provenance-lens/shared";
 import { describe, expect, it } from "vitest";
 
 import {
   detectedToastCopy,
   errorToastCopy,
   matchesResultToastBinding,
+  matchesToastActionBinding,
   noSignalToastCopy,
+  progressToastMessage,
   removePageResultToastBindings,
   removeResultToastBinding,
+  replaceResultToastBinding,
   resultDetailsUrl,
+  spendToastAction,
+  toastActions,
   upsertResultToastBinding,
 } from "../../src/notifications.js";
 
@@ -64,12 +72,13 @@ describe("toast copies and result links", () => {
   });
 
   it("opens details only for the exact bound result document", () => {
-    const binding = {
+    const binding: ResultToastBinding = {
       resultId: "123e4567-e89b-42d3-a456-426614174000",
       sessionToken: "223e4567-e89b-42d3-a456-426614174000",
       tabId: 7,
       frameId: 3,
       documentId: "document-1",
+      actions: ["details"],
     };
     const request = {
       resultId: binding.resultId,
@@ -119,12 +128,13 @@ describe("toast copies and result links", () => {
   });
 
   it("keeps a bounded single result binding per document", () => {
-    const first = {
+    const first: ResultToastBinding = {
       resultId: "123e4567-e89b-42d3-a456-426614174000",
       sessionToken: "223e4567-e89b-42d3-a456-426614174000",
       tabId: 7,
       frameId: 3,
       documentId: "document-1",
+      actions: ["details"],
     };
     const replacement = {
       ...first,
@@ -153,5 +163,103 @@ describe("toast copies and result links", () => {
         documentId: otherDocument.documentId,
       }),
     ).toEqual([replacement]);
+  });
+
+  it("puts Details first on a saved result and keeps at most two buttons", () => {
+    const resultId = "123e4567-e89b-42d3-a456-426614174000";
+    expect(toastActions(resultId)).toEqual(["details"]);
+    expect(toastActions(resultId, ["check-synthid"])).toEqual([
+      "details",
+      "check-synthid",
+    ]);
+    expect(toastActions(resultId, ["grant-access", "details"])).toEqual([
+      "details",
+      "grant-access",
+    ]);
+    expect(toastActions(null, ["details", "history"])).toEqual(["history"]);
+    expect(toastActions(null, ["history", "check-synthid", "retry"])).toEqual([
+      "history",
+      "check-synthid",
+    ]);
+    expect(progressToastMessage("page.example", "DigiBot check")).toBe(
+      "page.example · DigiBot check",
+    );
+    expect(progressToastMessage("", "Video")).toBe("This page · Video");
+  });
+
+  it("accepts a toast button only from its bound document, once for Retry, Cancel and Details", () => {
+    const binding: ResultToastBinding = {
+      resultId: null,
+      sessionToken: "223e4567-e89b-42d3-a456-426614174000",
+      tabId: 7,
+      frameId: 0,
+      documentId: "document-1",
+      actions: ["retry", "history"],
+      retry: {
+        actionId: "send-page-link",
+        url: "https://page.example/watch",
+        options: { output: "mp3" },
+      },
+    };
+    const sender = { tabId: 7, frameId: 0, documentId: "document-1" };
+    const request = {
+      sessionToken: binding.sessionToken,
+      action: "retry",
+    } as const;
+    expect(matchesToastActionBinding(binding, request, sender)).toBe(true);
+    expect(
+      matchesToastActionBinding(
+        binding,
+        { ...request, action: "connect-digibot" },
+        sender,
+      ),
+    ).toBe(false);
+    expect(
+      matchesToastActionBinding(binding, request, {
+        ...sender,
+        documentId: "navigated-document",
+      }),
+    ).toBe(false);
+    expect(
+      matchesToastActionBinding(binding, request, { ...sender, frameId: 2 }),
+    ).toBe(false);
+
+    const afterRetry = spendToastAction(binding, "retry");
+    expect(afterRetry).toEqual({
+      resultId: null,
+      sessionToken: binding.sessionToken,
+      tabId: 7,
+      frameId: 0,
+      documentId: "document-1",
+      actions: ["history"],
+    });
+    // History opens a page and may be used again.
+    expect(spendToastAction(afterRetry as ResultToastBinding, "history")).toBe(
+      afterRetry,
+    );
+    expect(
+      spendToastAction({ ...binding, actions: ["cancel"] }, "cancel"),
+    ).toBeNull();
+    expect(
+      spendToastAction(
+        { ...binding, actions: ["stop-waiting"] },
+        "stop-waiting",
+      ),
+    ).toBeNull();
+
+    const result: ResultToastBinding = {
+      ...binding,
+      resultId: "123e4567-e89b-42d3-a456-426614174000",
+      actions: ["details", "check-synthid"],
+    };
+    const afterDetails = spendToastAction(result, "details");
+    expect(afterDetails).toMatchObject({
+      resultId: null,
+      actions: ["check-synthid"],
+    });
+    expect(replaceResultToastBinding([result], result, afterDetails)).toEqual([
+      afterDetails,
+    ]);
+    expect(replaceResultToastBinding([result], result, null)).toEqual([]);
   });
 });

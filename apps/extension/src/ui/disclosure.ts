@@ -1,6 +1,6 @@
 import {
   ExtensionMessageSchema,
-  type VerificationMode,
+  type DisclosureMode,
 } from "@provenance-lens/shared";
 
 import { getSettings } from "../storage.js";
@@ -8,9 +8,13 @@ import { getSettings } from "../storage.js";
 const status = required<HTMLElement>("disclosure-status");
 const websiteDisclosure = required<HTMLElement>("website-disclosure");
 const apiDisclosure = required<HTMLElement>("api-disclosure");
+const synthIdDisclosure = required<HTMLElement>("synthid-disclosure");
 const acknowledgeButton = required<HTMLButtonElement>("acknowledge");
-const pendingId = new URLSearchParams(location.search).get("pending");
-let renderedMode: VerificationMode | null = null;
+const query = new URLSearchParams(location.search);
+const pendingId = query.get("pending");
+// The Google SynthID handoff has its own one-time disclosure (§3.4).
+const synthIdHandoff = query.get("kind") === "synthid";
+let renderedMode: DisclosureMode | null = null;
 
 acknowledgeButton.disabled = true;
 void initializeDisclosure();
@@ -47,6 +51,14 @@ async function initializeDisclosure(): Promise<void> {
     showInvalidDisclosure();
     return;
   }
+  if (synthIdHandoff) {
+    if (!resumePermissionMessage("synthid")) {
+      showInvalidDisclosure();
+      return;
+    }
+    renderModeDisclosure("synthid");
+    return;
+  }
   try {
     const settings = await getSettings();
     if (!resumePermissionMessage(settings.verificationMode)) {
@@ -61,7 +73,7 @@ async function initializeDisclosure(): Promise<void> {
   }
 }
 
-function resumePermissionMessage(mode: VerificationMode) {
+function resumePermissionMessage(mode: DisclosureMode) {
   const parsed = ExtensionMessageSchema.safeParse({
     type: "resume-permission",
     pendingId,
@@ -76,10 +88,15 @@ function showInvalidDisclosure(): void {
   acknowledgeButton.disabled = true;
 }
 
-function renderModeDisclosure(mode: VerificationMode): void {
-  const websiteMode = mode === "website";
-  websiteDisclosure.hidden = !websiteMode;
-  apiDisclosure.hidden = websiteMode;
+function renderModeDisclosure(mode: DisclosureMode): void {
+  websiteDisclosure.hidden = mode !== "website";
+  apiDisclosure.hidden = mode !== "api";
+  synthIdDisclosure.hidden = mode !== "synthid";
+  if (mode === "synthid") {
+    document.title = "Before you check with Google SynthID";
+    const heading = document.getElementById("page-title");
+    if (heading) heading.textContent = document.title;
+  }
   renderedMode = mode;
   acknowledgeButton.disabled = false;
 }

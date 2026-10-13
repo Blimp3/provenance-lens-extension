@@ -446,7 +446,7 @@ test("pairs DigiBot, separates image Check and Download operations, sends a page
       true,
     );
     await expect(linkPopup.locator("#workflow-status")).toHaveText(
-      "Queued in DigiBot; the result arrives in your Telegram chat.",
+      "Queued in DigiBot. The result arrives in your Telegram chat.",
     );
     expect(linkPopup.isClosed()).toBe(false);
     expect(operationInputs).toHaveLength(2);

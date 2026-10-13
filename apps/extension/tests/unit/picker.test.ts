@@ -204,13 +204,63 @@ function overlayElement(): HTMLElement | null {
   );
 }
 
+function toastRoot(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    '[data-provenance-lens-toast="true"]',
+  );
+}
+
+function bannerRoot(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    '[data-provenance-lens-picker="banner"]',
+  );
+}
+
+/** The closed shadow roots of the newest overlay, banner and toast. */
+function captureShadows(): {
+  overlay: ShadowRoot | null;
+  banner: ShadowRoot | null;
+  toast: ShadowRoot | null;
+} {
+  const originalAttachShadow = Object.getOwnPropertyDescriptor(
+    Element.prototype,
+    "attachShadow",
+  )?.value as (init: ShadowRootInit) => ShadowRoot;
+  const capture: {
+    overlay: ShadowRoot | null;
+    banner: ShadowRoot | null;
+    toast: ShadowRoot | null;
+  } = { overlay: null, banner: null, toast: null };
+  vi.spyOn(Element.prototype, "attachShadow").mockImplementation(function (
+    this: Element,
+    init: ShadowRootInit,
+  ): ShadowRoot {
+    const shadow = Reflect.apply(originalAttachShadow, this, [init]);
+    if (this instanceof HTMLElement) {
+      const picker = this.dataset["provenanceLensPicker"];
+      if (picker === "overlay") capture.overlay = shadow;
+      if (picker === "banner") capture.banner = shadow;
+      if (this.dataset["provenanceLensToast"] === "true")
+        capture.toast = shadow;
+    }
+    return shadow;
+  });
+  return capture;
+}
+
+function toneBarColor(shadow: ShadowRoot | null): string | undefined {
+  return shadow?.querySelector<HTMLElement>('[data-toast-tone-bar="true"]')
+    ?.style.background;
+}
+
 function resetPickerEnvironment(): void {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.resetModules();
   document.body.replaceChildren();
   document.documentElement.style.cursor = "";
   document
-    .querySelectorAll('[data-provenance-lens-picker="overlay"]')
+    .querySelectorAll("[data-provenance-lens-picker]")
     .forEach((element) => element.remove());
   document
     .querySelectorAll('[data-provenance-lens-toast="true"]')
@@ -219,6 +269,9 @@ function resetPickerEnvironment(): void {
   Reflect.deleteProperty(document, "elementFromPoint");
   Reflect.deleteProperty(window, "requestAnimationFrame");
   Reflect.deleteProperty(window, "cancelAnimationFrame");
+  Reflect.deleteProperty(window, "matchMedia");
+  Reflect.deleteProperty(document, "fullscreenElement");
+  Reflect.deleteProperty(HTMLElement.prototype, "showPopover");
   (
     window as Window & { __provenanceLensPickerInstalled?: boolean | string }
   ).__provenanceLensPickerInstalled = false;
@@ -386,7 +439,7 @@ describe("image picker lifecycle", () => {
     expect(focus?.style.width).toBe("36.6px");
     expect(focus?.style.height).toBe("18.6px");
     expect(label?.textContent).toContain("Image · 37 × 19 px");
-    expect(label?.textContent).toContain("Click to select · Esc to cancel");
+    expect(label?.textContent).toContain("Click to verify · Esc to cancel");
     expect(image.style.cssText).toBe(originalImageStyle);
   });
 
@@ -602,24 +655,7 @@ describe("image picker lifecycle", () => {
 
   it("renders one document-bound accessible toast as text without stealing focus", async () => {
     const { sendMessage, sendPickerMessage } = installChrome();
-    const originalAttachShadow = Object.getOwnPropertyDescriptor(
-      Element.prototype,
-      "attachShadow",
-    )?.value as (init: ShadowRootInit) => ShadowRoot;
-    const shadowCapture: { value: ShadowRoot | null } = { value: null };
-    vi.spyOn(Element.prototype, "attachShadow").mockImplementation(function (
-      this: Element,
-      init: ShadowRootInit,
-    ): ShadowRoot {
-      const shadow = Reflect.apply(originalAttachShadow, this, [init]);
-      if (
-        this instanceof HTMLElement &&
-        this.dataset["provenanceLensToast"] === "true"
-      ) {
-        shadowCapture.value = shadow;
-      }
-      return shadow;
-    });
+    const shadows = captureShadows();
     const focused = document.createElement("button");
     focused.textContent = "Page control";
     document.body.append(focused);
@@ -638,101 +674,85 @@ describe("image picker lifecycle", () => {
     } as const;
 
     sendPickerMessage(toast);
-    expect(
-      document.querySelector('[data-provenance-lens-toast="true"]'),
-    ).toBeNull();
+    expect(toastRoot()).toBeNull();
     sendPickerMessage({
       type: "page-bind",
       runtimeVersion: PICKER_RUNTIME_VERSION,
       sessionToken: OTHER_SESSION_TOKEN,
     });
     sendPickerMessage(toast);
-    expect(
-      document.querySelector('[data-provenance-lens-toast="true"]'),
-    ).toBeNull();
+    expect(toastRoot()).toBeNull();
     bindMessage(sendPickerMessage);
     sendPickerMessage(toast);
-    const firstRoot = document.querySelector<HTMLElement>(
-      '[data-provenance-lens-toast="true"]',
-    );
-    const firstShadow = shadowCapture.value;
-    const region = firstShadow?.querySelector<HTMLElement>(
+    const firstRoot = toastRoot();
+    const shadow = shadows.toast;
+    const region = shadow?.querySelector<HTMLElement>(
       '[data-toast-region="true"]',
     );
     expect(firstRoot?.tagName).toBe("DIV");
     expect(region?.getAttribute("role")).toBe("alert");
     expect(region?.getAttribute("aria-live")).toBe("assertive");
     expect(region?.getAttribute("aria-atomic")).toBe("true");
-    expect(region?.style.borderColor).toBe("rgb(251, 113, 133)");
-    expect(region?.style.background).toBe("rgb(17, 17, 17)");
+    expect(region?.dataset["toastTone"]).toBe("error");
+    expect(toneBarColor(shadow)).toBe("var(--lens-danger)");
+    expect(region?.style.background).toBe("var(--lens-surface)");
+    expect(region?.style.borderRadius).toBe("12px");
+    expect(firstRoot?.style.getPropertyValue("width")).toContain("380px");
+    expect(region?.style.getPropertyValue("--lens-surface")).toBe("#FFFFFF");
     expect(region?.textContent).toContain(
       '<img src=x onerror="globalThis.pwned=true">',
     );
-    expect(firstShadow?.querySelector("img, script")).toBeNull();
+    expect(shadow?.querySelector("img, script")).toBeNull();
     expect(document.activeElement).toBe(focused);
+    // A result toast without buttons still offers ×; Details needs its button.
+    expect(shadow?.querySelector("[data-toast-action]")).toBeNull();
 
+    // The next toast updates the same one in place.
     sendPickerMessage({
       ...toast,
       tone: "no-signal",
       title: "No supported OpenAI signal detected",
       message: "This does not prove that the image is human-made.",
+      actions: ["details", "check-synthid"],
     });
-    expect(firstRoot?.isConnected).toBe(false);
+    expect(firstRoot?.isConnected).toBe(true);
     expect(
       document.querySelectorAll('[data-provenance-lens-toast="true"]'),
     ).toHaveLength(1);
-    const secondShadow = shadowCapture.value;
+    expect(region?.getAttribute("role")).toBe("status");
+    expect(region?.getAttribute("aria-live")).toBe("polite");
+    expect(toneBarColor(shadow)).toBe("var(--lens-neutral)");
     expect(
-      secondShadow?.querySelector<HTMLElement>('[data-toast-region="true"]')
-        ?.style.borderColor,
-    ).toBe("rgb(251, 113, 133)");
-    const details = secondShadow?.querySelector<HTMLButtonElement>(
-      '[data-toast-details="true"]',
+      shadow?.querySelector('[data-toast-title="true"]')?.textContent,
+    ).toBe("No supported OpenAI signal detected");
+    const buttons = Array.from(
+      shadow?.querySelectorAll<HTMLButtonElement>("[data-toast-action]") ?? [],
     );
-    expect(details?.type).toBe("button");
-    expect(details?.getAttribute("aria-label")).toContain(
-      "Open full verification details",
-    );
-    expect(details?.getAttribute("aria-label")).toContain(
-      "No supported OpenAI signal detected.",
-    );
-    expect(details?.style.width).toBe("100%");
-    expect(
-      Array.from(details?.children ?? []).map((child) => child.tagName),
-    ).toEqual(["SPAN", "SPAN"]);
-    details?.click();
-    await vi.waitFor(() =>
-      expect(sendMessage).toHaveBeenCalledWith({
-        type: "open-result-details",
-        sessionToken: SESSION_TOKEN,
-        resultId,
-      }),
-    );
-    expect(
-      document.querySelector('[data-provenance-lens-toast="true"]'),
-    ).not.toBeNull();
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      "Details",
+      "Also check with Google ↗",
+    ]);
+    buttons[0]?.click();
+    buttons[1]?.click();
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2));
+    expect(sendMessage).toHaveBeenNthCalledWith(1, {
+      type: "open-result-details",
+      sessionToken: SESSION_TOKEN,
+      resultId,
+    });
+    expect(sendMessage).toHaveBeenNthCalledWith(2, {
+      type: "toast-action",
+      sessionToken: SESSION_TOKEN,
+      action: "check-synthid",
+    });
+    expect(toastRoot()).not.toBeNull();
+    expect(document.activeElement).toBe(focused);
   });
 
   it("dismisses a persistent toast only after the user activates Dismiss", async () => {
+    vi.useFakeTimers();
     const { sendPickerMessage } = installChrome();
-    const originalAttachShadow = Object.getOwnPropertyDescriptor(
-      Element.prototype,
-      "attachShadow",
-    )?.value as (init: ShadowRootInit) => ShadowRoot;
-    const shadowCapture: { value: ShadowRoot | null } = { value: null };
-    vi.spyOn(Element.prototype, "attachShadow").mockImplementation(function (
-      this: Element,
-      init: ShadowRootInit,
-    ): ShadowRoot {
-      const attached = Reflect.apply(originalAttachShadow, this, [init]);
-      if (
-        this instanceof HTMLElement &&
-        this.dataset["provenanceLensToast"] === "true"
-      ) {
-        shadowCapture.value = attached;
-      }
-      return attached;
-    });
+    const shadows = captureShadows();
     await import("../../src/picker.js");
     bindMessage(sendPickerMessage);
     sendPickerMessage({
@@ -743,27 +763,28 @@ describe("image picker lifecycle", () => {
       title: "OpenAI provenance detected",
       message: "Detected signals: C2PA.",
       resultId: null,
+      // Details needs a saved result, so it is not drawn without one.
+      actions: ["details", "history"],
     });
-    await Promise.resolve();
+    expect(toastRoot()).not.toBeNull();
+    expect(toneBarColor(shadows.toast)).toBe("var(--lens-ok)");
     expect(
-      document.querySelector('[data-provenance-lens-toast="true"]'),
-    ).not.toBeNull();
-    expect(
-      shadowCapture.value?.querySelector<HTMLElement>(
-        '[data-toast-region="true"]',
-      )?.style.borderColor,
-    ).toBe("rgb(74, 222, 128)");
-    expect(
-      shadowCapture.value?.querySelector('[data-toast-details="true"]'),
-    ).toBeNull();
-    const dismiss = Array.from(
-      shadowCapture.value?.querySelectorAll("button") ?? [],
-    ).find((button) => button.textContent === "Dismiss");
+      Array.from(
+        shadows.toast?.querySelectorAll("[data-toast-action]") ?? [],
+      ).map((button) => button.textContent),
+    ).toEqual(["History"]);
+    // A verdict stays until the user dismisses it.
+    vi.advanceTimersByTime(60_000);
+    expect(toastRoot()).not.toBeNull();
+    const dismiss = shadows.toast?.querySelector<HTMLButtonElement>(
+      "[data-toast-dismiss]",
+    );
     expect(dismiss?.type).toBe("button");
+    expect(dismiss?.getAttribute("aria-label")).toBe(
+      "Dismiss Provenance Lens result",
+    );
     dismiss?.click();
-    expect(
-      document.querySelector('[data-provenance-lens-toast="true"]'),
-    ).toBeNull();
+    expect(toastRoot()).toBeNull();
   });
 
   it("resolves image candidates inside an open shadow root", async () => {
@@ -1001,7 +1022,7 @@ describe("video picker (link mode)", () => {
     expect(
       shadow.value?.querySelector<HTMLElement>("[data-picker-label]")
         ?.textContent,
-    ).toBe("Video poster · 320 × 180 px · Click to select · Esc to cancel");
+    ).toBe("Video poster · 320 × 180 px · Click to verify · Esc to cancel");
 
     trustedClick(clickListenerOf(addEventListener), 20, 30);
     await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
@@ -1013,5 +1034,502 @@ describe("video picker (link mode)", () => {
         sourceKind: "video-poster",
       },
     });
+  });
+});
+
+function matchMediaFor(matching: readonly string[]): void {
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    value: (query: string) => ({
+      matches: matching.includes(query),
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }),
+  });
+}
+
+function showToastMessage(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    type: "show-toast",
+    runtimeVersion: PICKER_RUNTIME_VERSION,
+    sessionToken: SESSION_TOKEN,
+    tone: "success",
+    title: "Sent to DigiBot",
+    message: "Queued in DigiBot. The result arrives in your Telegram chat.",
+    resultId: null,
+    ...overrides,
+  };
+}
+
+describe("pick banner", () => {
+  beforeEach(resetPickerEnvironment);
+
+  it.each([
+    [undefined, undefined, "Verify · Click an image · Esc to cancel"],
+    ["image", "send-image", "Send image · Click an image · Esc to cancel"],
+    [
+      "link",
+      undefined,
+      "Send video · Click a post with a video · Esc to cancel",
+    ],
+    ["image", "synthid", "Google SynthID · Click an image · Esc to cancel"],
+  ] as const)(
+    "names the armed picker (mode %s, label %s)",
+    async (mode, label, text) => {
+      const { sendPickerMessage } = installChrome();
+      const shadows = captureShadows();
+      await import("../../src/picker.js");
+      bindMessage(sendPickerMessage);
+      sendPickerMessage({
+        type: "picker-start",
+        runtimeVersion: PICKER_RUNTIME_VERSION,
+        sessionToken: SESSION_TOKEN,
+        ...(mode ? { mode } : {}),
+        ...(label ? { label } : {}),
+      });
+      const pill = shadows.banner?.querySelector<HTMLElement>(
+        '[data-picker-banner="true"]',
+      );
+      expect(pill?.textContent).toBe(text);
+      expect(pill?.getAttribute("role")).toBe("status");
+      expect(pill?.style.height).toBe("36px");
+      expect(pill?.style.borderRadius).toBe("18px");
+      expect(pill?.querySelector("kbd")?.textContent).toBe("Esc");
+      expect(bannerRoot()?.style.pointerEvents).toBe("none");
+    },
+  );
+
+  it("names the save verb on hover in SynthID mode", async () => {
+    const { sendPickerMessage } = installChrome();
+    const shadows = captureShadows();
+    const image = document.createElement("img");
+    image.src = "https://page.example/image.png";
+    Object.defineProperty(image, "getBoundingClientRect", {
+      configurable: true,
+      value: () => imageRect(10, 20, 30, 40),
+    });
+    document.body.append(image);
+    hitTest([image]);
+    await import("../../src/picker.js");
+    bindMessage(sendPickerMessage);
+    sendPickerMessage({
+      type: "picker-start",
+      runtimeVersion: PICKER_RUNTIME_VERSION,
+      sessionToken: SESSION_TOKEN,
+      label: "synthid",
+    });
+    document.dispatchEvent(
+      new PointerEvent("pointermove", { clientX: 20, clientY: 30 }),
+    );
+    await flush();
+    expect(
+      shadows.overlay?.querySelector("[data-picker-label]")?.textContent,
+    ).toBe("Image · 30 × 40 px · Click to save · Esc to cancel");
+  });
+
+  it("warns for 2 s on a click that hits no candidate, then goes on pick", async () => {
+    vi.useFakeTimers();
+    const { sendMessage, sendPickerMessage } = installChrome();
+    const shadows = captureShadows();
+    const text = document.createElement("p");
+    document.body.append(text);
+    hitTest([text]);
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    await import("../../src/picker.js");
+    startMessage(sendPickerMessage);
+    const pill = shadows.banner?.querySelector<HTMLElement>(
+      '[data-picker-banner="true"]',
+    );
+
+    trustedClick(clickListenerOf(addEventListener), 5, 5);
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(pill?.textContent).toBe("No supported image here");
+    expect(pill?.dataset["pickerBannerState"]).toBe("warning");
+    expect(pill?.style.color).toBe("var(--lens-warn)");
+    vi.advanceTimersByTime(1_999);
+    expect(pill?.textContent).toBe("No supported image here");
+    vi.advanceTimersByTime(1);
+    expect(pill?.textContent).toBe("Verify · Click an image · Esc to cancel");
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(bannerRoot()).toBeNull();
+  });
+
+  it("says when a clicked post shows no video", async () => {
+    const { sendPickerMessage } = installChrome();
+    const shadows = captureShadows();
+    const { text } = xPost("https://x.com/alice/status/123", false);
+    hitTest([text]);
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    await import("../../src/picker.js");
+    startLinkMessage(sendPickerMessage);
+    trustedClick(clickListenerOf(addEventListener), 5, 5);
+    expect(
+      shadows.banner?.querySelector('[data-picker-banner="true"]')?.textContent,
+    ).toBe("This post shows no video");
+  });
+
+  it("removes the banner with the overlay when an image is picked", async () => {
+    const { sendMessage, sendPickerMessage } = installChrome();
+    const image = document.createElement("img");
+    image.src = "https://page.example/image.png";
+    document.body.append(image);
+    hitTest([image]);
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    await import("../../src/picker.js");
+    startMessage(sendPickerMessage);
+    expect(bannerRoot()).not.toBeNull();
+    trustedClick(clickListenerOf(addEventListener), 5, 5);
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+    expect(bannerRoot()).toBeNull();
+    expect(overlayElement()).toBeNull();
+  });
+});
+
+describe("mount rule for the banner, overlay and toast", () => {
+  beforeEach(resetPickerEnvironment);
+
+  function mountedRoots(): HTMLElement[] {
+    return [overlayElement(), bannerRoot(), toastRoot()].filter(
+      (root): root is HTMLElement => root !== null,
+    );
+  }
+
+  async function showAll(): Promise<ReturnType<typeof vi.fn>> {
+    const showPopover = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "showPopover", {
+      configurable: true,
+      value: showPopover,
+    });
+    const { sendPickerMessage } = installChrome();
+    await import("../../src/picker.js");
+    startMessage(sendPickerMessage);
+    sendPickerMessage(showToastMessage());
+    expect(mountedRoots()).toHaveLength(3);
+    return showPopover;
+  }
+
+  it("mounts on the root element as manual popovers by default", async () => {
+    const showPopover = await showAll();
+    for (const root of mountedRoots()) {
+      expect(root.parentElement).toBe(document.documentElement);
+      expect(root.getAttribute("popover")).toBe("manual");
+    }
+    expect(showPopover).toHaveBeenCalledTimes(3);
+  });
+
+  it("mounts inside the topmost modal dialog", async () => {
+    const outer = document.createElement("dialog");
+    const inner = document.createElement("dialog");
+    outer.append(inner);
+    document.body.append(outer);
+    const querySelectorAll = document.querySelectorAll.bind(document);
+    vi.spyOn(document, "querySelectorAll").mockImplementation(((
+      selector: string,
+    ) =>
+      selector === "dialog:modal"
+        ? [outer, inner]
+        : querySelectorAll(selector)) as typeof document.querySelectorAll);
+    await showAll();
+    for (const root of mountedRoots()) expect(root.parentElement).toBe(inner);
+  });
+
+  it("mounts inside a fullscreen element, but not inside fullscreen media", async () => {
+    const player = document.createElement("div");
+    document.body.append(player);
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => player,
+    });
+    await showAll();
+    for (const root of mountedRoots()) expect(root.parentElement).toBe(player);
+
+    resetPickerEnvironment();
+    const video = document.createElement("video");
+    document.body.append(video);
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => video,
+    });
+    await showAll();
+    for (const root of mountedRoots())
+      expect(root.parentElement).toBe(document.documentElement);
+  });
+
+  it("moves an updated toast into a modal dialog opened after it", async () => {
+    const { sendPickerMessage } = installChrome();
+    await import("../../src/picker.js");
+    bindMessage(sendPickerMessage);
+    sendPickerMessage(showToastMessage({ tone: "progress" }));
+    const root = toastRoot();
+    expect(root?.parentElement).toBe(document.documentElement);
+
+    const dialog = document.createElement("dialog");
+    document.body.append(dialog);
+    const querySelectorAll = document.querySelectorAll.bind(document);
+    vi.spyOn(document, "querySelectorAll").mockImplementation(((
+      selector: string,
+    ) =>
+      selector === "dialog:modal"
+        ? [dialog]
+        : querySelectorAll(selector)) as typeof document.querySelectorAll);
+    sendPickerMessage(showToastMessage());
+    expect(toastRoot()).toBe(root);
+    expect(root?.parentElement).toBe(dialog);
+  });
+
+  it("keeps toast clicks from the modal dialog and the page", async () => {
+    const { sendMessage, sendPickerMessage } = installChrome();
+    const shadows = captureShadows();
+    const dialog = document.createElement("dialog");
+    document.body.append(dialog);
+    const querySelectorAll = document.querySelectorAll.bind(document);
+    vi.spyOn(document, "querySelectorAll").mockImplementation(((
+      selector: string,
+    ) =>
+      selector === "dialog:modal"
+        ? [dialog]
+        : querySelectorAll(selector)) as typeof document.querySelectorAll);
+    const pageEvents: string[] = [];
+    for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
+      dialog.addEventListener(type, () => pageEvents.push(`dialog ${type}`));
+      document.addEventListener(type, () => pageEvents.push(`page ${type}`));
+    }
+    await import("../../src/picker.js");
+    bindMessage(sendPickerMessage);
+    sendPickerMessage(showToastMessage({ actions: ["history"] }));
+    expect(toastRoot()?.parentElement).toBe(dialog);
+
+    const history = shadows.toast?.querySelector<HTMLButtonElement>(
+      '[data-toast-action="history"]',
+    );
+    for (const type of ["pointerdown", "mousedown", "mouseup"])
+      history?.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, composed: true }),
+      );
+    history?.click();
+    await vi.waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith({
+        type: "toast-action",
+        sessionToken: SESSION_TOKEN,
+        action: "history",
+      }),
+    );
+    shadows.toast
+      ?.querySelector<HTMLButtonElement>('[data-toast-dismiss="true"]')
+      ?.click();
+    expect(toastRoot()).toBeNull();
+    expect(pageEvents).toEqual([]);
+  });
+});
+
+describe("result toast", () => {
+  beforeEach(resetPickerEnvironment);
+
+  it("hides a success toast after 6 s, pausing while hovered", async () => {
+    vi.useFakeTimers();
+    const { sendPickerMessage } = installChrome();
+    const shadows = captureShadows();
+    await import("../../src/picker.js");
+    bindMessage(sendPickerMessage);
+    sendPickerMessage(showToastMessage());
+    const region = shadows.toast?.querySelector<HTMLElement>(
+      '[data-toast-region="true"]',
+    );
+    expect(toneBarColor(shadows.toast)).toBe("var(--lens-ok)");
+
+    vi.advanceTimersByTime(4_000);
+    region?.dispatchEvent(new Event("pointerenter"));
+    vi.advanceTimersByTime(10_000);
+    expect(toastRoot()).not.toBeNull();
+    region?.dispatchEvent(new Event("pointerleave"));
+    vi.advanceTimersByTime(1_999);
+    expect(toastRoot()).not.toBeNull();
+    vi.advanceTimersByTime(1);
+    expect(toastRoot()).toBeNull();
+  });
+
+  it("pauses the countdown while a toast button has focus", async () => {
+    vi.useFakeTimers();
+    const { sendPickerMessage } = installChrome();
+    const shadows = captureShadows();
+    await import("../../src/picker.js");
+    bindMessage(sendPickerMessage);
+    sendPickerMessage(showToastMessage({ actions: ["history"] }));
+    const region = shadows.toast?.querySelector<HTMLElement>(
+      '[data-toast-region="true"]',
+    );
+    region?.dispatchEvent(new FocusEvent("focusin"));
+    vi.advanceTimersByTime(30_000);
+    expect(toastRoot()).not.toBeNull();
+    region?.dispatchEvent(new FocusEvent("focusout"));
+    vi.advanceTimersByTime(6_000);
+    expect(toastRoot()).toBeNull();
+  });
+
+  it("shows a labelled spinner and Cancel while work runs", async () => {
+    const { sendMessage, sendPickerMessage } = installChrome();
+    const shadows = captureShadows();
+    await import("../../src/picker.js");
+    bindMessage(sendPickerMessage);
+    sendPickerMessage(
+      showToastMessage({
+        tone: "progress",
+        title: "Verifying image…",
+        message: "page.example · API check",
+        actions: ["cancel"],
+      }),
+    );
+    const spinner = shadows.toast?.querySelector<HTMLElement>(
+      '[data-toast-spinner="true"]',
+    );
+    expect(spinner?.getAttribute("role")).toBe("progressbar");
+    expect(spinner?.getAttribute("aria-label")).toBe("Verifying image…");
+    expect(spinner?.querySelector("svg")).not.toBeNull();
+    shadows.toast
+      ?.querySelector<HTMLButtonElement>('[data-toast-action="cancel"]')
+      ?.click();
+    await vi.waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith({
+        type: "toast-action",
+        sessionToken: SESSION_TOKEN,
+        action: "cancel",
+      }),
+    );
+
+    sendPickerMessage({
+      type: "hide-toast",
+      runtimeVersion: PICKER_RUNTIME_VERSION,
+      sessionToken: OTHER_SESSION_TOKEN,
+    });
+    expect(toastRoot()).not.toBeNull();
+    sendPickerMessage({
+      type: "hide-toast",
+      runtimeVersion: PICKER_RUNTIME_VERSION,
+      sessionToken: SESSION_TOKEN,
+    });
+    expect(toastRoot()).toBeNull();
+  });
+
+  it("labels a connected stop Stop waiting", async () => {
+    const { sendMessage, sendPickerMessage } = installChrome();
+    const shadows = captureShadows();
+    await import("../../src/picker.js");
+    bindMessage(sendPickerMessage);
+    sendPickerMessage(
+      showToastMessage({
+        tone: "progress",
+        title: "Verifying image…",
+        message: "page.example · DigiBot check",
+        actions: ["stop-waiting"],
+      }),
+    );
+    const stop = shadows.toast?.querySelector<HTMLButtonElement>(
+      '[data-toast-action="stop-waiting"]',
+    );
+    expect(stop?.textContent).toBe("Stop waiting");
+    stop?.click();
+    await vi.waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith({
+        type: "toast-action",
+        sessionToken: SESSION_TOKEN,
+        action: "stop-waiting",
+      }),
+    );
+  });
+  it("uses a static ellipsis and no entrance motion with reduced motion", async () => {
+    matchMediaFor(["(prefers-reduced-motion: reduce)"]);
+    const animate = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "animate", {
+      configurable: true,
+      value: animate,
+    });
+    try {
+      const { sendPickerMessage } = installChrome();
+      const shadows = captureShadows();
+      await import("../../src/picker.js");
+      bindMessage(sendPickerMessage);
+      sendPickerMessage(showToastMessage({ tone: "progress" }));
+      const spinner = shadows.toast?.querySelector<HTMLElement>(
+        '[data-toast-spinner="true"]',
+      );
+      expect(spinner?.textContent).toBe("…");
+      expect(animate).not.toHaveBeenCalled();
+    } finally {
+      Reflect.deleteProperty(HTMLElement.prototype, "animate");
+    }
+  });
+
+  it("slides in once and spins without reduced motion", async () => {
+    const animate = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "animate", {
+      configurable: true,
+      value: animate,
+    });
+    try {
+      const { sendPickerMessage } = installChrome();
+      await import("../../src/picker.js");
+      bindMessage(sendPickerMessage);
+      sendPickerMessage(showToastMessage({ tone: "progress" }));
+      sendPickerMessage(showToastMessage());
+      const durations = animate.mock.calls.map(
+        (call) => (call[1] as KeyframeAnimationOptions).duration,
+      );
+      expect(durations).toEqual([800, 160]);
+    } finally {
+      Reflect.deleteProperty(HTMLElement.prototype, "animate");
+    }
+  });
+
+  it("uses the dark tokens and forced colors from matchMedia", async () => {
+    matchMediaFor(["(prefers-color-scheme: dark)", "(forced-colors: active)"]);
+    const { sendPickerMessage } = installChrome();
+    const shadows = captureShadows();
+    await import("../../src/picker.js");
+    bindMessage(sendPickerMessage);
+    sendPickerMessage(showToastMessage());
+    const region = shadows.toast?.querySelector<HTMLElement>(
+      '[data-toast-region="true"]',
+    );
+    expect(region?.style.getPropertyValue("--lens-ok")).toBe("#4ADE80");
+    expect(region?.style.getPropertyValue("--lens-line")).toBe("CanvasText");
+  });
+
+  it("lets the toast's buttons work while the picker is armed", async () => {
+    const { sendPickerMessage } = installChrome();
+    const image = document.createElement("img");
+    image.src = "https://page.example/image.png";
+    document.body.append(image);
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    await import("../../src/picker.js");
+    bindMessage(sendPickerMessage);
+    sendPickerMessage(showToastMessage({ tone: "detected" }));
+    sendPickerMessage({
+      type: "picker-start",
+      runtimeVersion: PICKER_RUNTIME_VERSION,
+      sessionToken: SESSION_TOKEN,
+      label: "synthid",
+    });
+    const root = toastRoot();
+    // The toast covers what is under it.
+    hitTest([root as HTMLElement, image]);
+    const preventDefault = vi.fn();
+    clickListenerOf(addEventListener)({
+      target: root,
+      clientX: 5,
+      clientY: 5,
+      isTrusted: true,
+      preventDefault,
+      stopPropagation: vi.fn(),
+      stopImmediatePropagation: vi.fn(),
+    } as unknown as MouseEvent);
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(bannerRoot()).not.toBeNull();
+
+    trustedClick(clickListenerOf(addEventListener), 5, 5);
+    expect(bannerRoot()).not.toBeNull();
   });
 });

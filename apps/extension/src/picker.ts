@@ -6,7 +6,10 @@ import {
   validateInlineImageSize,
   validateImageBytes,
   type ImageSelection,
+  type PickerLabel,
   type PickerRuntimeMessage,
+  type ToastAction,
+  type ToastTone,
 } from "@provenance-lens/shared";
 
 import { readBoundedResponseBytes } from "./bounded-response.js";
@@ -14,6 +17,7 @@ import {
   linkCandidateFor,
   type LinkCandidate,
 } from "./page-link-candidates.js";
+import { LENS_FONT, LENS_MONO_FONT, lensTokenSet } from "./ui/tokens.js";
 
 type ImageCandidate = {
   kind: "image";
@@ -31,18 +35,45 @@ type PickerOverlay = {
   dimmers: HTMLDivElement[];
   focus: HTMLDivElement;
   label: HTMLDivElement;
+  stopTheme: () => void;
+};
+
+type PickerBanner = {
+  root: HTMLElement;
+  warn: (text: string) => void;
+  remove: () => void;
 };
 
 type PickerState = {
   sessionToken: string;
   mode: PickerMode;
+  label: PickerLabel;
   overlay: PickerOverlay;
+  banner: PickerBanner;
   previousCursor: string;
   candidate: PickCandidate | null;
   cleanup: () => void;
 };
 
 type ShowToastMessage = Extract<PickerRuntimeMessage, { type: "show-toast" }>;
+
+type PageToast = {
+  root: HTMLElement;
+  region: HTMLElement;
+  render: (message: ShowToastMessage) => void;
+  cleanup: () => void;
+};
+
+type IconName =
+  | "check"
+  | "shield-check"
+  | "info"
+  | "clock"
+  | "alert-triangle"
+  | "x"
+  | "download"
+  | "film"
+  | "external";
 
 declare global {
   interface Window {
@@ -53,8 +84,96 @@ declare global {
 if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
   window.__provenanceLensPickerInstalled = PICKER_RUNTIME_VERSION;
   let activePicker: PickerState | null = null;
-  let activeToastCleanup: (() => void) | null = null;
+  let activeToast: PageToast | null = null;
   let boundSessionToken: string | null = null;
+
+  const BANNER_TEXT: Record<
+    PickerLabel,
+    { name: string; target: string; icon: IconName }
+  > = {
+    verify: { name: "Verify", target: "Click an image", icon: "shield-check" },
+    "send-image": {
+      name: "Send image",
+      target: "Click an image",
+      icon: "download",
+    },
+    "send-video": {
+      name: "Send video",
+      target: "Click a post with a video",
+      icon: "film",
+    },
+    synthid: {
+      name: "Google SynthID",
+      target: "Click an image",
+      icon: "external",
+    },
+  };
+  const HOVER_VERB: Record<PickerLabel, string> = {
+    verify: "Click to verify",
+    "send-image": "Click to send",
+    "send-video": "Click to send",
+    synthid: "Click to save",
+  };
+  const TOAST_TONE: Record<ToastTone, { color: string; icon: IconName }> = {
+    success: { color: "var(--lens-ok)", icon: "check" },
+    detected: { color: "var(--lens-ok)", icon: "shield-check" },
+    "no-signal": { color: "var(--lens-neutral)", icon: "info" },
+    pending: { color: "var(--lens-neutral)", icon: "clock" },
+    progress: { color: "var(--lens-accent)", icon: "clock" },
+    error: { color: "var(--lens-danger)", icon: "alert-triangle" },
+  };
+  const TOAST_BUTTON_TEXT: Record<ToastAction, string> = {
+    details: "Details",
+    history: "History",
+    cancel: "Cancel",
+    "stop-waiting": "Stop waiting",
+    retry: "Retry",
+    "connect-digibot": "Connect DigiBot",
+    "grant-access": "Grant access",
+    "switch-to-api": "Switch to API",
+    "check-synthid": "Also check with Google ↗",
+  };
+  // 16px icons on a 24 viewBox, 1.5 stroke (docs/design/palette-2.0.md §8).
+  const ICON_PATHS: Record<IconName, readonly string[]> = {
+    check: ["M5 12.5l4.5 4.5L19 7.5"],
+    "shield-check": [
+      "M12 3l7.5 3v5.5c0 4.5-3.2 8.2-7.5 9.5-4.3-1.3-7.5-5-7.5-9.5V6z",
+      "M8.75 12.25l2.25 2.25 4.25-4.5",
+    ],
+    info: ["M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z", "M12 11v5", "M12 8h.01"],
+    clock: ["M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18z", "M12 7v5l3 2"],
+    "alert-triangle": [
+      "M10.3 4.2L2.6 17.5a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z",
+      "M12 9.5v4",
+      "M12 17h.01",
+    ],
+    x: ["M6 6l12 12", "M18 6L6 18"],
+    download: ["M12 4v11", "M7.5 10.5L12 15l4.5-4.5", "M5 19h14"],
+    film: [
+      "M5 4h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z",
+      "M8 4v16",
+      "M16 4v16",
+      "M4 9h4",
+      "M4 15h4",
+      "M16 9h4",
+      "M16 15h4",
+    ],
+    external: [
+      "M14 4h6v6",
+      "M20 4l-9 9",
+      "M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5",
+    ],
+  };
+  const FULLSCREEN_MEDIA_ELEMENTS = new Set([
+    "video",
+    "img",
+    "iframe",
+    "embed",
+    "object",
+    "canvas",
+  ]);
+  const SUCCESS_TOAST_MS = 6_000;
+  const BANNER_WARNING_MS = 2_000;
 
   chrome.runtime.onMessage.addListener((message: unknown) => {
     const parsed = PickerRuntimeMessageSchema.safeParse(message);
@@ -67,10 +186,16 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
         }
         boundSessionToken = parsed.data.sessionToken;
         return;
-      case "picker-start":
+      case "picker-start": {
         if (boundSessionToken !== parsed.data.sessionToken) return;
-        startPicker(parsed.data.sessionToken, parsed.data.mode ?? "image");
+        const mode = parsed.data.mode ?? "image";
+        startPicker(
+          parsed.data.sessionToken,
+          mode,
+          parsed.data.label ?? (mode === "link" ? "send-video" : "verify"),
+        );
         return;
+      }
       case "picker-stop":
         if (activePicker?.sessionToken === parsed.data.sessionToken) {
           activePicker.cleanup();
@@ -82,19 +207,31 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
           showToast(parsed.data);
         }
         return;
+      case "hide-toast":
+        if (boundSessionToken === parsed.data.sessionToken) {
+          activeToast?.cleanup();
+        }
+        return;
     }
   });
 
-  function startPicker(sessionToken: string, mode: PickerMode): void {
+  function startPicker(
+    sessionToken: string,
+    mode: PickerMode,
+    label: PickerLabel,
+  ): void {
     activePicker?.cleanup();
     const overlay = createPickerOverlay(mode);
+    const banner = createPickerBanner(label);
 
     const previousCursor = document.documentElement.style.cursor;
     document.documentElement.style.cursor = "crosshair";
     const state: PickerState = {
       sessionToken,
       mode,
+      label,
       overlay,
+      banner,
       previousCursor,
       candidate: null,
       cleanup: () => undefined,
@@ -112,7 +249,7 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       const candidate = candidateAt(latestPointer.x, latestPointer.y, mode);
       state.candidate = candidate;
       if (candidate) {
-        renderOverlay(overlay, candidate);
+        renderOverlay(overlay, candidate, HOVER_VERB[label]);
       } else {
         overlay.root.style.setProperty("display", "none", "important");
       }
@@ -158,7 +295,9 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       document.removeEventListener("click", onClick, true);
       document.removeEventListener("keydown", onKeyDown, true);
       document.documentElement.style.cursor = state.previousCursor;
+      overlay.stopTheme();
       overlay.root.remove();
+      banner.remove();
       state.candidate = null;
     };
     state.cleanup = cleanup;
@@ -193,19 +332,27 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     }
 
     function consumeHostGesture(event: PointerEvent | MouseEvent): void {
-      if (closed || !event.isTrusted) return;
+      if (closed || !event.isTrusted || targetsToast(event)) return;
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
     }
 
     function onClick(event: MouseEvent): void {
-      if (closed || !event.isTrusted) return;
+      // The toast's buttons stay usable while the picker is armed.
+      if (closed || !event.isTrusted || targetsToast(event)) return;
       const candidate = candidateAt(event.clientX, event.clientY, mode);
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
-      if (!candidate) return;
+      if (!candidate) {
+        banner.warn(
+          mode === "link"
+            ? "This post shows no video"
+            : "No supported image here",
+        );
+        return;
+      }
       state.candidate = candidate;
       if (candidate.kind === "link") {
         cleanup();
@@ -250,9 +397,119 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     }
   }
 
-  function createPickerOverlay(mode: PickerMode): PickerOverlay {
+  function targetsToast(event: Event): boolean {
+    // A closed shadow root retargets its events to the toast's host element.
+    return activeToast !== null && event.target === activeToast.root;
+  }
+
+  /**
+   * The mount rule (docs/design/palette-2.0.md §2 step 4, §11.2 fix 2): a
+   * surface outside a fullscreen element or a modal dialog is hidden or inert,
+   * so it goes inside them, and then into the top layer as a manual popover.
+   */
+  function mountParent(): Element {
+    const fullscreen = document.fullscreenElement;
+    if (fullscreen && !FULLSCREEN_MEDIA_ELEMENTS.has(fullscreen.localName)) {
+      return fullscreen;
+    }
+    const dialog = topmostModalDialog();
+    if (dialog) return dialog;
+    return document.documentElement ?? document.body;
+  }
+
+  function topmostModalDialog(): Element | null {
+    try {
+      // A nested modal dialog comes after its parent in document order.
+      return (
+        Array.from(document.querySelectorAll("dialog:modal")).at(-1) ?? null
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  function mountOnTop(root: HTMLElement): void {
+    const parent = mountParent();
+    if (root.parentNode !== parent) parent.append(root);
+    if (typeof root.showPopover !== "function") return;
+    try {
+      root.showPopover();
+    } catch {
+      // Already in the top layer, or the browser has no popover support.
+    }
+  }
+
+  function createSurfaceRoot(dataName: string, value: string): HTMLElement {
     const root = document.createElement("div");
-    root.dataset["provenanceLensPicker"] = "overlay";
+    root.dataset[dataName] = value;
+    root.setAttribute("popover", "manual");
+    return root;
+  }
+
+  function mediaQuery(query: string): MediaQueryList | null {
+    if (typeof window.matchMedia !== "function") return null;
+    try {
+      return window.matchMedia(query);
+    } catch {
+      return null;
+    }
+  }
+
+  function prefersReducedMotion(): boolean {
+    return mediaQuery("(prefers-reduced-motion: reduce)")?.matches === true;
+  }
+
+  /** Sets the light or dark Lens tokens on a surface and follows changes. */
+  function followTheme(element: HTMLElement): () => void {
+    const dark = mediaQuery("(prefers-color-scheme: dark)");
+    const forced = mediaQuery("(forced-colors: active)");
+    const apply = (): void => {
+      const tokens = lensTokenSet(
+        dark?.matches === true,
+        forced?.matches === true,
+      );
+      for (const [name, value] of Object.entries(tokens)) {
+        element.style.setProperty(name, value);
+      }
+    };
+    apply();
+    dark?.addEventListener("change", apply);
+    forced?.addEventListener("change", apply);
+    return () => {
+      dark?.removeEventListener("change", apply);
+      forced?.removeEventListener("change", apply);
+    };
+  }
+
+  function icon(name: IconName, size: number): SVGSVGElement {
+    const namespace = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(namespace, "svg");
+    for (const [attribute, value] of Object.entries({
+      viewBox: "0 0 24 24",
+      width: String(size),
+      height: String(size),
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": "1.5",
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+      "aria-hidden": "true",
+      focusable: "false",
+    })) {
+      svg.setAttribute(attribute, value);
+    }
+    svg.style.display = "block";
+    svg.style.flex = "none";
+    for (const path of ICON_PATHS[name]) {
+      const element = document.createElementNS(namespace, "path");
+      element.setAttribute("d", path);
+      svg.append(element);
+    }
+    return svg;
+  }
+
+  function createPickerOverlay(mode: PickerMode): PickerOverlay {
+    const root = createSurfaceRoot("provenanceLensPicker", "overlay");
     root.setAttribute("aria-label", pickerName(mode));
     setImportantStyles(root, {
       all: "initial",
@@ -292,8 +549,9 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       pointerEvents: "none",
       overflow: "hidden",
       isolation: "isolate",
-      fontFamily: "system-ui, -apple-system, sans-serif",
+      fontFamily: LENS_FONT,
     });
+    const stopTheme = followTheme(surface);
     shadowRoot.append(surface);
 
     const dimmers = (["top", "right", "bottom", "left"] as const).map(
@@ -304,7 +562,7 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
           position: "fixed",
           display: "none",
           pointerEvents: "none",
-          background: "rgba(3, 7, 18, .64)",
+          background: "var(--lens-scrim)",
         });
         surface.append(dimmer);
         return dimmer;
@@ -318,10 +576,9 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       display: "none",
       pointerEvents: "none",
       boxSizing: "border-box",
-      border: "2px solid #22d3ee",
+      border: "2px solid var(--lens-accent)",
       borderRadius: "4px",
-      boxShadow:
-        "0 0 0 1px rgba(15, 23, 42, .9), 0 0 20px rgba(34, 211, 238, .45)",
+      boxShadow: "0 0 0 1px var(--lens-surface)",
     });
     surface.append(focus);
 
@@ -336,40 +593,173 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       boxSizing: "border-box",
       maxWidth: "calc(100vw - 16px)",
       overflow: "hidden",
-      padding: "7px 10px",
-      border: "1px solid rgba(103, 232, 249, .9)",
-      borderRadius: "8px",
-      background: "#0f172a",
-      color: "#f8fafc",
-      font: "600 12px/1.25 system-ui, -apple-system, sans-serif",
+      padding: "6px 10px",
+      border: "1px solid var(--lens-line)",
+      borderRadius: "6px",
+      background: "var(--lens-surface)",
+      color: "var(--lens-text)",
+      font: `500 12px/16px ${LENS_FONT}`,
       whiteSpace: "nowrap",
       textOverflow: "ellipsis",
-      boxShadow: "0 4px 18px rgba(2, 6, 23, .42)",
+      boxShadow: "var(--lens-shadow)",
     });
     surface.append(label);
 
-    (document.documentElement ?? document.body).append(root);
-    return { root, shadowRoot, dimmers, focus, label };
+    mountOnTop(root);
+    return { root, shadowRoot, dimmers, focus, label, stopTheme };
   }
 
-  function showToast(message: ShowToastMessage): void {
-    activeToastCleanup?.();
-
-    const root = document.createElement("div");
-    root.dataset["provenanceLensToast"] = "true";
+  function createPickerBanner(label: PickerLabel): PickerBanner {
+    const root = createSurfaceRoot("provenanceLensPicker", "banner");
     setImportantStyles(root, {
       all: "initial",
       position: "fixed",
       top: "16px",
       right: "16px",
+      bottom: "auto",
+      left: "16px",
       "z-index": "2147483647",
-      display: "block",
-      width: "min(420px, calc(100vw - 32px))",
+      display: "flex",
+      "justify-content": "center",
+      "pointer-events": "none",
+      width: "auto",
       height: "auto",
       margin: "0",
       padding: "0",
       border: "0",
       background: "transparent",
+      overflow: "visible",
+      opacity: "1",
+      visibility: "visible",
+      transform: "none",
+      transition: "none",
+      animation: "none",
+      direction: "ltr",
+      isolation: "isolate",
+    });
+
+    const shadowRoot = root.attachShadow({ mode: "closed" });
+    const pill = document.createElement("div");
+    pill.dataset["pickerBanner"] = "true";
+    pill.setAttribute("role", "status");
+    pill.setAttribute("aria-live", "polite");
+    Object.assign(pill.style, {
+      boxSizing: "border-box",
+      display: "flex",
+      alignItems: "center",
+      gap: "8px",
+      height: "36px",
+      maxWidth: "100%",
+      padding: "0 16px 0 12px",
+      border: "1px solid var(--lens-line)",
+      borderRadius: "18px",
+      background: "var(--lens-surface)",
+      color: "var(--lens-text)",
+      boxShadow: "var(--lens-shadow)",
+      font: `400 13px/18px ${LENS_FONT}`,
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      pointerEvents: "none",
+    });
+    const stopTheme = followTheme(pill);
+    shadowRoot.append(pill);
+
+    const text = BANNER_TEXT[label];
+    const renderNormal = (): void => {
+      pill.dataset["pickerBannerState"] = "armed";
+      pill.style.borderColor = "var(--lens-line)";
+      pill.style.background = "var(--lens-surface)";
+      pill.style.color = "var(--lens-text)";
+      const name = document.createElement("strong");
+      name.textContent = text.name;
+      name.style.fontWeight = "600";
+      const key = document.createElement("kbd");
+      key.textContent = "Esc";
+      Object.assign(key.style, {
+        padding: "0 4px",
+        border: "1px solid var(--lens-line-strong)",
+        borderRadius: "4px",
+        background: "var(--lens-kbd-bg)",
+        color: "var(--lens-kbd-text)",
+        font: `500 11px/16px ${LENS_MONO_FONT}`,
+      });
+      const line = document.createElement("span");
+      line.style.overflow = "hidden";
+      line.style.textOverflow = "ellipsis";
+      line.append(name, ` · ${text.target} · `, key, " to cancel");
+      pill.replaceChildren(icon(text.icon, 16), line);
+    };
+    renderNormal();
+
+    let warningTimer: number | null = null;
+    const clearWarning = (): void => {
+      if (warningTimer === null) return;
+      window.clearTimeout(warningTimer);
+      warningTimer = null;
+    };
+    mountOnTop(root);
+    return {
+      root,
+      warn: (message) => {
+        clearWarning();
+        pill.dataset["pickerBannerState"] = "warning";
+        pill.style.borderColor = "var(--lens-warn)";
+        pill.style.background = "var(--lens-warn-soft)";
+        pill.style.color = "var(--lens-warn)";
+        const line = document.createElement("span");
+        line.textContent = message;
+        line.style.fontWeight = "600";
+        pill.replaceChildren(icon("alert-triangle", 16), line);
+        warningTimer = window.setTimeout(() => {
+          warningTimer = null;
+          renderNormal();
+        }, BANNER_WARNING_MS);
+      },
+      remove: () => {
+        clearWarning();
+        stopTheme();
+        root.remove();
+      },
+    };
+  }
+
+  function showToast(message: ShowToastMessage): void {
+    // A result replaces the progress toast in place, without a new entrance.
+    const entering = activeToast === null;
+    const toast = activeToast ?? createToast();
+    activeToast = toast;
+    toast.render(message);
+    mountOnTop(toast.root);
+    if (entering && !prefersReducedMotion()) {
+      animate(
+        toast.region,
+        [
+          { opacity: 0, transform: "translateY(-8px)" },
+          { opacity: 1, transform: "none" },
+        ],
+        { duration: 160, easing: "cubic-bezier(.2,.8,.2,1)" },
+      );
+    }
+  }
+
+  function createToast(): PageToast {
+    const root = createSurfaceRoot("provenanceLensToast", "true");
+    setImportantStyles(root, {
+      all: "initial",
+      position: "fixed",
+      top: "16px",
+      right: "16px",
+      bottom: "auto",
+      left: "auto",
+      "z-index": "2147483647",
+      display: "block",
+      width: "min(380px, calc(100vw - 32px))",
+      height: "auto",
+      margin: "0",
+      padding: "0",
+      border: "0",
+      background: "transparent",
+      overflow: "visible",
       opacity: "1",
       visibility: "visible",
       transform: "none",
@@ -384,114 +774,256 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     const shadowRoot = root.attachShadow({ mode: "closed" });
     const region = document.createElement("section");
     region.dataset["toastRegion"] = "true";
-    region.setAttribute("role", message.tone === "error" ? "alert" : "status");
-    region.setAttribute(
-      "aria-live",
-      message.tone === "error" ? "assertive" : "polite",
-    );
     region.setAttribute("aria-atomic", "true");
     Object.assign(region.style, {
       pointerEvents: "auto",
+      position: "relative",
       boxSizing: "border-box",
       display: "grid",
-      gap: "10px",
+      gridTemplateColumns: "20px minmax(0, 1fr) 24px",
+      columnGap: "12px",
+      alignItems: "start",
       width: "100%",
-      padding: "14px",
-      border:
-        message.tone === "detected" ? "1px solid #4ade80" : "1px solid #fb7185",
+      padding: "12px 12px 12px 16px",
+      overflow: "hidden",
+      border: "1px solid var(--lens-line)",
       borderRadius: "12px",
-      background: "#111111",
-      color: "#fafafa",
-      boxShadow: "0 12px 32px rgba(0, 0, 0, .45)",
-      font: "14px/1.45 system-ui, -apple-system, sans-serif",
+      background: "var(--lens-surface)",
+      color: "var(--lens-text)",
+      boxShadow: "var(--lens-shadow)",
+      font: `400 13px/18px ${LENS_FONT}`,
       textAlign: "left",
       whiteSpace: "normal",
       overflowWrap: "anywhere",
     });
-
-    const summaryTitle = sanitizeDisplayText(message.title, 100);
-    const summaryMessage = sanitizeDisplayText(message.message, 512);
-    const summary = document.createElement(message.resultId ? "button" : "div");
-    if (summary instanceof HTMLButtonElement) {
-      summary.type = "button";
-      summary.dataset["toastDetails"] = "true";
-      summary.setAttribute(
-        "aria-label",
-        `${summaryTitle}. ${summaryMessage} Open full verification details.`,
-      );
-      Object.assign(summary.style, {
-        appearance: "none",
-        boxSizing: "border-box",
-        display: "grid",
-        gap: "6px",
-        width: "100%",
-        margin: "0",
-        padding: "0",
-        border: "0",
-        background: "transparent",
-        color: "inherit",
-        cursor: "pointer",
-        font: "inherit",
-        textAlign: "left",
-      });
-      summary.addEventListener("click", () => {
-        void chrome.runtime
-          .sendMessage({
-            type: "open-result-details",
-            sessionToken: message.sessionToken,
-            resultId: message.resultId,
-          })
-          .catch(() => undefined);
-      });
-    } else {
-      Object.assign(summary.style, {
-        display: "grid",
-        gap: "6px",
-      });
-    }
-
-    const title = document.createElement("span");
-    title.textContent = summaryTitle;
-    Object.assign(title.style, {
-      display: "block",
-      color: "#fafafa",
-      font: "700 15px/1.3 system-ui, -apple-system, sans-serif",
-    });
-    const body = document.createElement("span");
-    body.textContent = summaryMessage;
-    Object.assign(body.style, {
-      display: "block",
-      color: "#d4d4d4",
-      font: "14px/1.45 system-ui, -apple-system, sans-serif",
-    });
-    summary.append(title, body);
-    region.append(summary);
-
-    const actions = document.createElement("div");
-    Object.assign(actions.style, {
-      display: "flex",
-      flexWrap: "wrap",
-      gap: "8px",
-      justifyContent: "flex-end",
-    });
-    const dismiss = toastButton("Dismiss");
-    dismiss.setAttribute("aria-label", "Dismiss Provenance Lens result");
-    dismiss.addEventListener("click", () => activeToastCleanup?.(), {
-      once: true,
-    });
-    actions.append(dismiss);
-    region.append(actions);
+    const stopTheme = followTheme(region);
     shadowRoot.append(region);
+    // A click on the toast is Lens's own; the page (or the modal dialog the
+    // toast sits in) never sees it and so cannot close or act on it.
+    for (const type of [
+      "pointerdown",
+      "pointerup",
+      "mousedown",
+      "mouseup",
+      "click",
+    ])
+      region.addEventListener(type, (event) => event.stopPropagation());
+
+    // Success hides after 6 s; hover or keyboard focus pauses the countdown.
+    let hideTimer: number | null = null;
+    let remainingMs = 0;
+    let startedAt = 0;
+    let hovered = false;
+    let focused = false;
+    const stopTimer = (): void => {
+      if (hideTimer === null) return;
+      window.clearTimeout(hideTimer);
+      hideTimer = null;
+      remainingMs = Math.max(0, remainingMs - (Date.now() - startedAt));
+    };
+    const runTimer = (): void => {
+      if (hideTimer !== null || remainingMs <= 0 || hovered || focused) return;
+      startedAt = Date.now();
+      hideTimer = window.setTimeout(cleanup, remainingMs);
+    };
+    region.addEventListener("pointerenter", () => {
+      hovered = true;
+      stopTimer();
+    });
+    region.addEventListener("pointerleave", () => {
+      hovered = false;
+      runTimer();
+    });
+    region.addEventListener("focusin", () => {
+      focused = true;
+      stopTimer();
+    });
+    region.addEventListener("focusout", (event) => {
+      if (
+        event.relatedTarget instanceof Node &&
+        region.contains(event.relatedTarget)
+      )
+        return;
+      focused = false;
+      runTimer();
+    });
 
     let closed = false;
     const cleanup = (): void => {
       if (closed) return;
       closed = true;
+      if (hideTimer !== null) window.clearTimeout(hideTimer);
+      hideTimer = null;
+      stopTheme();
       root.remove();
-      if (activeToastCleanup === cleanup) activeToastCleanup = null;
+      if (activeToast?.root === root) activeToast = null;
     };
-    activeToastCleanup = cleanup;
-    (document.documentElement ?? document.body).append(root);
+
+    const render = (message: ShowToastMessage): void => {
+      if (hideTimer !== null) window.clearTimeout(hideTimer);
+      hideTimer = null;
+      const tone = TOAST_TONE[message.tone];
+      region.dataset["toastTone"] = message.tone;
+      region.setAttribute(
+        "role",
+        message.tone === "error" ? "alert" : "status",
+      );
+      region.setAttribute(
+        "aria-live",
+        message.tone === "error" ? "assertive" : "polite",
+      );
+
+      const toneBar = document.createElement("div");
+      toneBar.dataset["toastToneBar"] = "true";
+      Object.assign(toneBar.style, {
+        position: "absolute",
+        top: "0",
+        bottom: "0",
+        left: "0",
+        width: "3px",
+        background: tone.color,
+      });
+
+      const titleText = sanitizeDisplayText(message.title, 100);
+      const toneIcon = document.createElement("span");
+      Object.assign(toneIcon.style, {
+        display: "block",
+        width: "20px",
+        height: "20px",
+        color: tone.color,
+      });
+      if (message.tone === "progress") {
+        toneIcon.dataset["toastSpinner"] = "true";
+        toneIcon.setAttribute("role", "progressbar");
+        toneIcon.setAttribute("aria-label", titleText);
+        if (prefersReducedMotion()) {
+          toneIcon.textContent = "…";
+          toneIcon.style.font = `600 14px/20px ${LENS_FONT}`;
+          toneIcon.style.textAlign = "center";
+        } else {
+          const ring = document.createElementNS(
+            "http://www.w3.org/2000/svg",
+            "svg",
+          );
+          for (const [attribute, value] of Object.entries({
+            viewBox: "0 0 24 24",
+            width: "20",
+            height: "20",
+            fill: "none",
+            stroke: "currentColor",
+            "stroke-width": "2",
+            "stroke-linecap": "round",
+            "aria-hidden": "true",
+            focusable: "false",
+          })) {
+            ring.setAttribute(attribute, value);
+          }
+          ring.style.display = "block";
+          const arc = document.createElementNS(
+            "http://www.w3.org/2000/svg",
+            "path",
+          );
+          arc.setAttribute("d", "M12 3a9 9 0 1 1-9 9");
+          ring.append(arc);
+          toneIcon.append(ring);
+          animate(
+            toneIcon,
+            [{ transform: "rotate(0deg)" }, { transform: "rotate(360deg)" }],
+            { duration: 800, easing: "linear", iterations: Infinity },
+          );
+        }
+      } else {
+        toneIcon.append(icon(tone.icon, 20));
+      }
+
+      const content = document.createElement("div");
+      Object.assign(content.style, {
+        display: "grid",
+        gap: "2px",
+        minWidth: "0",
+      });
+      const title = document.createElement("span");
+      title.dataset["toastTitle"] = "true";
+      title.textContent = titleText;
+      Object.assign(title.style, {
+        display: "block",
+        color: "var(--lens-text)",
+        font: `600 14px/20px ${LENS_FONT}`,
+      });
+      const body = document.createElement("span");
+      body.dataset["toastMessage"] = "true";
+      body.textContent = sanitizeDisplayText(message.message, 512);
+      Object.assign(body.style, {
+        display: "block",
+        color: "var(--lens-muted)",
+        font: `400 13px/18px ${LENS_FONT}`,
+      });
+      content.append(title, body);
+
+      const actions = (message.actions ?? []).filter(
+        (action) => action !== "details" || message.resultId !== null,
+      );
+      if (actions.length > 0) {
+        const row = document.createElement("div");
+        Object.assign(row.style, {
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "4px",
+          margin: "6px 0 0 -8px",
+        });
+        for (const action of actions) {
+          const button = toastButton(TOAST_BUTTON_TEXT[action]);
+          button.dataset["toastAction"] = action;
+          button.addEventListener("click", () => {
+            void chrome.runtime
+              .sendMessage(
+                action === "details"
+                  ? {
+                      type: "open-result-details",
+                      sessionToken: message.sessionToken,
+                      resultId: message.resultId,
+                    }
+                  : {
+                      type: "toast-action",
+                      sessionToken: message.sessionToken,
+                      action,
+                    },
+              )
+              .catch(() => undefined);
+          });
+          row.append(button);
+        }
+        content.append(row);
+      }
+
+      const dismiss = document.createElement("button");
+      dismiss.type = "button";
+      dismiss.dataset["toastDismiss"] = "true";
+      dismiss.setAttribute("aria-label", "Dismiss Provenance Lens result");
+      Object.assign(dismiss.style, {
+        appearance: "none",
+        display: "grid",
+        placeItems: "center",
+        width: "24px",
+        height: "24px",
+        margin: "-2px 0 0",
+        padding: "0",
+        border: "0",
+        borderRadius: "6px",
+        background: "transparent",
+        color: "var(--lens-muted)",
+        cursor: "pointer",
+      });
+      dismiss.append(icon("x", 16));
+      dismiss.addEventListener("click", cleanup, { once: true });
+      hoverFill(dismiss);
+
+      region.replaceChildren(toneBar, toneIcon, content, dismiss);
+      remainingMs = message.tone === "success" ? SUCCESS_TOAST_MS : 0;
+      runTimer();
+    };
+
+    return { root, region, render, cleanup };
   }
 
   function toastButton(label: string): HTMLButtonElement {
@@ -501,16 +1033,39 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     Object.assign(button.style, {
       appearance: "none",
       boxSizing: "border-box",
-      minHeight: "36px",
-      padding: "7px 11px",
-      border: "1px solid #737373",
-      borderRadius: "8px",
-      background: "#262626",
-      color: "#fafafa",
+      margin: "0",
+      padding: "4px 8px",
+      border: "0",
+      borderRadius: "6px",
+      background: "transparent",
+      color: "var(--lens-accent)",
       cursor: "pointer",
-      font: "600 13px/1.2 system-ui, -apple-system, sans-serif",
+      font: `600 13px/18px ${LENS_FONT}`,
     });
+    hoverFill(button);
     return button;
+  }
+
+  function hoverFill(button: HTMLButtonElement): void {
+    button.addEventListener("pointerenter", () => {
+      button.style.background = "var(--lens-hover)";
+    });
+    button.addEventListener("pointerleave", () => {
+      button.style.background = "transparent";
+    });
+  }
+
+  function animate(
+    element: HTMLElement,
+    keyframes: Keyframe[],
+    options: KeyframeAnimationOptions,
+  ): void {
+    if (typeof element.animate !== "function") return;
+    try {
+      element.animate(keyframes, options);
+    } catch {
+      // Motion is decoration; the toast works without it.
+    }
   }
 
   function setImportantStyles(
@@ -525,6 +1080,7 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
   function renderOverlay(
     overlay: PickerOverlay,
     candidate: PickCandidate,
+    verb: string,
   ): void {
     const rect = candidate.element.getBoundingClientRect();
     const viewportWidth = Math.max(1, window.innerWidth);
@@ -567,8 +1123,8 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     const height = Math.max(1, Math.round(rect.height));
     const labelText =
       candidate.kind === "link"
-        ? `Post link · ${candidate.host} · Click to send · Esc to cancel`
-        : `${pickerKindLabel(candidate.sourceKind)} · ${width} × ${height} px · Click to select · Esc to cancel`;
+        ? `Post link · ${candidate.host} · ${verb} · Esc to cancel`
+        : `${pickerKindLabel(candidate.sourceKind)} · ${width} × ${height} px · ${verb} · Esc to cancel`;
     overlay.label.textContent = labelText;
     overlay.root.setAttribute(
       "aria-label",
@@ -669,6 +1225,8 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       clientX,
       clientY,
     )) {
+      // The toast covers what is under it.
+      if (activeToast && element === activeToast.root) return null;
       if (mode === "link") {
         const link = linkCandidateFor(element, document.baseURI, visit);
         if (link) return { kind: "link", ...link };
@@ -685,10 +1243,13 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
   }
 
   function isPickerOverlayElement(element: Element): boolean {
-    const overlay = activePicker?.overlay;
-    if (!overlay) return false;
+    if (activeToast && element === activeToast.root) return true;
+    if (!activePicker) return false;
+    const { overlay, banner } = activePicker;
     return (
-      element === overlay.root || element.getRootNode() === overlay.shadowRoot
+      element === overlay.root ||
+      element === banner.root ||
+      element.getRootNode() === overlay.shadowRoot
     );
   }
 

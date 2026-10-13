@@ -4,12 +4,14 @@ import {
   DOWNLOAD_ACTION_ID,
   LINK_ACTION_ID,
   PICK_VIDEO_ACTION_ID,
+  SYNTHID_ACTION_ID,
   makeIndeterminateResult,
 } from "@provenance-lens/shared";
 import { Blob as NodeBlob } from "node:buffer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VerificationOutcome } from "../../src/actions/verify-openai-provenance.js";
 import type * as IntegrationClient from "../../src/integration-client.js";
+import type * as Notifications from "../../src/notifications.js";
 
 const mocks = vi.hoisted(() => ({
   actionHandler: vi.fn(),
@@ -23,6 +25,8 @@ const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   setWorkflowState: vi.fn(),
   updateSettings: vi.fn(),
+  getSynthIdDisclosureVersion: vi.fn(),
+  setSynthIdDisclosureVersion: vi.fn(),
   openActionPopup: vi.fn(),
   isIntegrationConnected: vi.fn(),
   runIntegratedImageAction: vi.fn(),
@@ -60,6 +64,8 @@ vi.mock("../../src/storage.js", () => ({
   getLatestRecord: mocks.getLatestRecord,
   getResult: mocks.getResult,
   getSettings: mocks.getSettings,
+  getSynthIdDisclosureVersion: mocks.getSynthIdDisclosureVersion,
+  setSynthIdDisclosureVersion: mocks.setSynthIdDisclosureVersion,
   setWorkflowState: mocks.setWorkflowState,
   updateSettings: mocks.updateSettings,
 }));
@@ -78,7 +84,9 @@ vi.mock("../../src/integration-client.js", async (importOriginal) => ({
   isIntegrationConnected: mocks.isIntegrationConnected,
 }));
 
-vi.mock("../../src/notifications.js", () => ({
+// The binding helpers are pure and run as written; only the copy is faked.
+vi.mock("../../src/notifications.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof Notifications>()),
   detectedToastCopy: vi.fn(() => ({
     title: "Detected",
     message: "A supported signal was detected.",
@@ -87,16 +95,10 @@ vi.mock("../../src/notifications.js", () => ({
     title: "Verification failed",
     message: reason,
   })),
-  matchesResultToastBinding: vi.fn(() => false),
   noSignalToastCopy: vi.fn(() => ({
     title: "No signal",
     message: "No supported signal was detected.",
   })),
-  removePageResultToastBindings: vi.fn(),
-  removeResultToastBinding: vi.fn(),
-  resultDetailsUrl: vi.fn(),
-  sameResultToastBinding: vi.fn(() => false),
-  upsertResultToastBinding: vi.fn(),
 }));
 
 const TAB_ID = 7;
@@ -290,6 +292,8 @@ function setupMocks() {
   mocks.appendHistory.mockResolvedValue(undefined);
   mocks.setWorkflowState.mockResolvedValue(undefined);
   mocks.updateSettings.mockResolvedValue(apiSettings());
+  mocks.getSynthIdDisclosureVersion.mockResolvedValue(null);
+  mocks.setSynthIdDisclosureVersion.mockResolvedValue(undefined);
   mocks.openActionPopup.mockResolvedValue(undefined);
   mocks.isIntegrationConnected.mockResolvedValue(false);
   let recordIndex = 0;
@@ -324,6 +328,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.resetAllMocks();
 });
+
+/** The messages of one type that the worker sent to the page. */
+function tabMessages(
+  chromeState: ReturnType<typeof setupChrome>,
+  type: string,
+): Record<string, unknown>[] {
+  return chromeState.sendMessage.mock.calls
+    .map(([, message]) => message as Record<string, unknown>)
+    .filter((message) => message["type"] === type);
+}
 
 describe("background verification workflow boundaries", () => {
   beforeEach(() => {
@@ -632,11 +646,17 @@ describe("background verification workflow boundaries", () => {
           isErrorWorkflowState(state),
         ),
       ).toBe(false);
-      expect(
-        chromeState.sendMessage.mock.calls.some(
-          ([, sent]) => (sent as { type?: string }).type === "show-toast",
-        ),
-      ).toBe(false);
+      // Only the progress toast showed, and the stop removed it: no result or
+      // error toast. A connected Verify names its button Stop waiting.
+      await vi.waitFor(() =>
+        expect(tabMessages(chromeState, "hide-toast")).toHaveLength(1),
+      );
+      const toasts = tabMessages(chromeState, "show-toast");
+      expect(toasts).toHaveLength(1);
+      expect(toasts[0]).toMatchObject({ tone: "progress" });
+      if (actionId === ACTION_ID)
+        expect(toasts[0]).toMatchObject({ actions: ["stop-waiting"] });
+      else expect(toasts[0]).not.toHaveProperty("actions");
       expect(chromeState.setBadgeText).toHaveBeenCalledWith({
         tabId: TAB_ID,
         text: "",
@@ -1028,15 +1048,6 @@ describe("background verification workflow boundaries", () => {
     };
   }
 
-  function tabMessages(
-    chromeState: ReturnType<typeof setupChrome>,
-    type: string,
-  ): Record<string, unknown>[] {
-    return chromeState.sendMessage.mock.calls
-      .map(([, message]) => message as Record<string, unknown>)
-      .filter((message) => message["type"] === type);
-  }
-
   /** A connected browser whose active page accepts the picker script. */
   function connectedVideoPick(
     chromeState: ReturnType<typeof setupChrome>,
@@ -1070,7 +1081,7 @@ describe("background verification workflow boundaries", () => {
       expect(tabMessages(chromeState, "picker-start")).toHaveLength(1),
     );
     const start = tabMessages(chromeState, "picker-start")[0];
-    expect(start).toMatchObject({ mode: "link" });
+    expect(start).toMatchObject({ mode: "link", label: "send-video" });
     await vi.waitFor(() =>
       expect(mocks.setWorkflowState).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1100,24 +1111,42 @@ describe("background verification workflow boundaries", () => {
       { output: "mp3" },
     );
     await vi.waitFor(() =>
-      expect(tabMessages(chromeState, "show-toast")).toHaveLength(1),
+      expect(tabMessages(chromeState, "show-toast")).toHaveLength(2),
     );
     expect(tabMessages(chromeState, "picker-stop")).toEqual([
       expect.objectContaining({ sessionToken }),
     ]);
-    expect(tabMessages(chromeState, "show-toast")[0]).toMatchObject({
-      sessionToken,
-      tone: "detected",
-      title: "Sent to DigiBot",
-      message: "Queued in DigiBot; the result arrives in your Telegram chat.",
-      resultId: null,
-    });
+    // A progress toast at once, then the result in its place.
+    expect(tabMessages(chromeState, "show-toast")).toEqual([
+      {
+        type: "show-toast",
+        runtimeVersion: "0.9.0",
+        sessionToken,
+        tone: "progress",
+        title: "Sending to DigiBot…",
+        message: "x.com · MP3",
+        resultId: null,
+      },
+      {
+        type: "show-toast",
+        runtimeVersion: "0.9.0",
+        sessionToken,
+        tone: "success",
+        title: "Sent to DigiBot",
+        message: "Queued in DigiBot. The result arrives in your Telegram chat.",
+        resultId: null,
+      },
+    ]);
     const toastCall = chromeState.sendMessage.mock.calls.find(
       ([, message]) => (message as { type?: string }).type === "show-toast",
     );
     expect(toastCall?.[0]).toBe(TAB_ID);
     expect(toastCall?.[2]).toEqual({ documentId: DOCUMENT_ID });
     expect(chromeState.setBadgeText).toHaveBeenCalledWith({
+      tabId: TAB_ID,
+      text: "…",
+    });
+    expect(chromeState.setBadgeText).toHaveBeenLastCalledWith({
       tabId: TAB_ID,
       text: "",
     });
@@ -1237,11 +1266,11 @@ describe("background verification workflow boundaries", () => {
       { output: "mp3" },
     );
     await vi.waitFor(() =>
-      expect(tabMessages(restarted, "show-toast")).toHaveLength(1),
+      expect(tabMessages(restarted, "show-toast")).toHaveLength(2),
     );
-    expect(tabMessages(restarted, "show-toast")[0]).toMatchObject({
+    expect(tabMessages(restarted, "show-toast")[1]).toMatchObject({
       sessionToken,
-      tone: "detected",
+      tone: "success",
       title: "Sent to DigiBot",
     });
     expect(tabMessages(restarted, "picker-stop")).toHaveLength(1);
@@ -1427,7 +1456,7 @@ describe("background verification workflow boundaries", () => {
     for (const message of sameTick) listener(message, pickerSender());
     await waitForCall(mocks.actionHandler, 1);
     await vi.waitFor(() =>
-      expect(tabMessages(chromeState, "show-toast")).toHaveLength(1),
+      expect(tabMessages(chromeState, "show-toast")).toHaveLength(2),
     );
     await flush();
     await flush();
@@ -1448,6 +1477,7 @@ describe("background verification workflow boundaries", () => {
     expect(mocks.actionHandler).toHaveBeenCalledTimes(1);
     expect(tabMessages(chromeState, "picker-stop")).toHaveLength(1);
     expect(tabMessages(chromeState, "show-toast")).toEqual([
+      expect.objectContaining({ title: "Sending to DigiBot…" }),
       expect.objectContaining({ title: "Sent to DigiBot" }),
     ]);
   });
@@ -1502,7 +1532,8 @@ describe("background verification workflow boundaries", () => {
     await flush();
     expect(mocks.actionHandler).toHaveBeenCalledTimes(1);
     expect(tabMessages(chromeState, "picker-stop")).toHaveLength(1);
-    expect(tabMessages(chromeState, "show-toast")).toHaveLength(1);
+    // Only the first pick's progress and result toasts.
+    expect(tabMessages(chromeState, "show-toast")).toHaveLength(2);
     expect(mocks.setWorkflowState).not.toHaveBeenCalledWith(CANCELLED_STATE);
     expect(store.get(LINK_PICKER_SESSIONS_KEY)).toEqual(record);
   });
@@ -1569,13 +1600,25 @@ describe("background verification workflow boundaries", () => {
       pickerSender(),
     );
 
+    // The popup's page link reports on its own page too; the refused pick
+    // reports on the picker's page, with no button.
     await vi.waitFor(() =>
-      expect(tabMessages(chromeState, "show-toast")).toHaveLength(1),
+      expect(tabMessages(chromeState, "show-toast")).toContainEqual(
+        expect.objectContaining({ title: "Page link not sent" }),
+      ),
     );
-    expect(tabMessages(chromeState, "show-toast")[0]).toMatchObject({
+    expect(
+      tabMessages(chromeState, "show-toast").find(
+        (toast) => toast["title"] === "Page link not sent",
+      ),
+    ).toEqual({
+      type: "show-toast",
+      runtimeVersion: "0.9.0",
+      sessionToken,
       tone: "error",
       title: "Page link not sent",
       message: "Another page link is still being sent.",
+      resultId: null,
     });
     expect(mocks.actionHandler).toHaveBeenCalledTimes(1);
     finishSend();
@@ -1720,10 +1763,16 @@ describe("background verification workflow boundaries", () => {
         trigger: "popup",
         options: { output: "mp3" },
       },
+      { type: "start-action", actionId: SYNTHID_ACTION_ID, trigger: "popup" },
       {
         type: "resume-permission",
         pendingId: FIRST_RESULT_ID,
         verificationMode: "api",
+      },
+      {
+        type: "resume-permission",
+        pendingId: FIRST_RESULT_ID,
+        verificationMode: "synthid",
       },
       { type: "verify-screenshot", fallbackId: FIRST_RESULT_ID },
       { type: "download-fallback", resultId: SECOND_RESULT_ID },
@@ -1773,5 +1822,462 @@ describe("background verification workflow boundaries", () => {
       expect(tabQueries).toHaveBeenCalledTimes(baseline.tabQueries + 1);
       expect(disclosureReads()).toBe(baseline.disclosureReads + 1);
     });
+  });
+
+  const TOAST_BINDINGS_KEY = "provenanceLens.resultToastBindings";
+
+  /** A page whose frame 0 accepts the picker script, with real session storage. */
+  function boundPage(chromeState: ReturnType<typeof setupChrome>) {
+    chromeState.setBadgeText.mockResolvedValue(undefined);
+    chromeState.executeScript.mockResolvedValue([
+      { frameId: 0, documentId: DOCUMENT_ID },
+    ]);
+    return sessionStorageOf(chromeState);
+  }
+
+  function boundToken(chromeState: ReturnType<typeof setupChrome>): string {
+    return tabMessages(chromeState, "page-bind").at(-1)?.[
+      "sessionToken"
+    ] as string;
+  }
+
+  function contextMenuVerify(chromeState: ReturnType<typeof setupChrome>) {
+    const listener = chromeState.onContextMenuClicked.addListener.mock
+      .calls[0]?.[0] as (
+      info: chrome.contextMenus.OnClickData,
+      tab: chrome.tabs.Tab,
+    ) => void;
+    listener(
+      {
+        menuItemId: ACTION_ID,
+        srcUrl: IMAGE_URL,
+        frameId: 0,
+      } as chrome.contextMenus.OnClickData,
+      { id: TAB_ID, url: PAGE_URL, windowId: WINDOW_ID } as chrome.tabs.Tab,
+    );
+  }
+
+  function websiteHandoff() {
+    return {
+      kind: "website",
+      status: "opened",
+      message:
+        "The exact image was saved. Upload it on Google's SynthID Detector in the new tab.",
+      toastMessage: "Upload it on Google's SynthID Detector in the new tab.",
+    };
+  }
+
+  it("reports a popup page link on its page and retries it once from that page", async () => {
+    const chromeState = setupChrome();
+    const store = boundPage(chromeState);
+    pageLinkAction();
+    mocks.actionHandler
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce(undefined);
+    await loadBackground();
+
+    startPageLink(chromeState, { output: "mp3" });
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "show-toast")).toHaveLength(2),
+    );
+    const sessionToken = boundToken(chromeState);
+    expect(tabMessages(chromeState, "show-toast")).toEqual([
+      expect.objectContaining({
+        sessionToken,
+        tone: "progress",
+        title: "Sending to DigiBot…",
+        message: "page.example · MP3",
+      }),
+      expect.objectContaining({
+        sessionToken,
+        tone: "error",
+        title: "Page link not sent",
+        message: "The page link could not be sent to DigiBot.",
+        actions: ["retry"],
+      }),
+    ]);
+    expect(store.get(TOAST_BINDINGS_KEY)).toEqual([
+      {
+        resultId: null,
+        sessionToken,
+        tabId: TAB_ID,
+        frameId: 0,
+        documentId: DOCUMENT_ID,
+        actions: ["retry"],
+        retry: {
+          actionId: LINK_ACTION_ID,
+          url: PAGE_URL,
+          options: { output: "mp3" },
+        },
+      },
+    ]);
+
+    const retry = { type: "toast-action", sessionToken, action: "retry" };
+    messageListenerOf(chromeState)(
+      retry,
+      pickerSender({ documentId: "navigated-document" }),
+    );
+    await flush();
+    await flush();
+    expect(mocks.actionHandler).toHaveBeenCalledTimes(1);
+
+    messageListenerOf(chromeState)(retry, pickerSender());
+    await waitForCall(mocks.actionHandler, 2);
+    expect(mocks.actionHandler).toHaveBeenLastCalledWith(
+      { url: PAGE_URL },
+      { output: "mp3" },
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "show-toast").at(-1)).toMatchObject({
+        tone: "success",
+        title: "Sent to DigiBot",
+      }),
+    );
+    // Retry acts once: the success toast has no buttons left to accept.
+    messageListenerOf(chromeState)(retry, pickerSender());
+    await flush();
+    await flush();
+    expect(mocks.actionHandler).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers Connect DigiBot when a page link needs the connection", async () => {
+    const chromeState = setupChrome();
+    boundPage(chromeState);
+    pageLinkAction();
+    await loadBackground();
+    // The class the freshly loaded worker checks against.
+    const { PageLinkError } =
+      await import("../../src/actions/integration-link.js");
+    mocks.actionHandler.mockRejectedValue(
+      new PageLinkError(
+        "Connect Provenance Lens to DigiBot before sending a page link.",
+        true,
+      ),
+    );
+
+    startPageLink(chromeState);
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "show-toast").at(-1)).toMatchObject({
+        tone: "error",
+        actions: ["connect-digibot"],
+      }),
+    );
+    messageListenerOf(chromeState)(
+      {
+        type: "toast-action",
+        sessionToken: boundToken(chromeState),
+        action: "connect-digibot",
+      },
+      pickerSender(),
+    );
+    await vi.waitFor(() =>
+      expect(chromeState.api.tabs.create).toHaveBeenCalledWith({
+        url: "chrome-extension://test/settings.html#integration-heading",
+      }),
+    );
+  });
+
+  it("shows a progress toast with Cancel while an image verifies, and Cancel stops it", async () => {
+    const chromeState = setupChrome();
+    boundPage(chromeState);
+    mocks.actionHandler.mockImplementation(
+      ({ retrieval }: { retrieval: { signal: AbortSignal } }) =>
+        new Promise((resolve) => {
+          retrieval.signal.addEventListener("abort", () =>
+            resolve({
+              kind: "api",
+              outcome: { ...unavailableOutcome(), errorCode: "user_cancelled" },
+            }),
+          );
+        }),
+    );
+    await loadBackground();
+
+    contextMenuVerify(chromeState);
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "show-toast")).toHaveLength(1),
+    );
+    const sessionToken = boundToken(chromeState);
+    expect(tabMessages(chromeState, "show-toast")[0]).toEqual({
+      type: "show-toast",
+      runtimeVersion: "0.9.0",
+      sessionToken,
+      tone: "progress",
+      title: "Verifying image…",
+      message: "page.example · API check",
+      resultId: null,
+      actions: ["cancel"],
+    });
+    expect(chromeState.setBadgeText).toHaveBeenCalledWith({
+      tabId: TAB_ID,
+      text: "…",
+    });
+
+    messageListenerOf(chromeState)(
+      { type: "toast-action", sessionToken, action: "cancel" },
+      pickerSender(),
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "hide-toast")).toEqual([
+        { type: "hide-toast", runtimeVersion: "0.9.0", sessionToken },
+      ]),
+    );
+    expect(tabMessages(chromeState, "show-toast")).toHaveLength(1);
+  });
+
+  it("names the connected progress button Stop waiting, which ends only the wait", async () => {
+    const chromeState = setupChrome();
+    boundPage(chromeState);
+    mocks.isIntegrationConnected.mockResolvedValue(true);
+    // The client's own stop text; the worker shows it as given.
+    const stopText = "Stopped waiting for DigiBot.";
+    const { IntegrationClientError } =
+      await import("../../src/integration-client.js");
+    mocks.runIntegratedImageAction.mockImplementation(
+      (
+        _action: string,
+        _selection: unknown,
+        { signal }: { signal: AbortSignal },
+      ) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () =>
+            reject(
+              new IntegrationClientError(stopText, "user_cancelled", false),
+            ),
+          );
+        }),
+    );
+    await loadBackground();
+
+    contextMenuVerify(chromeState);
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "show-toast")).toHaveLength(1),
+    );
+    const sessionToken = boundToken(chromeState);
+    expect(tabMessages(chromeState, "show-toast")[0]).toMatchObject({
+      tone: "progress",
+      message: "page.example · DigiBot check",
+      actions: ["stop-waiting"],
+    });
+
+    messageListenerOf(chromeState)(
+      { type: "toast-action", sessionToken, action: "stop-waiting" },
+      pickerSender(),
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "hide-toast")).toEqual([
+        { type: "hide-toast", runtimeVersion: "0.9.0", sessionToken },
+      ]),
+    );
+    expect(mocks.setWorkflowState).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "idle",
+        message: stopText,
+      }),
+    );
+    expect(tabMessages(chromeState, "show-toast")).toHaveLength(1);
+    expect(mocks.appendHistory).not.toHaveBeenCalled();
+  });
+
+  it("adds Details and the SynthID check to an image result, and the check saves the file without a record", async () => {
+    const chromeState = setupChrome();
+    boundPage(chromeState);
+    mocks.getSynthIdDisclosureVersion.mockResolvedValue(1);
+    mocks.actionHandler
+      .mockResolvedValueOnce({
+        kind: "api",
+        outcome: { ...detectedOutcome(), imageSha256: "a".repeat(64) },
+      })
+      .mockResolvedValueOnce(websiteHandoff());
+    await loadBackground();
+
+    contextMenuVerify(chromeState);
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "show-toast")).toHaveLength(2),
+    );
+    const resultToken = boundToken(chromeState);
+    expect(tabMessages(chromeState, "show-toast")[1]).toMatchObject({
+      sessionToken: resultToken,
+      tone: "detected",
+      resultId: FIRST_RESULT_ID,
+      actions: ["details", "check-synthid"],
+    });
+
+    messageListenerOf(chromeState)(
+      {
+        type: "toast-action",
+        sessionToken: resultToken,
+        action: "check-synthid",
+      },
+      pickerSender(),
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "picker-start")).toHaveLength(1),
+    );
+    const start = tabMessages(chromeState, "picker-start")[0];
+    expect(start).toMatchObject({ label: "synthid" });
+    expect(start).not.toHaveProperty("mode");
+    expect(chromeState.api.permissions.contains).toHaveBeenCalledWith({
+      permissions: ["downloads"],
+    });
+
+    messageListenerOf(chromeState)(
+      {
+        type: "picker-selected",
+        sessionToken: start?.["sessionToken"],
+        selection: selection(),
+      },
+      pickerSender(),
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "show-toast")).toHaveLength(3),
+    );
+    expect(tabMessages(chromeState, "show-toast")[2]).toEqual({
+      type: "show-toast",
+      runtimeVersion: "0.9.0",
+      sessionToken: start?.["sessionToken"],
+      tone: "success",
+      title: "Exact image saved",
+      message: "Upload it on Google's SynthID Detector in the new tab.",
+      resultId: null,
+    });
+    expect(mocks.actionHandler).toHaveBeenCalledTimes(2);
+    // Only the verify result has a record; the handoff keeps none.
+    expect(mocks.appendHistory).toHaveBeenCalledTimes(1);
+    expect(mocks.createHistoryRecord).toHaveBeenCalledTimes(1);
+    expect(mocks.openActionPopup).not.toHaveBeenCalled();
+  });
+
+  it("asks for the SynthID acknowledgement once, then arms the SynthID picker", async () => {
+    const chromeState = setupChrome();
+    boundPage(chromeState);
+    mocks.setSynthIdDisclosureVersion.mockImplementation((version: number) => {
+      mocks.getSynthIdDisclosureVersion.mockResolvedValue(version);
+      return Promise.resolve();
+    });
+    await loadBackground();
+
+    messageListenerOf(chromeState)(
+      { type: "start-action", actionId: SYNTHID_ACTION_ID, trigger: "popup" },
+      extensionPageSender("popup.html"),
+    );
+    await waitForCall(
+      chromeState.api.tabs.create as ReturnType<typeof vi.fn>,
+      1,
+    );
+    const [created] =
+      (
+        chromeState.api.tabs.create as ReturnType<
+          typeof vi.fn<(options: chrome.tabs.CreateProperties) => unknown>
+        >
+      ).mock.calls[0] ?? [];
+    const url = new URL(created?.url ?? "");
+    expect(url.pathname).toBe("/disclosure.html");
+    expect(url.searchParams.get("kind")).toBe("synthid");
+    expect(chromeState.executeScript).not.toHaveBeenCalled();
+
+    messageListenerOf(chromeState)(
+      {
+        type: "resume-permission",
+        pendingId: url.searchParams.get("pending"),
+        verificationMode: "synthid",
+      },
+      extensionPageSender("disclosure.html"),
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "picker-start")).toHaveLength(1),
+    );
+    expect(mocks.setSynthIdDisclosureVersion).toHaveBeenCalledWith(1);
+    expect(tabMessages(chromeState, "picker-start")[0]).toMatchObject({
+      label: "synthid",
+    });
+    expect(mocks.updateSettings).not.toHaveBeenCalled();
+
+    // Acknowledged once: the next handoff arms the picker at once.
+    messageListenerOf(chromeState)(
+      { type: "start-action", actionId: SYNTHID_ACTION_ID, trigger: "popup" },
+      extensionPageSender("popup.html"),
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "picker-start")).toHaveLength(2),
+    );
+    expect(chromeState.api.tabs.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a picked handoff's failure with its button and opens Extension access from it", async () => {
+    const chromeState = setupChrome();
+    boundPage(chromeState);
+    mocks.getSynthIdDisclosureVersion.mockResolvedValue(1);
+    mocks.actionHandler.mockResolvedValueOnce({
+      kind: "website",
+      status: "error",
+      errorCode: "permission_denied",
+      message:
+        "Grant optional download access in Settings before checking with Google SynthID.",
+    });
+    await loadBackground();
+
+    messageListenerOf(chromeState)(
+      { type: "start-action", actionId: SYNTHID_ACTION_ID, trigger: "popup" },
+      extensionPageSender("popup.html"),
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "picker-start")).toHaveLength(1),
+    );
+    const sessionToken = tabMessages(chromeState, "picker-start")[0]?.[
+      "sessionToken"
+    ];
+    messageListenerOf(chromeState)(
+      { type: "picker-selected", sessionToken, selection: selection() },
+      pickerSender(),
+    );
+    // The binding keeps only the page fields of the picker session.
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "show-toast")).toEqual([
+        {
+          type: "show-toast",
+          runtimeVersion: "0.9.0",
+          sessionToken,
+          tone: "error",
+          title: "Google SynthID handoff failed",
+          message:
+            "Grant optional download access in Settings before checking with Google SynthID.",
+          resultId: null,
+          actions: ["grant-access"],
+        },
+      ]),
+    );
+
+    messageListenerOf(chromeState)(
+      { type: "toast-action", sessionToken, action: "grant-access" },
+      pickerSender(),
+    );
+    await vi.waitFor(() =>
+      expect(chromeState.api.tabs.create).toHaveBeenCalledWith({
+        url: "chrome-extension://test/settings.html#permissions-heading",
+      }),
+    );
+  });
+
+  it("opens Extension access instead of the SynthID picker without download access", async () => {
+    const chromeState = setupChrome();
+    boundPage(chromeState);
+    (
+      chromeState.api.permissions.contains as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(false);
+    mocks.getSynthIdDisclosureVersion.mockResolvedValue(1);
+    await loadBackground();
+
+    messageListenerOf(chromeState)(
+      { type: "start-action", actionId: SYNTHID_ACTION_ID, trigger: "popup" },
+      extensionPageSender("popup.html"),
+    );
+    await vi.waitFor(() =>
+      expect(chromeState.api.tabs.create).toHaveBeenCalledWith({
+        url: "chrome-extension://test/settings.html#permissions-heading",
+      }),
+    );
+    expect(chromeState.executeScript).not.toHaveBeenCalled();
+    expect(mocks.actionHandler).not.toHaveBeenCalled();
   });
 });

@@ -4,6 +4,7 @@ import {
   DOWNLOAD_ACTION_ID,
   LINK_ACTION_ID,
   PICK_VIDEO_ACTION_ID,
+  SYNTHID_ACTION_ID,
   type ExtensionSettings,
 } from "@provenance-lens/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -70,14 +71,43 @@ describe("central action registry", () => {
     expect(action?.resultType).toBe("mode-dependent");
     expect(action?.settings).toContain("verificationMode");
     expect(action?.handler).toBeTypeOf("function");
-    expect(ACTION_REGISTRY).toHaveLength(5);
+    expect(ACTION_REGISTRY).toHaveLength(6);
     expect(ACTION_REGISTRY.map((action) => action.id)).toEqual([
       ACTION_ID,
       DOWNLOAD_ACTION_ID,
+      SYNTHID_ACTION_ID,
       AUDIO_ACTION_ID,
       LINK_ACTION_ID,
       PICK_VIDEO_ACTION_ID,
     ]);
+  });
+
+  it("registers the Google SynthID handoff as a website handoff with its row note", async () => {
+    mocks.verifySelectionOnWebsite.mockResolvedValue({
+      kind: "website",
+      status: "opened",
+      message: "saved",
+      toastMessage: "saved",
+    });
+    const action = getActionDefinition(SYNTHID_ACTION_ID);
+    expect(action?.inputType).toBe("image-file");
+    expect(action?.resultType).toBe("website-handoff");
+    expect(action?.triggerLabel).toBe("Check with Google SynthID…");
+    expect(action?.settings).toEqual([]);
+    expect(action?.rowNote).toBe(
+      "Google has no SynthID API yet, so Lens opens Google's SynthID Detector with your file. Lens will check it directly once Google releases an API.",
+    );
+    if (action?.inputType !== "image-file") throw new Error("not an image");
+    await expect(
+      action.handler({ selection, settings: websiteSettings, retrieval: {} }),
+    ).resolves.toMatchObject({ kind: "website", status: "opened" });
+    expect(mocks.verifySelectionOnWebsite).toHaveBeenCalledWith(
+      selection,
+      {},
+      undefined,
+      expect.objectContaining({ url: "https://synthid.com/" }),
+    );
+    expect(mocks.verifySelection).not.toHaveBeenCalled();
   });
 
   it("lists the page-link action after the image actions and keeps it off the image picker", () => {

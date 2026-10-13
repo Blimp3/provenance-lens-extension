@@ -6,6 +6,7 @@ import {
   DOWNLOAD_ACTION_ID,
   LINK_ACTION_ID,
   PICK_VIDEO_ACTION_ID,
+  SYNTHID_ACTION_ID,
   MAX_IMAGE_BYTES,
   MAX_INLINE_IMAGE_BYTES,
   RESULT_SCHEMA_VERSION,
@@ -46,6 +47,7 @@ export const ActionIdSchema = z.enum([
   DOWNLOAD_ACTION_ID,
   LINK_ACTION_ID,
   PICK_VIDEO_ACTION_ID,
+  SYNTHID_ACTION_ID,
 ]);
 export type ActionId = z.infer<typeof ActionIdSchema>;
 
@@ -529,6 +531,9 @@ export type ImageSelection = z.infer<typeof ImageSelectionSchema>;
 
 export const VerificationModeSchema = z.enum(["website", "api"]);
 export type VerificationMode = z.infer<typeof VerificationModeSchema>;
+/** A one-time disclosure: a verification mode's, or the Google SynthID handoff's. */
+export const DisclosureModeSchema = z.enum(["website", "api", "synthid"]);
+export type DisclosureMode = z.infer<typeof DisclosureModeSchema>;
 
 export const AcknowledgedVerificationModesSchema = z
   .array(VerificationModeSchema)
@@ -538,7 +543,47 @@ export const AcknowledgedVerificationModesSchema = z
     "Each verification mode may only be acknowledged once.",
   );
 
-export const PICKER_RUNTIME_VERSION = "0.8.0" as const;
+export const PICKER_RUNTIME_VERSION = "0.9.0" as const;
+
+/** What the armed picker does; it names the banner and the hover label's verb. */
+export const PickerLabelSchema = z.enum([
+  "verify",
+  "send-image",
+  "send-video",
+  "synthid",
+]);
+export type PickerLabel = z.infer<typeof PickerLabelSchema>;
+
+export const ToastToneSchema = z.enum([
+  "success",
+  "detected",
+  "no-signal",
+  "pending",
+  "progress",
+  "error",
+]);
+export type ToastTone = z.infer<typeof ToastToneSchema>;
+
+/** A toast's text buttons. "details" opens the saved result; the rest go to the worker as toast-action. */
+export const ToastActionSchema = z.enum([
+  "details",
+  "history",
+  "cancel",
+  "stop-waiting",
+  "retry",
+  "connect-digibot",
+  "grant-access",
+  "switch-to-api",
+  "check-synthid",
+]);
+export type ToastAction = z.infer<typeof ToastActionSchema>;
+const ToastActionsSchema = z
+  .array(ToastActionSchema)
+  .max(2)
+  .refine(
+    (actions) => new Set(actions).size === actions.length,
+    "Each toast button may appear once.",
+  );
 
 export const PickerRuntimeMessageSchema = z.discriminatedUnion("type", [
   z
@@ -555,6 +600,8 @@ export const PickerRuntimeMessageSchema = z.discriminatedUnion("type", [
       sessionToken: z.string().uuid(),
       // "link" picks a post or page link to send to DigiBot; omitted, an image.
       mode: z.enum(["image", "link"]).optional(),
+      // Omitted, "verify" for an image and "send-video" for a link.
+      label: PickerLabelSchema.optional(),
     })
     .strict(),
   z
@@ -569,22 +616,45 @@ export const PickerRuntimeMessageSchema = z.discriminatedUnion("type", [
       type: z.literal("show-toast"),
       runtimeVersion: z.literal(PICKER_RUNTIME_VERSION),
       sessionToken: z.string().uuid(),
-      tone: z.enum(["detected", "no-signal", "error"]),
+      tone: ToastToneSchema,
       title: z.string().trim().min(1).max(100),
       message: z.string().trim().min(1).max(512),
       resultId: z.string().uuid().nullable(),
+      actions: ToastActionsSchema.optional(),
+    })
+    .strict(),
+  // Removes the page's toast, for a run that ends with nothing to report.
+  z
+    .object({
+      type: z.literal("hide-toast"),
+      runtimeVersion: z.literal(PICKER_RUNTIME_VERSION),
+      sessionToken: z.string().uuid(),
     })
     .strict(),
 ]);
 export type PickerRuntimeMessage = z.infer<typeof PickerRuntimeMessageSchema>;
 
+/**
+ * The page's current toast: its saved result (Details) and the buttons the
+ * worker still accepts from that document. A failed page link keeps what
+ * Retry sends again.
+ */
 export const ResultToastBindingSchema = z
   .object({
-    resultId: z.string().uuid(),
+    resultId: z.string().uuid().nullable(),
     sessionToken: z.string().uuid(),
     tabId: z.number().int().nonnegative(),
     frameId: z.number().int().nonnegative(),
     documentId: z.string().trim().min(1).max(512),
+    actions: ToastActionsSchema.default([]),
+    retry: z
+      .object({
+        actionId: z.enum([LINK_ACTION_ID, PICK_VIDEO_ACTION_ID]),
+        url: z.string().trim().min(1).max(2_048),
+        options: LinkDownloadOptionsSchema,
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type ResultToastBinding = z.infer<typeof ResultToastBindingSchema>;
@@ -640,7 +710,7 @@ export const ExtensionMessageSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("resume-permission"),
       pendingId: z.string().uuid(),
-      verificationMode: VerificationModeSchema,
+      verificationMode: DisclosureModeSchema,
     })
     .strict(),
   z
@@ -648,6 +718,14 @@ export const ExtensionMessageSchema = z.discriminatedUnion("type", [
       type: z.literal("open-result-details"),
       sessionToken: z.string().uuid(),
       resultId: z.string().uuid(),
+    })
+    .strict(),
+  // A toast button other than Details, from the page that shows the toast.
+  z
+    .object({
+      type: z.literal("toast-action"),
+      sessionToken: z.string().uuid(),
+      action: ToastActionSchema.exclude(["details"]),
     })
     .strict(),
 ]);

@@ -941,14 +941,11 @@ async function refreshSession(
   let stopWaiting: (() => void) | undefined;
   const stopped = signal
     ? new Promise<never>((_, reject) => {
-        stopWaiting = () =>
-          reject(
-            new IntegrationClientError(
-              STOP_WAITING_MESSAGE,
-              "user_cancelled",
-              false,
-            ),
-          );
+        stopWaiting = () => {
+          // Runs only once the caller signal aborted, so this is the stop.
+          const stop = integrationAbortError(signal, deadline);
+          if (stop) reject(stop);
+        };
         if (signal.aborted) stopWaiting();
         else signal.addEventListener("abort", stopWaiting, { once: true });
       })
