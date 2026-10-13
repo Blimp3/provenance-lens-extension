@@ -29,7 +29,7 @@ const fixture = IntegrationEnvelopeV1Schema.parse(
 // A byte-for-byte copy of DigiBot's gateway contract fixture, which
 // DigiBot's gateway tests compare with its live responses.
 const contractSha256 =
-  "408f9fdac058e10d06ff4072883babb27ced004ad58be1113217a3066e69d0f9";
+  "5f94808930821581657b73e296b4b0d08ad8085a5246ebea2d9e6cfd8cde30b3";
 const contractText = readFileSync(
   new URL("./fixtures/integration-api-v1.json", import.meta.url),
   "utf8",
@@ -60,12 +60,14 @@ describe("integration API DTOs", () => {
       image: IMAGE_VERIFICATION_POLICY_VERSION,
       audio: VERIFICATION_POLICY_VERSION,
     });
-    // verifierRequests belongs to the excluded verification Worker's tests;
-    // linkDownload is a {request, status, response} wrapper checked below.
+    // verifierRequests belongs to the excluded verification Worker's tests; the
+    // linkDownload entries are {request, status, response} wrappers checked below.
     expect(Object.keys(contract).sort()).toEqual(
       [
         ...Object.keys(schemas),
         "linkDownload",
+        "linkDownloadM4a",
+        "linkDownloadVoice",
         "policyVersions",
         "verifierRequests",
         "version",
@@ -73,38 +75,47 @@ describe("integration API DTOs", () => {
     );
   });
 
-  it("matches DigiBot's recorded link-download request and response", () => {
-    const { linkDownload } = JSON.parse(contractText) as {
-      linkDownload: {
-        request: {
-          method: string;
-          path: string;
-          body: Record<string, unknown>;
-        };
-        status: number;
-        response: unknown;
+  it("matches DigiBot's recorded link-download requests and responses", () => {
+    type RecordedLinkDownload = {
+      request: {
+        method: string;
+        path: string;
+        body: Record<string, unknown>;
       };
+      status: number;
+      response: unknown;
     };
-    expect(Object.keys(linkDownload).sort()).toEqual([
-      "request",
-      "response",
-      "status",
-    ]);
-    expect(
-      IntegrationLinkDownloadResponseSchema.parse(linkDownload.response),
-    ).toEqual(linkDownload.response);
-    expect(linkDownload.status).toBe(202);
-    expect(linkDownload.request.method).toBe("POST");
-    expect(linkDownload.request.path).toBe("/api/integration/link-downloads");
-    expect(Object.keys(linkDownload.request.body).sort()).toEqual([
-      "operationId",
-      "output",
-      "sourceUrl",
-    ]);
-    const { operationId, sourceUrl, ...options } = linkDownload.request.body;
-    expect(typeof operationId).toBe("string");
-    expect(typeof sourceUrl).toBe("string");
-    expect(LinkDownloadOptionsSchema.parse(options)).toEqual({ output: "mp3" });
+    const contract = JSON.parse(contractText) as Record<
+      "linkDownload" | "linkDownloadVoice" | "linkDownloadM4a",
+      RecordedLinkDownload
+    >;
+    for (const [key, output] of [
+      ["linkDownload", "mp3"],
+      ["linkDownloadVoice", "voice"],
+      ["linkDownloadM4a", "m4a"],
+    ] as const) {
+      const recorded = contract[key];
+      expect(Object.keys(recorded).sort(), key).toEqual([
+        "request",
+        "response",
+        "status",
+      ]);
+      expect(
+        IntegrationLinkDownloadResponseSchema.parse(recorded.response),
+      ).toEqual(recorded.response);
+      expect(recorded.status).toBe(202);
+      expect(recorded.request.method).toBe("POST");
+      expect(recorded.request.path).toBe("/api/integration/link-downloads");
+      expect(Object.keys(recorded.request.body).sort()).toEqual([
+        "operationId",
+        "output",
+        "sourceUrl",
+      ]);
+      const { operationId, sourceUrl, ...options } = recorded.request.body;
+      expect(typeof operationId).toBe("string");
+      expect(typeof sourceUrl).toBe("string");
+      expect(LinkDownloadOptionsSchema.parse(options), key).toEqual({ output });
+    }
   });
 
   it("accepts only a queued link download job", () => {

@@ -381,23 +381,23 @@ test("pairs DigiBot, separates image Check and Download operations, sends a page
       expect(targetTab.active).toBe(true);
     };
 
-    const startAction = async (actionId: string): Promise<void> => {
-      const popup = await context.newPage();
-      await popup.goto(`chrome-extension://${extensionId}/popup.html`);
-      const actionButton = popup.locator(
-        `button[data-action-id="${actionId}"]`,
-      );
-      await expect(actionButton).toBeVisible();
-      await expect(actionButton).toBeEnabled();
+    // The message the Lens palette sends, here from an extension page, while
+    // the target tab is the active one.
+    const sendStartAction = async (actionId: string): Promise<void> => {
       await activateTargetTab();
-      await popup.evaluate((id) => {
-        const button = document.querySelector<HTMLButtonElement>(
-          `button[data-action-id="${id}"]`,
-        );
-        if (!button) throw new Error(`Action button ${id} was not found.`);
-        button.click();
-      }, actionId);
-      await popup.close().catch(() => undefined);
+      await settings.evaluate(
+        (id) =>
+          chrome.runtime.sendMessage({
+            type: "start-action",
+            actionId: id,
+            trigger: "popup",
+          }),
+        actionId,
+      );
+    };
+
+    const startAction = async (actionId: string): Promise<void> => {
+      await sendStartAction(actionId);
       const overlay = targetPage.locator(
         '[data-provenance-lens-picker="overlay"]',
       );
@@ -409,6 +409,17 @@ test("pairs DigiBot, separates image Check and Download operations, sends a page
       await expect(overlay).toHaveCount(0);
     };
 
+    const workflow = (): Promise<{ status?: string; message?: string }> =>
+      worker.evaluate(async () => {
+        const values = await chrome.storage.local.get(
+          "provenanceLens.workflow",
+        );
+        return (
+          (values["provenanceLens.workflow"] as
+            { status?: string; message?: string } | undefined) ?? {}
+        );
+      });
+
     await startAction("verify-openai-provenance");
     await expect.poll(() => operationInputs.length).toBe(1);
     await expect.poll(() => operationStatuses.size).toBe(1);
@@ -417,6 +428,8 @@ test("pairs DigiBot, separates image Check and Download operations, sends a page
         targetPage.locator('[data-provenance-lens-toast="true"]').count(),
       )
       .toBeGreaterThan(0);
+    // A check holds its tab until it finishes, so the Download waits for it.
+    await expect.poll(async () => (await workflow()).status).toBe("idle");
 
     await startAction(DOWNLOAD_ACTION_ID);
     await expect.poll(() => operationInputs.length).toBe(2);
@@ -428,29 +441,29 @@ test("pairs DigiBot, separates image Check and Download operations, sends a page
     );
     expect(verificationCalls).toBe(0);
 
+    // The Download finishes first, so its message cannot land after the
+    // page link's.
+    await expect
+      .poll(async () => (await workflow()).message)
+      .toBe("The image was sent to your DigiBot chat.");
+
     // The page-link action sends only the active tab's address, creates no
-    // operation, and reports back inside the popup, which stays open.
-    const linkPopup = await context.newPage();
-    await linkPopup.goto(`chrome-extension://${extensionId}/popup.html`);
-    const linkButton = linkPopup.locator(
-      `button[data-action-id="${LINK_ACTION_ID}"]`,
-    );
-    await expect(linkButton).toBeEnabled();
-    await activateTargetTab();
-    await linkButton.evaluate((button) =>
-      (button as HTMLButtonElement).click(),
-    );
+    // operation, and reports back by a toast on the page.
+    await sendStartAction(LINK_ACTION_ID);
     await expect.poll(() => linkDownloads.length).toBe(1);
     expect(linkDownloads[0]?.sourceUrl).toBe(targetPage.url());
     expect(operationIdPattern.test(linkDownloads[0]?.operationId ?? "")).toBe(
       true,
     );
-    await expect(linkPopup.locator("#workflow-status")).toHaveText(
-      "Queued in DigiBot. The result arrives in your Telegram chat.",
-    );
-    expect(linkPopup.isClosed()).toBe(false);
+    await expect
+      .poll(async () => (await workflow()).message)
+      .toBe("Queued in DigiBot. The result arrives in your Telegram chat.");
+    await expect
+      .poll(() =>
+        targetPage.locator('[data-provenance-lens-toast="true"]').count(),
+      )
+      .toBeGreaterThan(0);
     expect(operationInputs).toHaveLength(2);
-    await linkPopup.close();
 
     const history = await context.newPage();
     await history.goto(`chrome-extension://${extensionId}/history.html`);

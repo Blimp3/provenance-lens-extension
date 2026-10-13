@@ -51,6 +51,19 @@ export function pickedLinkUrl(href: string, base?: string): string | null {
 }
 
 /**
+ * Whether a page's own address is not one post or video: an X or YouTube
+ * timeline, home or search page. Its video is sent by picking a post there.
+ */
+export function needsPostPick(pageUrl: string): boolean {
+  const url = resolveHttpUrl(pageUrl, undefined);
+  if (!url) return false;
+  const host = hostOf(url);
+  return (
+    (isXHost(host) || isYouTubeHost(host)) && pickedLinkUrl(pageUrl) === null
+  );
+}
+
+/**
  * Climbs from the element under the pointer while `visit` allows it and
  * returns the first candidate, or null when the chain holds none.
  */

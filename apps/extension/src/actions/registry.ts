@@ -54,8 +54,6 @@ interface ActionDescription {
     | "integration-operation"
     | "telegram-delivery";
   settings?: readonly (keyof ExtensionSettings)[];
-  /** Shown under the action's row or button, word for word. */
-  rowNote?: string;
 }
 export type ActionDefinition = ActionDescription &
   (
@@ -151,8 +149,6 @@ export const ACTION_REGISTRY: readonly ActionDefinition[] = Object.freeze([
     inputType: "image-file",
     resultType: "website-handoff",
     settings: [],
-    rowNote:
-      "Google has no SynthID API yet, so Lens opens Google's SynthID Detector with your file. Lens will check it directly once Google releases an API.",
     handler: (context) =>
       checkSelectionOnSynthId(context.selection, context.retrieval),
   },
@@ -173,7 +169,7 @@ export const ACTION_REGISTRY: readonly ActionDefinition[] = Object.freeze([
     displayName: "Send page link to DigiBot",
     triggerLabel: "Send this page's link to Telegram",
     description:
-      "Send only this page's link to the linked DigiBot account, which downloads the video itself and posts it in your Telegram chat as a video, an MP3 or a clip.",
+      "Send only this page's link to the linked DigiBot account, which downloads the video itself and posts it in your Telegram chat as a video, a voice note, an audio file or a clip.",
     iconRef: "icons/icon-48.png",
     inputType: "page-link",
     resultType: "telegram-delivery",
@@ -185,7 +181,7 @@ export const ACTION_REGISTRY: readonly ActionDefinition[] = Object.freeze([
     displayName: "Pick a video on this page",
     triggerLabel: "Pick a video on this page",
     description:
-      "Click an X post that shows a video, a YouTube video or a link on this page; only that link is sent to the linked DigiBot account, which posts the video, MP3 or clip in your Telegram chat.",
+      "Click an X post that shows a video, a YouTube video or a link on this page; only that link is sent to the linked DigiBot account, which posts the video, voice note, audio file or clip in your Telegram chat.",
     iconRef: "icons/icon-48.png",
     inputType: "video-pick",
     resultType: "telegram-delivery",

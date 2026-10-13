@@ -137,35 +137,42 @@ describe("connected integration request contract", () => {
     );
   });
 
-  it("sends the link-download request DigiBot's contract fixture records", async () => {
+  it("sends the link-download requests DigiBot's contract fixture records", async () => {
     const { local } = installChrome();
     await local.set({ [sessionKey]: session });
-    const recorded = contract.linkDownload;
-    const sent: { url: string; init: RequestInit }[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string, init: RequestInit = {}) => {
-        sent.push({ url, init });
-        return response(recorded.response, recorded.status);
-      }),
-    );
     const client = await import("../../src/integration-client.js");
 
-    await expect(
-      client.createLinkDownload(
-        recorded.request.body.operationId,
-        recorded.request.body.sourceUrl,
-        undefined,
-        { output: "mp3" },
-      ),
-    ).resolves.toEqual(recorded.response);
+    for (const [recorded, output] of [
+      [contract.linkDownload, "mp3"],
+      [contract.linkDownloadVoice, "voice"],
+      [contract.linkDownloadM4a, "m4a"],
+    ] as const) {
+      const sent: { url: string; init: RequestInit }[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((url: string, init: RequestInit = {}) => {
+          sent.push({ url, init });
+          return response(recorded.response, recorded.status);
+        }),
+      );
 
-    expect(sent).toHaveLength(1);
-    const [{ url, init } = { url: "", init: {} }] = sent;
-    expect(init.method).toBe(recorded.request.method);
-    expect(new URL(url).pathname).toBe(recorded.request.path);
-    if (typeof init.body !== "string") throw new Error("Expected a JSON body");
-    expect(JSON.parse(init.body)).toEqual(recorded.request.body);
+      await expect(
+        client.createLinkDownload(
+          recorded.request.body.operationId,
+          recorded.request.body.sourceUrl,
+          undefined,
+          { output },
+        ),
+      ).resolves.toEqual(recorded.response);
+
+      expect(sent).toHaveLength(1);
+      const [{ url, init } = { url: "", init: {} }] = sent;
+      expect(init.method).toBe(recorded.request.method);
+      expect(new URL(url).pathname).toBe(recorded.request.path);
+      if (typeof init.body !== "string")
+        throw new Error("Expected a JSON body");
+      expect(JSON.parse(init.body)).toEqual(recorded.request.body);
+    }
   });
 
   it("sends only the link-download options that are present", async () => {
@@ -188,7 +195,7 @@ describe("connected integration request contract", () => {
     await client.createLinkDownload(operationId, sourceUrl);
     await client.createLinkDownload(operationId, sourceUrl, undefined, {});
     await client.createLinkDownload(operationId, sourceUrl, undefined, {
-      output: "mp3",
+      output: "voice",
     });
     await client.createLinkDownload(operationId, sourceUrl, undefined, clip);
     await client.createLinkDownload(operationId, sourceUrl, undefined, {
@@ -199,7 +206,7 @@ describe("connected integration request contract", () => {
     expect(bodies).toEqual([
       { operationId, sourceUrl },
       { operationId, sourceUrl },
-      { operationId, sourceUrl, output: "mp3" },
+      { operationId, sourceUrl, output: "voice" },
       { operationId, sourceUrl, ...clip },
       { operationId, sourceUrl, output: "mp3", ...clip },
     ]);

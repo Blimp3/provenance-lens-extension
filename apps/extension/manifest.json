@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Provenance Lens",
   "description": "Check image Content Credentials and supported OpenAI image or short-audio provenance signals.",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "permissions": ["activeTab", "contextMenus", "scripting", "storage"],
   "host_permissions": [
     "https://private-media-downloader.yellow-salad-bfde.workers.dev/*"
@@ -15,7 +15,6 @@
   },
   "action": {
     "default_title": "Provenance Lens",
-    "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",
@@ -23,6 +22,12 @@
       "128": "icons/icon-128.png"
     }
   },
+  "web_accessible_resources": [
+    {
+      "resources": ["palette.html"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ],
   "options_ui": {
     "page": "settings.html",
     "open_in_tab": true
@@ -34,12 +39,46 @@
     "128": "icons/icon-128.png"
   },
   "commands": {
+    "open-palette": {
+      "suggested_key": {
+        "default": "Alt+Shift+Space",
+        "mac": "Alt+Shift+Space"
+      },
+      "description": "Open or close the Lens palette"
+    },
     "pick-image": {
       "suggested_key": {
         "default": "Alt+Shift+V",
         "mac": "Alt+Shift+V"
       },
       "description": "Pick an image for OpenAI provenance review"
+    },
+    "send-page-video": {
+      "description": "Send this page's video to Telegram"
+    },
+    "send-page-audio": {
+      "description": "Send this page's audio to Telegram as a voice note"
+    },
+    "send-page-audio-file": {
+      "description": "Send this page's audio to Telegram as an audio file"
+    },
+    "pick-post-video": {
+      "description": "Pick a post and send its video to Telegram"
+    },
+    "pick-post-audio": {
+      "description": "Pick a post and send its audio to Telegram as a voice note"
+    },
+    "pick-post-audio-file": {
+      "description": "Pick a post and send its audio to Telegram as an audio file"
+    },
+    "pick-image-telegram": {
+      "description": "Pick an image and send the original to Telegram"
+    },
+    "cancel-active": {
+      "description": "Cancel the running verification or pick"
+    },
+    "open-clip": {
+      "description": "Open the Lens palette at Clip"
     }
   }
 }

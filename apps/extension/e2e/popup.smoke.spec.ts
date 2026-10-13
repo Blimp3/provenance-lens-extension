@@ -8,7 +8,7 @@ import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
 
-test("loads the unpacked extension popup", async () => {
+test("loads the unpacked extension settings page", async () => {
   const extensionPath = resolve(process.cwd(), "dist");
   const context = await chromium.launchPersistentContext(
     test.info().outputPath("profile"),
@@ -36,35 +36,21 @@ test("loads the unpacked extension popup", async () => {
       serviceWorker = await context.waitForEvent("serviceworker");
     }
     const extensionId = new URL(serviceWorker.url()).hostname;
-    const page = await context.newPage();
-    await page.goto(`chrome-extension://${extensionId}/popup.html`);
-    await expect(page).toHaveTitle(/Provenance Lens/u);
-    await expect(
-      page.getByRole("button", { name: "Verify an image on this page" }),
-    ).toBeVisible();
-    const popupModeSummary = page.locator("#verification-mode-summary");
-    await expect(popupModeSummary).toContainText(/^(Website|API) mode:/u);
-    const popupModeText = (await popupModeSummary.textContent()) ?? "";
-    const hasBundledClient = popupModeText.startsWith("API mode:");
-    await expect(popupModeSummary).toContainText(
-      hasBundledClient ? "API mode:" : "Website mode:",
-    );
-    await expect(
-      page.getByRole("button", { name: "Grant optional access" }),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "Cancel verification" }),
-    ).toBeHidden();
-
-    const settingsPagePromise = context.waitForEvent("page");
-    await page.getByRole("button", { name: "Settings" }).click();
-    const settingsPage = await settingsPagePromise;
-    await settingsPage.waitForLoadState("domcontentloaded");
+    // The Lens palette replaced the toolbar popup; palette.smoke covers it.
+    const settingsPage = await context.newPage();
+    await settingsPage.goto(`chrome-extension://${extensionId}/settings.html`);
     await expect(settingsPage).toHaveTitle(/Provenance Lens settings/u);
     const bundledClientDisclosure = settingsPage.locator(
       "#bundled-client-disclosure",
     );
     await expect(bundledClientDisclosure).toHaveCount(1);
+    // The backend URL is filled in the same task that locks the token field.
+    await expect(settingsPage.locator("#backend-url")).toHaveValue(
+      DEFAULT_BACKEND_URL,
+    );
+    const hasBundledClient = await settingsPage
+      .locator("#client-token")
+      .isDisabled();
     if (hasBundledClient) {
       await expect(bundledClientDisclosure).toBeVisible();
       await expect(settingsPage.locator("#connection-status")).toHaveText(
@@ -182,7 +168,7 @@ test("loads the unpacked extension popup", async () => {
       manualFallbackAvailable: false,
       screenshotFallbackAvailable: false,
     };
-    await page.evaluate(async (savedRecord) => {
+    await settingsPage.evaluate(async (savedRecord) => {
       await chrome.storage.local.set({
         "provenanceLens.history": [savedRecord],
       });
@@ -190,14 +176,15 @@ test("loads the unpacked extension popup", async () => {
         "provenanceLens.latest": savedRecord,
       });
     }, record);
-    await page.reload();
 
+    // The palette in a tab opens a saved result from its Recent view.
+    const palette = await context.newPage();
+    await palette.goto(`chrome-extension://${extensionId}/palette.html`);
+    await palette.getByRole("option", { name: /^Recent/u }).click();
+    const savedResult = palette.getByRole("option", { name: /page\.example/u });
+    await expect(savedResult).toBeVisible();
     const detailsPagePromise = context.waitForEvent("page");
-    const resultDetails = page.getByRole("link", {
-      name: "Show result details",
-    });
-    await expect(resultDetails).toHaveClass(/result-action-detected/u);
-    await resultDetails.click();
+    await savedResult.click();
     const detailsPage = await detailsPagePromise;
     await detailsPage.waitForLoadState("domcontentloaded");
     await expect(detailsPage).toHaveTitle(/Provenance Lens result/u);
@@ -218,8 +205,13 @@ test("loads the unpacked extension popup", async () => {
     ).toBe(true);
     await detailsPage.close();
 
+    const historyPalette = await context.newPage();
+    await historyPalette.goto(`chrome-extension://${extensionId}/palette.html`);
+    await historyPalette.locator("#query").fill("history");
     const historyPagePromise = context.waitForEvent("page");
-    await page.getByRole("link", { name: "Result history" }).click();
+    await historyPalette
+      .getByRole("option", { name: /^Result history/u })
+      .click();
     const historyPage = await historyPagePromise;
     await historyPage.waitForLoadState("domcontentloaded");
     await expect(historyPage).toHaveTitle(/Provenance Lens history/u);

@@ -668,7 +668,7 @@ export const ExtensionMessageSchema = z.discriminatedUnion("type", [
       type: z.literal("start-action"),
       actionId: ActionIdSchema,
       trigger: z.enum(["popup", "keyboard"]),
-      // The page link's output (MP3) or clip; the other actions take none.
+      // The page link's audio output or clip; the other actions take none.
       options: LinkDownloadOptionsSchema.optional(),
     })
     .strict(),

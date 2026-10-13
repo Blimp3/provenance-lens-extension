@@ -2,10 +2,44 @@
 
 ## [Unreleased]
 
-Adds the pick banner and result toasts. The extension version stays 1.0.0 and
-the picker runtime is 0.9.0.
+Adds the pick banner and result toasts, and the Lens palette, which replaces
+the toolbar popup. Every version field is 2.0.0, with no tag or release yet,
+and the picker runtime is 0.9.0.
 
 ### Added
+
+- The Lens palette: **Alt+Shift+Space** (⌥⇧Space on a Mac), a toolbar click or
+  the right-click item **Open Lens palette** opens a search field and command
+  list over the page, in a frame inside a closed shadow root. It has the views
+  Root, Download, Verify, Clip and Recent, and an action panel on **⌘K** with
+  Run, Set alias…, Clear alias and Set hotkey…. Search ranks aliases first,
+  **Last used** keeps the last three commands, ⌥1 to ⌥9 run rows by position,
+  Esc steps back one level at a time and Tab never leaves the palette. Opening
+  it reads only local storage: it starts no check and sends no request.
+- Eleven browser commands: **Open or close the Lens palette** (suggested
+  Alt+Shift+Space), **Pick an image for OpenAI provenance review** (Alt+Shift+V,
+  unchanged), and, with no key until you set one, send this page's video, voice
+  note or audio file, pick a post for its video, voice note or audio file, pick
+  an image for Telegram, cancel the running verification or pick, and open the
+  palette at Clip. When the browser leaves the palette key unassigned,
+  **Choose a palette shortcut** opens its shortcuts page.
+- Right-click items: **Send this image to Telegram**, **Send link to Telegram
+  as video**, **…as voice note** and **…as audio file**, **Send this video to
+  Telegram**, **Lens palette for this video…** and **Open Lens palette**, and
+  on the toolbar icon **Settings…**, **Recent results…** and **Result
+  history**. One shared menu rebuild serves install, startup and worker start.
+- Audio sends: **Send voice note** posts an OGG/Opus voice note and **Send
+  audio file** an M4A with its title and music player, for this page or, with
+  **Pick a post → voice note…** and **Pick a post → audio file…**, for a post
+  you click. The page link's output is now `voice`, `m4a` or `mp3`, and the
+  pinned DigiBot contract fixture records a voice and an M4A request. These
+  rows need DigiBot's link route to accept the voice-note and M4A outputs;
+  DigiBot 5.0.0 accepts only MP3 and refuses them.
+- **Verify audio of this page…** and **Clip › Verify this clip's audio** check 1
+  to 60 seconds of the page's video through DigiBot in the background. The
+  page shows the progress and the result as a toast.
+- On a browser page, or a page that refuses the palette, the palette opens as a
+  popup under the toolbar icon, and in a tab if the browser refuses the popup.
 
 - Picker: a banner at the top of the page names the action (**Verify**,
   **Send image**, **Send video** or **Google SynthID**), what to click and Esc
@@ -22,7 +56,7 @@ the picker runtime is 0.9.0.
   its visibility is not visible. A page can still hide a toast button under its
   own content; toast buttons only run follow-up actions that the user already
   started, and the page cannot read their results.
-- **Check with Google SynthID…** in the popup, with the note "Google has no
+- **Check with Google SynthID…** in the Verify view, with the note "Google has no
   SynthID API yet, so Lens opens Google's SynthID Detector with your file. Lens
   will check it directly once Google releases an API.", and **Also check with
   Google ↗** on an image result whose exact file Lens retrieved (not on a
@@ -36,6 +70,23 @@ the picker runtime is 0.9.0.
 
 ### Changed
 
+- The toolbar icon opens the palette instead of a popup. For now, the palette's
+  **Settings**, **Connect DigiBot** and **Needs download access** rows and the
+  toast buttons **Connect DigiBot**, **Grant access** and **Switch to API** open
+  the Settings page in a tab. The Website mode message for missing download
+  access points to Settings.
+- The image right-click item is now **Verify this image** (it was **Check
+  OpenAI provenance**).
+- **Send video**, **Send voice note** and **Send audio file** on an X or YouTube
+  page that is not one post or video start the post picker instead of sending
+  the page address.
+- Lens no longer offers MP3: the voice note and audio file replace it.
+- **Cancel** in the palette and the cancel command also stop a picker that is
+  waiting for a click.
+- A Clip range is typed in one field, for example `1:30-2:10`, `90-130` or
+  `1:02:03-1:05:00`.
+- Version 2.0.0 in the root package, every workspace package, the extension
+  manifest and `package-lock.json`.
 - Each connected DigiBot request stops after 30 s. A status request also stops
   when the 60 s status wait ends. Before, one request that got no answer did
   not stop.
@@ -60,13 +111,19 @@ the picker runtime is 0.9.0.
   bubble phase do not see the toast's mouse-button, pointer-button and key
   events. Capture-phase listeners on window or document can still see a click
   on the toast host, and movement, touch, wheel and focus events still bubble.
-- A page-link send from the popup shows its progress and result as a toast on
+- A page-link send from the palette shows its progress and result as a toast on
   the page. A failed send offers **Retry** once, and a missing DigiBot
   connection offers **Connect DigiBot**. An image check that is still running
   on that page still shows its result there.
 - Copy: a link send reports "Queued in DigiBot. The result arrives in your
   Telegram chat." A delivered image download shows **Image sent to Telegram**,
   and Website mode and the SynthID handoff show **Exact image saved**.
+
+### Removed
+
+- The toolbar popup (`popup.html`) and the popup reopen after a picker-started
+  API check. The in-page toast, the badge and the palette's Recent view show
+  the result.
 
 ### Fixed
 
@@ -85,6 +142,13 @@ the picker runtime is 0.9.0.
 
 ### Security and privacy
 
+- `web_accessible_resources` lists only `palette.html`, for `http` and `https`
+  pages. A palette frame renders only with the single-use token the worker
+  stores when it opens the palette, so a page that embeds it gets a blank frame
+  that sends nothing. The worker accepts `start-action` and `cancel-active`
+  from a palette frame only for the active tab it mounted the palette into.
+  Each host's port carries its own token, and no palette closes another
+  palette's port.
 - Lens reads DigiBot JSON responses with a size limit: 4 MiB for History and
   1 MiB for all other responses.
 - Video URLs for audio-segment checks do not include the URL fragment. This
@@ -97,6 +161,9 @@ the picker runtime is 0.9.0.
 
 ### Documentation
 
+- README: the Lens palette (opening, keys, the eleven commands, the right-click
+  list, restricted pages, why `palette.html` is web-accessible and the Google
+  SynthID handoff). The note "There is no right-click menu for videos" is gone.
 - README: the popup actions include **Check with Google SynthID…**, with what
   it saves and sends.
 

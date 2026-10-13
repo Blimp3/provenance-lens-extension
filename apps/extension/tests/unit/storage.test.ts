@@ -9,10 +9,8 @@ import {
   getLatestRecord,
   getResult,
   getSettings,
-  getWindowLatestRecord,
   deleteHistoryItem,
   replaceHistoryRecord,
-  setWindowLatestRecord,
   STORAGE_KEYS,
   saveSettings,
 } from "../../src/storage.js";
@@ -225,38 +223,8 @@ describe("history and transient latest retention", () => {
     await expect(getLatestRecord()).resolves.toEqual(record);
   });
 
-  it("binds concurrent window popups to their own validated results", async () => {
-    const second = {
-      ...record,
-      id: "123e4567-e89b-42d3-a456-426614174001",
-      createdAt: "2026-09-01T10:00:01.000Z",
-    };
-    await expect(setWindowLatestRecord(7, record)).resolves.toBe(true);
-    await expect(setWindowLatestRecord(8, second)).resolves.toBe(true);
-    await expect(getWindowLatestRecord(7)).resolves.toEqual(record);
-    await expect(getWindowLatestRecord(8)).resolves.toEqual(second);
-  });
-
-  it("keeps the newest completion for concurrent checks in one window", async () => {
-    const newer = {
-      ...record,
-      id: "123e4567-e89b-42d3-a456-426614174001",
-      createdAt: "2026-09-01T10:00:01.000Z",
-    };
-    await expect(setWindowLatestRecord(7, newer)).resolves.toBe(true);
-    await expect(setWindowLatestRecord(7, record)).resolves.toBe(false);
-    await expect(getWindowLatestRecord(7)).resolves.toEqual(newer);
-  });
-
-  it("resolves a window-bound result when retained history is disabled", async () => {
-    const second = {
-      ...record,
-      id: "123e4567-e89b-42d3-a456-426614174001",
-      createdAt: "2026-09-01T10:00:01.000Z",
-    };
+  it("resolves the transient latest result when retained history is disabled", async () => {
     await appendHistory(record, 0);
-    await setWindowLatestRecord(7, record);
-    await appendHistory(second, 0);
     await expect(getHistory()).resolves.toEqual([]);
     await expect(getResult(record.id)).resolves.toEqual(record);
   });
@@ -269,21 +237,17 @@ describe("history and transient latest retention", () => {
 
   it("clears both retained and transient records", async () => {
     await appendHistory(record, 20);
-    await setWindowLatestRecord(7, record);
     await clearHistory();
     await expect(getHistory()).resolves.toEqual([]);
     await expect(getLatestRecord()).resolves.toBeNull();
-    await expect(getWindowLatestRecord(7)).resolves.toBeNull();
   });
 
   it("moves latest to the next retained item after deletion", async () => {
     const second = { ...record, id: "123e4567-e89b-42d3-a456-426614174001" };
     await appendHistory(record, 20);
     await appendHistory(second, 20);
-    await setWindowLatestRecord(7, second);
     await deleteHistoryItem(second.id);
     await expect(getLatestRecord()).resolves.toEqual(record);
-    await expect(getWindowLatestRecord(7)).resolves.toBeNull();
   });
 
   it("serializes concurrent appends and deletion without losing or resurrecting records", async () => {
@@ -353,18 +317,16 @@ describe("history and transient latest retention", () => {
     await expect(getLatestRecord()).resolves.toEqual(second);
   });
 
-  it("replaces retained, transient, and window-bound records without resurrecting a deletion", async () => {
+  it("replaces retained and transient records without resurrecting a deletion", async () => {
     const replacement = {
       ...record,
       result: { ...record.result, summary: "The rechecked result." },
     };
     await appendHistory(record, 0);
-    await setWindowLatestRecord(7, record);
 
     await expect(replaceHistoryRecord(replacement)).resolves.toBe(true);
     await expect(getHistory()).resolves.toEqual([]);
     await expect(getLatestRecord()).resolves.toEqual(replacement);
-    await expect(getWindowLatestRecord(7)).resolves.toEqual(replacement);
 
     await Promise.all([
       replaceHistoryRecord({
@@ -375,7 +337,6 @@ describe("history and transient latest retention", () => {
     ]);
     await expect(getHistory()).resolves.toEqual([]);
     await expect(getLatestRecord()).resolves.toBeNull();
-    await expect(getWindowLatestRecord(7)).resolves.toBeNull();
     await expect(replaceHistoryRecord(replacement)).resolves.toBe(false);
   });
 });

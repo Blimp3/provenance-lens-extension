@@ -65,6 +65,8 @@ describe("shared runtime schemas", () => {
     };
     expect(ExtensionMessageSchema.parse(start)).toEqual(start);
     for (const options of [
+      { output: "voice" },
+      { output: "m4a" },
       { output: "mp3" },
       { startSeconds: 65, endSeconds: 120 },
     ]) {
@@ -76,7 +78,7 @@ describe("shared runtime schemas", () => {
     for (const options of [
       { startSeconds: 65 },
       { startSeconds: 120, endSeconds: 65 },
-      { output: "m4a" },
+      { output: "opus" },
       { output: "mp3", quality: "320k" },
     ]) {
       expect(

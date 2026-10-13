@@ -280,7 +280,7 @@ export async function createAudioSegmentOperation(
 }
 
 /**
- * Sends only the page link, plus the MP3 output or clip range when asked;
+ * Sends only the page link, plus the audio output or clip range when asked;
  * DigiBot queues the download job a pasted Telegram link creates.
  */
 export async function createLinkDownload(

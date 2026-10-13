@@ -381,6 +381,38 @@
       "state": "queued"
     }
   },
+  "linkDownloadVoice": {
+    "request": {
+      "method": "POST",
+      "path": "/api/integration/link-downloads",
+      "body": {
+        "operationId": "77777777-7777-4777-8777-777777777777",
+        "output": "voice",
+        "sourceUrl": "https://youtu.be/fixture-video"
+      }
+    },
+    "status": 202,
+    "response": {
+      "jobId": "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      "state": "queued"
+    }
+  },
+  "linkDownloadM4a": {
+    "request": {
+      "method": "POST",
+      "path": "/api/integration/link-downloads",
+      "body": {
+        "operationId": "88888888-8888-4888-8888-888888888888",
+        "output": "m4a",
+        "sourceUrl": "https://youtu.be/fixture-video"
+      }
+    },
+    "status": 202,
+    "response": {
+      "jobId": "99999999-9999-4999-8999-999999999999",
+      "state": "queued"
+    }
+  },
   "verifierRequests": {
     "validate": {
       "method": "POST",

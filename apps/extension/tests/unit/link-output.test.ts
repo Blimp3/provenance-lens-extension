@@ -46,26 +46,29 @@ describe("page-link output controls", () => {
     expect(parseClock(text)).toBeNull();
   });
 
-  it("lists the outputs the dropdown offers", () => {
-    expect(LINK_OUTPUTS).toEqual(["video", "mp3", "clip"]);
+  it("lists the outputs and their progress toast names", () => {
+    expect(LINK_OUTPUTS).toEqual(["video", "voice", "m4a", "mp3", "clip"]);
     expect(LINK_OUTPUTS.map((output) => LINK_OUTPUT_LABELS[output])).toEqual([
       "Video",
+      "Voice note",
+      "Audio file",
       "MP3",
       "Clip",
     ]);
-    expect(isLinkOutput("mp3")).toBe(true);
-    expect(isLinkOutput("m4a")).toBe(false);
+    expect(isLinkOutput("voice")).toBe(true);
+    expect(isLinkOutput("opus")).toBe(false);
   });
 
-  it("sends no options for a video and only the output for an MP3", () => {
+  it("sends no options for a video and only the output for audio", () => {
     expect(linkOptionsFor("video", "1:05", "2:00")).toEqual({
       ok: true,
       options: null,
     });
-    expect(linkOptionsFor("mp3", "", "")).toEqual({
-      ok: true,
-      options: { output: "mp3" },
-    });
+    for (const output of ["voice", "m4a", "mp3"] as const)
+      expect(linkOptionsFor(output, "", "")).toEqual({
+        ok: true,
+        options: { output },
+      });
   });
 
   it("turns a clip's clock values into seconds", () => {

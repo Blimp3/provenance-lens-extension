@@ -1,14 +1,18 @@
 import { LinkDownloadOptionsSchema } from "../src/index.js";
 
-// The same rules DigiBot's link-download route applies since DigiBot 5.0.0: an output of
+// The rules DigiBot's link-download route applies: an output of "voice", "m4a",
 // "mp3" or nothing, and an integer clip with both bounds, 0 <= start < end <= 86400.
 describe("link-download options", () => {
   it("accepts the options DigiBot's route takes", () => {
     const clip = { startSeconds: 65, endSeconds: 120 };
     for (const options of [
       {},
+      { output: "voice" },
+      { output: "m4a" },
       { output: "mp3" },
       clip,
+      { output: "voice", ...clip },
+      { output: "m4a", ...clip },
       { output: "mp3", ...clip },
       { startSeconds: 0, endSeconds: 86_400 },
     ]) {
@@ -29,7 +33,7 @@ describe("link-download options", () => {
     { startSeconds: "65", endSeconds: 120 },
     { startSeconds: -1, endSeconds: 20 },
     { startSeconds: 0, endSeconds: 86_401 },
-    { output: "m4a" },
+    { output: "opus" },
     { output: "MP3" },
     { output: null },
     { output: 1 },

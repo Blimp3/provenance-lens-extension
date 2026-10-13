@@ -108,11 +108,14 @@ test("checks exact audio bytes, rejects long audio locally, and explains C2PA tr
       context.serviceWorkers()[0] ??
       (await context.waitForEvent("serviceworker"));
     const extensionId = new URL(worker.url()).hostname;
+    // The Lens palette in a tab, as the fallback opens it.
     const page = await context.newPage();
-    await page.goto(`chrome-extension://${extensionId}/popup.html`);
-    await expect(
-      page.getByRole("button", { name: "Check audio or video segment" }),
-    ).toBeVisible();
+    await page.goto(`chrome-extension://${extensionId}/palette.html`);
+    const audioRow = page.getByRole("option", {
+      name: /Verify an audio file/u,
+    });
+    await page.locator("#query").fill("audio file");
+    await expect(audioRow).toBeVisible();
     await page.evaluate(async (backendBaseUrl) => {
       await chrome.storage.local.set({
         "provenanceLens.settings": {
@@ -130,9 +133,7 @@ test("checks exact audio bytes, rejects long audio locally, and explains C2PA tr
       });
     }, DEFAULT_BACKEND_URL);
     const audioPagePromise = context.waitForEvent("page");
-    await page
-      .getByRole("button", { name: "Check audio or video segment" })
-      .click();
+    await audioRow.click();
     const audioPage = await audioPagePromise;
     await audioPage.waitForLoadState("domcontentloaded");
     await expect(audioPage).toHaveTitle("Provenance Lens audio check");

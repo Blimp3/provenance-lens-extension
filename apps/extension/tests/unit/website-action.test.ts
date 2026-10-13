@@ -123,7 +123,7 @@ describe("Website verification action", () => {
       status: "error",
       errorCode: "permission_denied",
       message:
-        "Grant optional download access from the popup or Settings before using Website mode.",
+        "Grant optional download access in Settings before using Website mode.",
     });
     expect(browser.createTab).not.toHaveBeenCalled();
   });

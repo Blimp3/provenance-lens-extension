@@ -20,7 +20,6 @@ export const STORAGE_KEYS = {
   history: "provenanceLens.history",
   workflow: "provenanceLens.workflow",
   latest: "provenanceLens.latest",
-  popupLatestByWindow: "provenanceLens.popupLatestByWindow",
   // The acknowledged SynthID disclosure version, apart from the settings.
   synthidDisclosure: "provenanceLens.synthidDisclosure",
 } as const;
@@ -142,7 +141,6 @@ export async function clearHistory(): Promise<void> {
     Promise.all([
       chrome.storage.local.remove(STORAGE_KEYS.history),
       chrome.storage.session.remove(STORAGE_KEYS.latest),
-      chrome.storage.session.remove(STORAGE_KEYS.popupLatestByWindow),
     ]).then(() => undefined),
   );
 }
@@ -161,14 +159,9 @@ export async function replaceHistoryRecord(
   return withStorageMutationLock(async () => {
     const existingHistory = await getHistory();
     const latest = await getLatestRecord();
-    const windowLatest = await getWindowLatestRecords();
-    const matchingWindowKeys = Object.entries(windowLatest)
-      .filter(([, record]) => record.id === id)
-      .map(([key]) => key);
     const historyContains = existingHistory.some((record) => record.id === id);
     const latestContains = latest?.id === id;
-    if (!historyContains && !latestContains && !matchingWindowKeys.length)
-      return false;
+    if (!historyContains && !latestContains) return false;
 
     if (historyContains) {
       await writeHistoryUnlocked(
@@ -178,11 +171,6 @@ export async function replaceHistoryRecord(
       );
     }
     if (latestContains) await setLatestRecordUnlocked(parsedReplacement);
-    if (matchingWindowKeys.length) {
-      for (const key of matchingWindowKeys)
-        windowLatest[key] = parsedReplacement;
-      await writeWindowLatestRecordsUnlocked(windowLatest);
-    }
     return true;
   });
 }
@@ -191,12 +179,7 @@ export async function getResult(id: string): Promise<HistoryRecord | null> {
   const historyRecord = (await getHistory()).find((record) => record.id === id);
   if (historyRecord) return historyRecord;
   const latest = await getLatestRecord();
-  if (latest?.id === id) return latest;
-  return (
-    Object.values(await getWindowLatestRecords()).find(
-      (record) => record.id === id,
-    ) ?? null
-  );
+  return latest?.id === id ? latest : null;
 }
 
 export async function deleteHistoryItem(id: string): Promise<void> {
@@ -212,65 +195,7 @@ export async function deleteHistoryItem(id: string): Promise<void> {
         await chrome.storage.session.remove(STORAGE_KEYS.latest);
       }
     }
-    await removeWindowLatestRecordUnlocked(id);
   });
-}
-
-export async function getWindowLatestRecord(
-  windowId: number,
-): Promise<HistoryRecord | null> {
-  return (await getWindowLatestRecords())[String(windowId)] ?? null;
-}
-
-export function setWindowLatestRecord(
-  windowId: number,
-  record: HistoryRecord,
-): Promise<boolean> {
-  if (!Number.isInteger(windowId) || windowId < 0)
-    return Promise.resolve(false);
-  const parsed = HistoryRecordSchema.parse(record);
-  return withStorageMutationLock(async () => {
-    const records = await getWindowLatestRecords();
-    const key = String(windowId);
-    const existing = records[key];
-    if (
-      existing &&
-      Date.parse(existing.createdAt) > Date.parse(parsed.createdAt)
-    )
-      return false;
-    records[key] = parsed;
-    await writeWindowLatestRecordsUnlocked(records);
-    return true;
-  });
-}
-
-async function getWindowLatestRecords(): Promise<
-  Record<string, HistoryRecord>
-> {
-  const values = await chrome.storage.session.get(
-    STORAGE_KEYS.popupLatestByWindow,
-  );
-  const raw = values[STORAGE_KEYS.popupLatestByWindow];
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  const records: Record<string, HistoryRecord> = {};
-  for (const [key, candidate] of Object.entries(raw)) {
-    if (!/^\d+$/u.test(key)) continue;
-    const parsed = HistoryRecordSchema.safeParse(candidate);
-    if (parsed.success) records[key] = parsed.data;
-  }
-  return records;
-}
-
-async function removeWindowLatestRecordUnlocked(id: string): Promise<void> {
-  const records = await getWindowLatestRecords();
-  let changed = false;
-  for (const [key, record] of Object.entries(records)) {
-    if (record.id !== id) continue;
-    delete records[key];
-    changed = true;
-  }
-  if (!changed) return;
-  await writeWindowLatestRecordsUnlocked(records);
 }
 
 function writeHistoryUnlocked(records: HistoryRecord[]): Promise<void> {
@@ -279,14 +204,6 @@ function writeHistoryUnlocked(records: HistoryRecord[]): Promise<void> {
 
 function setLatestRecordUnlocked(record: HistoryRecord): Promise<void> {
   return chrome.storage.session.set({ [STORAGE_KEYS.latest]: record });
-}
-
-function writeWindowLatestRecordsUnlocked(
-  records: Record<string, HistoryRecord>,
-): Promise<void> {
-  return chrome.storage.session.set({
-    [STORAGE_KEYS.popupLatestByWindow]: records,
-  });
 }
 
 function withStorageMutationLock<T>(work: () => Promise<T>): Promise<T> {

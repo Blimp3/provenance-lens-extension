@@ -36,7 +36,7 @@ export class PageLinkError extends Error {
 }
 
 /**
- * Sends only the current page's HTTP(S) address, with the MP3 output or clip
+ * Sends only the current page's HTTP(S) address, with the audio output or clip
  * range when asked, over the connected session. DigiBot fetches the media
  * itself and posts the result in that account's own Telegram chat, so nothing
  * is stored locally and there is nothing to poll.
