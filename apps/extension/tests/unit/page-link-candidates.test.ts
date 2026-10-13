@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   linkCandidateFor,
+  needsPostPick,
   pickedLinkUrl,
 } from "../../src/page-link-candidates.js";
 
@@ -96,6 +97,49 @@ describe("picked link addresses", () => {
       "https://x.com/alice/status/123",
     );
     expect(pickedLinkUrl("/home", "https://x.com/alice")).toBeNull();
+  });
+});
+
+describe("pages that start the post picker", () => {
+  it.each([
+    "https://x.com/",
+    "https://x.com/home",
+    "https://twitter.com/search?q=lens&f=live",
+    "https://x.com/explore",
+    "https://x.com/explore/tabs/for-you",
+    "https://x.com/alice",
+    "https://x.com/alice/media",
+    "https://www.youtube.com/",
+    "https://www.youtube.com/results?search_query=lens",
+    "https://www.youtube.com/feed/subscriptions",
+    "https://m.youtube.com/@channel",
+    "https://www.youtube.com/@channel/videos",
+    "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv",
+    "https://www.youtube.com/c/name",
+    "https://www.youtube.com/user/name/",
+    "https://www.youtube.com/playlist?list=PL0123456789",
+  ])("picks a post on the listing page %s", (pageUrl) => {
+    expect(needsPostPick(pageUrl)).toBe(true);
+  });
+
+  it.each([
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL0123456789",
+    "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+    "https://youtu.be/dQw4w9WgXcQ",
+    "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+    "https://music.youtube.com/playlist?list=PL0123456789",
+    "https://www.youtube.com/live/dQw4w9WgXcQ",
+    "https://www.youtube.com/clip/UgkxAbCdEfGhIjKlMnOpQrStUvWxYz",
+    "https://www.youtube.com/embed/dQw4w9WgXcQ",
+    "https://x.com/alice/status/123",
+    "https://x.com/alice/status/123/video/1",
+    "https://x.com/i/web/status/123",
+    "https://t.co/abc123",
+    "https://news.example/story",
+    "not a url",
+  ])("sends %s as it is", (pageUrl) => {
+    expect(needsPostPick(pageUrl)).toBe(false);
   });
 });
 

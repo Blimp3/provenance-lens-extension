@@ -105,15 +105,15 @@ report with a toast on the page and with the toolbar badge.
 Page items show only on `http` and `https` pages. If two or more items apply,
 the browser puts them under one **Provenance Lens** item.
 
-| Right-click on                             | Item                                                                         | Does                                                                                                 |
-| ------------------------------------------ | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| An image                                   | **Verify this image**                                                        | Checks that image, as **Check OpenAI provenance** did                                                |
-| An image                                   | **Send this image to Telegram**                                              | Sends the original file through DigiBot, or opens Settings to connect DigiBot                        |
-| An image, a page, a frame or selected text | **Open Lens palette**                                                        | Opens the palette                                                                                    |
-| A link                                     | **Send link to Telegram as video**, **…as voice note** or **…as audio file** | Sends that link through DigiBot. On X, right-click the post's timestamp                              |
-| A video or audio player                    | **Send this video to Telegram**                                              | Sends the page link, or starts the post picker on an X or YouTube page that is not one post or video |
-| A video or audio player                    | **Lens palette for this video…**                                             | Opens the Download view for this page                                                                |
-| The toolbar icon                           | **Settings…**, **Recent results…** or **Result history**                     | Opens Settings, the palette at Recent, or the History page                                           |
+| Right-click on                             | Item                                                                         | Does                                                                                                                 |
+| ------------------------------------------ | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| An image                                   | **Verify this image**                                                        | Checks that image, as **Check OpenAI provenance** did                                                                |
+| An image                                   | **Send this image to Telegram**                                              | Sends the original file through DigiBot, or opens Settings to connect DigiBot                                        |
+| An image, a page, a frame or selected text | **Open Lens palette**                                                        | Opens the palette                                                                                                    |
+| A link                                     | **Send link to Telegram as video**, **…as voice note** or **…as audio file** | Sends that link through DigiBot. On X, right-click the post's timestamp                                              |
+| A video or audio player                    | **Send this video to Telegram**                                              | Sends the page link, or starts the post picker on an X or YouTube listing page such as a timeline, channel or search |
+| A video or audio player                    | **Lens palette for this video…**                                             | Opens the Download view for this page                                                                                |
+| The toolbar icon                           | **Settings…**, **Recent results…** or **Result history**                     | Opens Settings, the palette at Recent, or the History page                                                           |
 
 ### Restricted pages
 
@@ -127,12 +127,15 @@ pages**. If the browser also refuses the popup, the palette opens in a tab.
 `web_accessible_resources` lists only `palette.html`, and only for `http` and
 `https` pages. This lets the palette show as a frame on the page where you
 opened it. It is not a permission and gives no access to sites. If a page
-embeds the file, the frame stays blank:
+embeds or opens the file, it stays blank:
 
 - The palette renders only with a single-use token. The service worker stores
   this token when you open the palette.
-- The worker accepts commands from a palette frame only for the tab where it
-  opened that palette.
+- The worker accepts commands only from the palette frame with that token, in
+  the tab where it opened that palette, while that tab is active.
+
+Because the file loads for any `http` or `https` page, any such page can tell
+that Lens is installed.
 
 ### Google SynthID handoff
 
@@ -210,8 +213,11 @@ Settings:
   The result is not in Lens History.
 - If the page does not have an http(s) address, Lens refuses the page before
   it sends anything.
-- On an X or YouTube page that is not one post or video, **Send video**,
-  **Send voice note** and **Send audio file** start the post picker instead.
+- On an X or YouTube listing page, **Send video**, **Send voice note** and
+  **Send audio file** start the post picker instead. A listing page is X home,
+  search, explore or a profile, or YouTube home, search results, a feed, a
+  channel or a playlist. Lens sends every other page as it is, including a
+  post, a video, a live or clip page and a YouTube Music page.
 - Lens shows the refusals and limit messages from DigiBot without changes.
 
 ### Video, audio or clip
@@ -335,8 +341,11 @@ For local review, load `apps/extension/dist` as an unpacked extension.
   worker accepts these messages only from the pages of Lens itself. It does not
   accept them from the pickers on the page or from other content scripts.
 - A palette frame on a page can only start an action or cancel the active one.
-  The worker accepts these messages only for the active tab where it opened
-  that palette.
+  The worker accepts these messages only from the palette frame that it opened,
+  in the active tab.
+- **Verify audio of this page…** and **Clip › Verify this clip's audio** send
+  the active tab's full address to DigiBot. DigiBot sends an excerpt of at most
+  60 seconds of its audio to OpenAI for the check.
 - Content Credentials and supported watermark evidence are provenance signals.
   They are not scene-truth claims or universal AI-detection claims.
 

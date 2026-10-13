@@ -1128,7 +1128,7 @@ describe("background verification workflow boundaries", () => {
     mocks.actionHandler.mockResolvedValue(undefined);
     await loadBackground();
 
-    const sessionToken = await startVideoPick(chromeState, { output: "mp3" });
+    const sessionToken = await startVideoPick(chromeState, { output: "m4a" });
     messageListenerOf(chromeState)(
       { type: "picker-link-selected", sessionToken, url: PICKED_URL },
       pickerSender(),
@@ -1137,7 +1137,7 @@ describe("background verification workflow boundaries", () => {
     await waitForCall(mocks.actionHandler, 1);
     expect(mocks.actionHandler).toHaveBeenCalledWith(
       { url: PICKED_URL },
-      { output: "mp3" },
+      { output: "m4a" },
     );
     await vi.waitFor(() =>
       expect(tabMessages(chromeState, "show-toast")).toHaveLength(2),
@@ -1153,7 +1153,7 @@ describe("background verification workflow boundaries", () => {
         sessionToken,
         tone: "progress",
         title: "Sending to DigiBot…",
-        message: "x.com · MP3",
+        message: "x.com · Audio file",
         resultId: null,
       },
       {
@@ -1905,7 +1905,7 @@ describe("background verification workflow boundaries", () => {
       .mockResolvedValueOnce(undefined);
     await loadBackground();
 
-    startPageLink(chromeState, { output: "mp3" });
+    startPageLink(chromeState, { output: "m4a" });
     await vi.waitFor(() =>
       expect(tabMessages(chromeState, "show-toast")).toHaveLength(2),
     );
@@ -1915,7 +1915,7 @@ describe("background verification workflow boundaries", () => {
         sessionToken,
         tone: "progress",
         title: "Sending to DigiBot…",
-        message: "page.example · MP3",
+        message: "page.example · Audio file",
       }),
       expect.objectContaining({
         sessionToken,
@@ -1936,7 +1936,7 @@ describe("background verification workflow boundaries", () => {
         retry: {
           actionId: LINK_ACTION_ID,
           url: PAGE_URL,
-          options: { output: "mp3" },
+          options: { output: "m4a" },
         },
       },
     ]);
@@ -1954,7 +1954,7 @@ describe("background verification workflow boundaries", () => {
     await waitForCall(mocks.actionHandler, 2);
     expect(mocks.actionHandler).toHaveBeenLastCalledWith(
       { url: PAGE_URL },
-      { output: "mp3" },
+      { output: "m4a" },
     );
     await vi.waitFor(() =>
       expect(tabMessages(chromeState, "show-toast").at(-1)).toMatchObject({
@@ -2439,11 +2439,19 @@ describe("the Lens palette in the worker", () => {
     ]);
   }
 
-  function paletteFrame(tabId = TAB_ID): chrome.runtime.MessageSender {
+  function paletteFrame({
+    tabId = TAB_ID,
+    token = "frame",
+    active = true,
+  }: {
+    tabId?: number;
+    token?: string | undefined;
+    active?: boolean;
+  } = {}): chrome.runtime.MessageSender {
     return {
-      tab: { id: tabId, active: true } as chrome.tabs.Tab,
+      tab: { id: tabId, active } as chrome.tabs.Tab,
       frameId: 4,
-      url: "chrome-extension://test/palette.html#t=frame",
+      url: `chrome-extension://test/palette.html#t=${token}`,
     };
   }
 
@@ -2531,7 +2539,7 @@ describe("the Lens palette in the worker", () => {
     expect(chromeState.api.action.setPopup).not.toHaveBeenCalled();
   });
 
-  it("accepts start-action from a page frame only for the tab it mounted the palette into", async () => {
+  it("accepts start-action only from the palette frame it mounted, in the active tab", async () => {
     const chromeState = setupChrome();
     storeOf(chromeState);
     hostReady(chromeState);
@@ -2560,19 +2568,26 @@ describe("the Lens palette in the worker", () => {
     ).args[1];
     await flush();
 
-    send(start, paletteFrame(8));
+    // Another tab, another palette frame in the same tab, an inactive tab.
+    send(start, paletteFrame({ tabId: 8, token }));
+    send(
+      start,
+      paletteFrame({ token: "00000000-0000-4000-8000-000000000000" }),
+    );
+    send(start, paletteFrame({ token, active: false }));
     send(
       {
         type: "resume-permission",
         pendingId: FIRST_RESULT_ID,
         verificationMode: "api",
       },
-      paletteFrame(),
+      paletteFrame({ token }),
     );
+    await flush();
     await flush();
     expect(mocks.actionHandler).not.toHaveBeenCalled();
 
-    send(start, paletteFrame());
+    send(start, paletteFrame({ token }));
     await waitForCall(mocks.actionHandler, 1);
     expect(mocks.actionHandler).toHaveBeenCalledWith({ url: PAGE_URL }, {});
 
@@ -2590,7 +2605,7 @@ describe("the Lens palette in the worker", () => {
     disconnect();
     await flush();
     await flush();
-    send(start, paletteFrame());
+    send(start, paletteFrame({ token }));
     await flush();
     await flush();
     expect(mocks.actionHandler).toHaveBeenCalledTimes(1);
@@ -2645,10 +2660,9 @@ describe("the Lens palette in the worker", () => {
 
     clickToolbar(chromeState, { url: "chrome://newtab/" });
 
-    await vi.waitFor(() =>
-      expect(chromeState.api.tabs.create).toHaveBeenCalledWith({
-        url: "chrome-extension://test/palette.html#settings",
-      }),
+    await waitForCall(
+      chromeState.api.tabs.create as ReturnType<typeof vi.fn>,
+      1,
     );
     await vi.waitFor(() =>
       expect(action.setPopup).toHaveBeenLastCalledWith({
@@ -2656,9 +2670,26 @@ describe("the Lens palette in the worker", () => {
         popup: "",
       }),
     );
-    // A browser page gets no injection, and no record outlives the refusal.
+    // The tab gets its own single-use record, not the refused popup's.
+    const popupToken = lastPopupToken(chromeState);
+    const tabRecord = store.get(OPEN_KEY) as { token: string };
+    expect(tabRecord.token).toMatch(UUID);
+    expect(tabRecord).toEqual({
+      token: tabRecord.token,
+      tabId: TAB_ID,
+      view: "root",
+      host: "tab",
+      page: "none",
+      hostname: "",
+      scope: "page",
+      needsPick: false,
+    });
+    expect(tabRecord.token).not.toBe(popupToken);
+    expect(chromeState.api.tabs.create).toHaveBeenCalledWith({
+      url: `chrome-extension://test/palette.html#t=${tabRecord.token}`,
+    });
+    // A browser page gets no injection.
     expect(chromeState.executeScript).not.toHaveBeenCalled();
-    expect(store.has(OPEN_KEY)).toBe(false);
   });
 
   it("closes an open palette on the second press and opens nothing else", async () => {

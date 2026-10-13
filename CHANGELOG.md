@@ -15,7 +15,10 @@ and the picker runtime is 0.9.0.
   Run, Set alias…, Clear alias and Set hotkey…. Search ranks aliases first,
   **Last used** keeps the last three commands, ⌥1 to ⌥9 run rows by position,
   Esc steps back one level at a time and Tab never leaves the palette. Opening
-  it reads only local storage: it starts no check and sends no request.
+  it reads only local storage: it starts no check and sends no request. Over a
+  page, it runs a row only while the browser reports it visible, and a click
+  only after 500 ms of that; otherwise it shows "The page is covering Lens.
+  Press Esc and open it again."
 - Eleven browser commands: **Open or close the Lens palette** (suggested
   Alt+Shift+Space), **Pick an image for OpenAI provenance review** (Alt+Shift+V,
   unchanged), and, with no key until you set one, send this page's video, voice
@@ -78,8 +81,9 @@ and the picker runtime is 0.9.0.
 - The image right-click item is now **Verify this image** (it was **Check
   OpenAI provenance**).
 - **Send video**, **Send voice note** and **Send audio file** on an X or YouTube
-  page that is not one post or video start the post picker instead of sending
-  the page address.
+  listing page (X home, search, explore or a profile; YouTube home, search
+  results, a feed, a channel or a playlist) start the post picker instead of
+  sending the page address. Every other page is sent as before.
 - Lens no longer offers MP3: the voice note and audio file replace it.
 - **Cancel** in the palette and the cancel command also stop a picker that is
   waiting for a click.

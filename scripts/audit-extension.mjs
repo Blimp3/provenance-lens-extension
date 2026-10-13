@@ -76,7 +76,8 @@ if (manifest.action?.default_popup)
   failures.push(
     "action.default_popup is not allowed: the toolbar opens the palette",
   );
-// The palette frame is the only page a website may load (as an iframe).
+// palette.html is the only page a website may load, in a frame or as a tab;
+// without the worker's single-use record it stays blank.
 const expectedResources = [
   { resources: ["palette.html"], matches: ["http://*/*", "https://*/*"] },
 ];

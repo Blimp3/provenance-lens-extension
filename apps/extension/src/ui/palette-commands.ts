@@ -96,13 +96,13 @@ export type PaletteOpenRecord = {
   token: string;
   tabId: number;
   view: OpenView;
-  host: "page" | "popup";
+  host: "page" | "popup" | "tab";
   /** "web": a normal page; "link-only": an http(s) tab no script may enter. */
   page: "web" | "link-only" | "none";
   hostname: string;
   /** "video": opened from a right-clicked video. */
   scope: "page" | "video";
-  /** An X or YouTube page that is not one post or video. */
+  /** An X or YouTube listing page, such as a timeline, channel or search. */
   needsPick: boolean;
 };
 
@@ -123,7 +123,7 @@ export function parsePaletteOpenRecord(
     tabId < 0 ||
     typeof view !== "string" ||
     !OPEN_VIEWS.includes(view) ||
-    (host !== "page" && host !== "popup") ||
+    (host !== "page" && host !== "popup" && host !== "tab") ||
     (page !== "web" && page !== "link-only" && page !== "none") ||
     typeof hostname !== "string" ||
     hostname.length > 255 ||

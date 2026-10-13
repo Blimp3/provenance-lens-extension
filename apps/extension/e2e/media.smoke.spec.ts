@@ -1,4 +1,10 @@
-import { chromium, expect, test } from "@playwright/test";
+import {
+  chromium,
+  expect,
+  test,
+  type BrowserContext,
+  type Page,
+} from "@playwright/test";
 import {
   DEFAULT_BACKEND_URL,
   VERIFICATION_POLICY_VERSION,
@@ -23,6 +29,38 @@ function wav(seconds: number): Buffer {
   bytes.write("data", 36);
   bytes.writeUInt32LE(dataSize, 40);
   return bytes;
+}
+
+/**
+ * The palette in a tab, as the fallback opens it: with its own single-use
+ * record. Without a token the page reads no record, so it can store one first.
+ */
+async function openPaletteTab(
+  context: BrowserContext,
+  extensionId: string,
+): Promise<Page> {
+  const base = `chrome-extension://${extensionId}/palette.html`;
+  const page = await context.newPage();
+  await page.goto(base);
+  const token = await page.evaluate(async () => {
+    const token = crypto.randomUUID();
+    await chrome.storage.session.set({
+      "provenanceLens.paletteOpen": {
+        token,
+        tabId: 1,
+        view: "root",
+        host: "tab",
+        page: "none",
+        hostname: "",
+        scope: "page",
+        needsPick: false,
+      },
+    });
+    return token;
+  });
+  await page.goto(`${base}#t=${token}`);
+  await page.reload();
+  return page;
 }
 
 test("checks exact audio bytes, rejects long audio locally, and explains C2PA trust", async () => {
@@ -108,9 +146,7 @@ test("checks exact audio bytes, rejects long audio locally, and explains C2PA tr
       context.serviceWorkers()[0] ??
       (await context.waitForEvent("serviceworker"));
     const extensionId = new URL(worker.url()).hostname;
-    // The Lens palette in a tab, as the fallback opens it.
-    const page = await context.newPage();
-    await page.goto(`chrome-extension://${extensionId}/palette.html`);
+    const page = await openPaletteTab(context, extensionId);
     const audioRow = page.getByRole("option", {
       name: /Verify an audio file/u,
     });

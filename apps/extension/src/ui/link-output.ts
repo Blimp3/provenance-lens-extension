@@ -1,23 +1,13 @@
-import type { LinkDownloadOptions } from "@provenance-lens/shared";
-
 /**
- * What a page link sends: the page's video, its audio as a voice note, an
- * audio file or an MP3, or one clip of it.
+ * What a page link sends: the page's video, its audio as a voice note or an
+ * audio file, or one clip of it.
  */
-export type LinkOutput = "video" | "voice" | "m4a" | "mp3" | "clip";
-export const LINK_OUTPUTS: readonly LinkOutput[] = [
-  "video",
-  "voice",
-  "m4a",
-  "mp3",
-  "clip",
-];
-/** Each output's name in a progress toast, in LINK_OUTPUTS order. */
+export type LinkOutput = "video" | "voice" | "m4a" | "clip";
+/** Each output's name in a progress toast. */
 export const LINK_OUTPUT_LABELS: Readonly<Record<LinkOutput, string>> = {
   video: "Video",
   voice: "Voice note",
   m4a: "Audio file",
-  mp3: "MP3",
   clip: "Clip",
 };
 
@@ -29,17 +19,9 @@ export const CLIP_FORMAT_MESSAGE =
 export const CLIP_LIMIT_MESSAGE = "Keep the clip within 24 hours.";
 export const CLIP_ORDER_MESSAGE = "The clip must start before it ends.";
 
-export type ClipField = "start" | "end";
-export type LinkOptionsResult =
-  | { ok: true; options: LinkDownloadOptions | null }
-  | { ok: false; message: string; fields: readonly ClipField[] };
 export type ClipRangeResult =
   | { ok: true; startSeconds: number; endSeconds: number }
   | { ok: false; message: string };
-
-export function isLinkOutput(value: string): value is LinkOutput {
-  return (LINK_OUTPUTS as readonly string[]).includes(value);
-}
 
 /**
  * Whole seconds from "ss", "m:ss" or "h:mm:ss", read the way DigiBot reads a
@@ -65,58 +47,21 @@ export function parseClock(text: string): number | null {
 }
 
 /**
- * The options the chosen output sends with the page link: none for the video,
- * the audio output, or a clip whose bounds are whole seconds with
- * 0 <= start < end <= 86400. An invalid clip names the fields to correct.
- */
-export function linkOptionsFor(
-  output: LinkOutput,
-  start: string,
-  end: string,
-): LinkOptionsResult {
-  if (output === "video") return { ok: true, options: null };
-  if (output !== "clip") return { ok: true, options: { output } };
-  const startSeconds = parseClock(start);
-  const endSeconds = parseClock(end);
-  if (startSeconds === null || endSeconds === null) {
-    return {
-      ok: false,
-      message: CLIP_FORMAT_MESSAGE,
-      fields: clipFields(startSeconds === null, endSeconds === null),
-    };
-  }
-  if (startSeconds > MAX_CLIP_SECONDS || endSeconds > MAX_CLIP_SECONDS) {
-    return {
-      ok: false,
-      message: CLIP_LIMIT_MESSAGE,
-      fields: clipFields(
-        startSeconds > MAX_CLIP_SECONDS,
-        endSeconds > MAX_CLIP_SECONDS,
-      ),
-    };
-  }
-  if (endSeconds <= startSeconds)
-    return { ok: false, message: CLIP_ORDER_MESSAGE, fields: ["end"] };
-  return { ok: true, options: { startSeconds, endSeconds } };
-}
-
-function clipFields(start: boolean, end: boolean): ClipField[] {
-  return [
-    ...(start ? ["start" as const] : []),
-    ...(end ? ["end" as const] : []),
-  ];
-}
-
-/**
  * A range typed in one field, as the palette's Clip view takes it:
  * "1:30-2:10", "1:30 2:10", "90-130" or "1:02:03-1:05:00". Each bound reads
- * as in linkOptionsFor, with the same messages.
+ * as parseClock reads it, and the clip's whole-second bounds keep
+ * 0 <= start < end <= 86400.
  */
 export function parseClockRange(text: string): ClipRangeResult {
   const bounds = text.trim().split(/\s*-\s*|\s+/u);
   if (bounds.length !== 2) return { ok: false, message: CLIP_FORMAT_MESSAGE };
-  const read = linkOptionsFor("clip", bounds[0] ?? "", bounds[1] ?? "");
-  if (!read.ok) return { ok: false, message: read.message };
-  const { startSeconds = 0, endSeconds = 0 } = read.options ?? {};
+  const startSeconds = parseClock(bounds[0] ?? "");
+  const endSeconds = parseClock(bounds[1] ?? "");
+  if (startSeconds === null || endSeconds === null)
+    return { ok: false, message: CLIP_FORMAT_MESSAGE };
+  if (startSeconds > MAX_CLIP_SECONDS || endSeconds > MAX_CLIP_SECONDS)
+    return { ok: false, message: CLIP_LIMIT_MESSAGE };
+  if (endSeconds <= startSeconds)
+    return { ok: false, message: CLIP_ORDER_MESSAGE };
   return { ok: true, startSeconds, endSeconds };
 }

@@ -489,9 +489,12 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     watchMountParent(root, parent);
     if (typeof root.showPopover !== "function") return;
     try {
+      // An open popover keeps its top-layer place, below a fullscreen
+      // element entered since, so it is hidden and shown again on top.
+      if (root.matches(":popover-open")) root.hidePopover();
       root.showPopover();
     } catch {
-      // Already in the top layer, or the browser has no popover support.
+      // No popover support.
     }
   }
 

@@ -273,6 +273,7 @@ function resetPickerEnvironment(): void {
   Reflect.deleteProperty(window, "matchMedia");
   Reflect.deleteProperty(document, "fullscreenElement");
   Reflect.deleteProperty(HTMLElement.prototype, "showPopover");
+  Reflect.deleteProperty(HTMLElement.prototype, "hidePopover");
   (
     window as Window & { __provenanceLensPickerInstalled?: boolean | string }
   ).__provenanceLensPickerInstalled = false;
@@ -1605,6 +1606,55 @@ describe("mount rule for the banner, overlay and toast", () => {
     fullscreen = player;
     document.dispatchEvent(new Event("fullscreenchange"));
     for (const root of mountedRoots()) expect(root.parentElement).toBe(player);
+  });
+
+  it("shows the overlay, banner and toast again on top when the root element goes fullscreen", async () => {
+    const open = new WeakSet<Element>();
+    const hidePopover = vi.fn(function (this: HTMLElement) {
+      open.delete(this);
+    });
+    Object.defineProperty(HTMLElement.prototype, "hidePopover", {
+      configurable: true,
+      value: hidePopover,
+    });
+    const matches = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      "matches",
+    )?.value as (this: Element, selector: string) => boolean;
+    vi.spyOn(Element.prototype, "matches").mockImplementation(function (
+      this: Element,
+      selector: string,
+    ) {
+      return selector === ":popover-open"
+        ? open.has(this)
+        : matches.call(this, selector);
+    });
+    let fullscreen: Element | null = null;
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => fullscreen,
+    });
+    const showPopover = await showAll();
+    const roots = mountedRoots();
+    for (const root of roots) open.add(root);
+    expect(hidePopover).not.toHaveBeenCalled();
+    showPopover.mockClear();
+
+    // The parent stays the root element, but the fullscreen layer is now
+    // above each surface until it is shown again.
+    fullscreen = document.documentElement;
+    document.dispatchEvent(new Event("fullscreenchange"));
+    for (const root of roots) {
+      expect(root.parentElement).toBe(document.documentElement);
+      // Earlier tests' picker copies still listen on this document, so the
+      // calls are counted per surface.
+      expect(
+        hidePopover.mock.contexts.filter((on) => on === root),
+      ).toHaveLength(1);
+      expect(
+        showPopover.mock.contexts.filter((on) => on === root),
+      ).toHaveLength(1);
+    }
   });
 
   it("mounts the overlay, banner and toast again when the page leaves fullscreen", async () => {

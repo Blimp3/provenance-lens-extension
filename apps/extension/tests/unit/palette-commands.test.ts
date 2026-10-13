@@ -161,6 +161,11 @@ describe("the palette open record", () => {
     expect(
       parsePaletteOpenRecord({ ...record, url: "https://x.com/a" }),
     ).toEqual(record);
+    for (const host of ["popup", "tab"])
+      expect(parsePaletteOpenRecord({ ...record, host })).toEqual({
+        ...record,
+        host,
+      });
   });
 
   it("refuses a record with a bad token, tab, view, host or page", () => {

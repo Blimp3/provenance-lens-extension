@@ -41,7 +41,7 @@ export function mountPaletteHost(
   token: string,
   readyTimeoutMs: number,
 ): Promise<PaletteHostResult> {
-  type LiveHost = { close: () => void };
+  type LiveHost = { close: () => void; isConnected: () => boolean };
   const HOST_KEY = "__provenanceLensPaletteHost";
   const FULLSCREEN_MEDIA_ELEMENTS = new Set([
     "video",
@@ -55,8 +55,11 @@ export function mountPaletteHost(
   const scope = globalThis as unknown as Record<string, LiveHost | undefined>;
   const live = scope[HOST_KEY];
   if (live) {
+    // A host the page removed without a close event toggles nothing: a new
+    // one mounts in its place.
+    const connected = live.isConnected();
     live.close();
-    return Promise.resolve({ status: "closed" });
+    if (connected) return Promise.resolve({ status: "closed" });
   }
 
   return new Promise((resolve) => {
@@ -206,23 +209,23 @@ export function mountPaletteHost(
      * Mounts the host by the mount rule. Moving an attached host goes through
      * moveBefore, which keeps the frame alive; append would reload it, and its
      * spent token would leave it blank until its port ends and it closes.
-     * moveBefore also keeps the popover in its old top-layer place, below a
-     * fullscreen element entered since, so a moved host is shown again on top.
+     * An open popover keeps its top-layer place, below a fullscreen element
+     * entered since, so it is hidden and shown again on top.
      */
     function mountOnTop(root: HTMLElement): void {
       const parent = mountParent();
       if (root.parentNode !== parent) {
-        if (root.isConnected && "moveBefore" in parent) {
+        if (root.isConnected && "moveBefore" in parent)
           parent.moveBefore(root, null);
-          if (root.matches(":popover-open")) root.hidePopover();
-        } else parent.append(root);
+        else parent.append(root);
       }
       watchMountParent(root, parent);
       if (typeof root.showPopover !== "function") return;
       try {
+        if (root.matches(":popover-open")) root.hidePopover();
         root.showPopover();
       } catch {
-        // Already in the top layer, or the browser has no popover support.
+        // No popover support.
       }
     }
 
@@ -269,7 +272,42 @@ export function mountPaletteHost(
       if (typeof data !== "object" || data === null) return;
       const lens = (data as { lens?: unknown }).lens;
       if (lens === "ready") onReady();
-      else if (lens === "close") close("closed");
+      else if (lens === "close") {
+        stopKeyUps((data as { held?: unknown }).held);
+        close("closed");
+      }
+    };
+
+    /**
+     * Closing moves the focus to the page while the key that closed the
+     * palette is still down, so that key's keyup would reach the page. One
+     * capture listener on window stops it; a new press of the key ends the
+     * wait, since its keyup then went elsewhere.
+     */
+    const stopKeyUps = (held: unknown): void => {
+      if (!Array.isArray(held)) return;
+      const codes = new Set(
+        held
+          .slice(0, 8)
+          .filter(
+            (code): code is string =>
+              typeof code === "string" && /^[A-Za-z0-9]{1,32}$/u.test(code),
+          ),
+      );
+      if (codes.size === 0) return;
+      const onKey = (event: KeyboardEvent): void => {
+        if (!event.isTrusted || !codes.has(event.code)) return;
+        if (event.type === "keyup") {
+          event.stopImmediatePropagation();
+          event.preventDefault();
+        } else if (event.repeat) return;
+        codes.delete(event.code);
+        if (codes.size > 0) return;
+        window.removeEventListener("keyup", onKey, true);
+        window.removeEventListener("keydown", onKey, true);
+      };
+      window.addEventListener("keyup", onKey, true);
+      window.addEventListener("keydown", onKey, true);
     };
 
     const onReady = (): void => {
@@ -334,13 +372,19 @@ export function mountPaletteHost(
       finish(status);
     };
 
-    const host: LiveHost = { close: () => close("closed") };
+    const host: LiveHost = {
+      close: () => close("closed"),
+      isConnected: () => root.isConnected,
+    };
     const timer = setTimeout(() => close("timeout"), readyTimeoutMs);
 
     try {
       root.setAttribute("popover", "manual");
       root.dataset["provenanceLensPalette"] = "host";
-      // Inline !important, so page CSS cannot hide, move or shrink the host.
+      // Inline !important, so a page stylesheet cannot hide, move or shrink
+      // the host. A page script can still restyle it or cover it, so the
+      // frame runs input only while IntersectionObserver v2 reports its panel
+      // visible.
       setImportant(root, {
         all: "initial",
         position: "fixed",

@@ -75,6 +75,7 @@ type ActionItem = {
   run: () => void | Promise<void>;
 };
 type Hint = { text: string; error: boolean };
+type InputSource = "key" | "pointer";
 type BuiltView = { rows: Row[]; hint?: Hint; notes?: string[]; empty?: string };
 type FrameData = {
   context: PaletteContext;
@@ -120,6 +121,10 @@ const LENS_ROWS = [
   "view-settings",
 ] as const;
 const AUDIO_RANGE_MESSAGE = "An audio check covers 1 to 60 seconds.";
+const COVERED_MESSAGE =
+  "The page is covering Lens. Press Esc and open it again.";
+/** How long the panel must have been visible before a click runs a row. */
+const POINTER_VISIBLE_MS = 500;
 
 const paletteRoot = required<HTMLElement>("palette");
 const scrim = required<HTMLElement>("scrim");
@@ -163,13 +168,18 @@ let shownActions: ActionItem[] = [];
 let actionActive = 0;
 let savedUntil = 0;
 let footerError: string | null = null;
+/** The panel's latest IntersectionObserver v2 visibility; none yet is hidden. */
+let panelVisible = false;
+let panelVisibleSince = 0;
+/** Keys down in this frame, by code; the host stops their keyups on close. */
+const heldKeys = new Set<string>();
 
 void start();
 
 async function start(): Promise<void> {
   record = await takeOpenRecord();
-  // A page frame without its own single-use token stays blank.
-  if (hostKind === "page" && !record) return;
+  // A frame, popup or tab without its own single-use token stays blank.
+  if (!record) return;
   if (embedded && token) {
     // Every live frame sees every host's port; only this frame's is kept,
     // and another palette's port is left alone.
@@ -187,13 +197,14 @@ async function start(): Promise<void> {
   data = await loadData();
   wireEvents();
   paletteRoot.hidden = false;
+  if (embedded) watchPanelVisibility();
   render();
   input.focus();
   if (embedded) window.parent.postMessage({ lens: "ready" }, parentOrigin());
 }
 
 async function takeOpenRecord(): Promise<PaletteOpenRecord | null> {
-  if (!token || hostKind === "tab") return null;
+  if (!token) return null;
   try {
     const values = await chrome.storage.session.get(PALETTE_OPEN_KEY);
     const stored = parsePaletteOpenRecord(values[PALETTE_OPEN_KEY]);
@@ -258,6 +269,12 @@ async function loadData(): Promise<FrameData> {
 
 function wireEvents(): void {
   document.addEventListener("keydown", onKeyDown, true);
+  document.addEventListener(
+    "keyup",
+    (event) => heldKeys.delete(event.code),
+    true,
+  );
+  window.addEventListener("blur", () => heldKeys.clear());
   // A frame inside a page cannot focus its input until the host focuses the
   // frame, so the input takes focus each time the frame gets it.
   window.addEventListener("focus", () => {
@@ -285,6 +302,59 @@ function wireEvents(): void {
       render();
     });
   });
+}
+
+/**
+ * A page can make the host transparent or lay its own top-layer element over
+ * it while clicks and keys still reach the frame. IntersectionObserver v2
+ * reports the panel visible only when nothing covers it and no opacity,
+ * filter or transform other than a 2D translation applies to it, the frame
+ * or the host, so input runs only while it is.
+ */
+function watchPanelVisibility(): void {
+  const panel = required<HTMLElement>("panel");
+  let recheck: ReturnType<typeof setTimeout> | undefined;
+  const observer = new IntersectionObserver(
+    (entries) => {
+      const entry = entries.at(-1) as
+        (IntersectionObserverEntry & { isVisible?: boolean }) | undefined;
+      if (!entry) return;
+      const visible = entry.isVisible === true;
+      if (visible && !panelVisible) panelVisibleSince = performance.now();
+      panelVisible = visible;
+      paletteRoot.dataset["visible"] = String(visible);
+      // Chromium may keep reporting a frame hidden after the host hid and
+      // showed it again (a fullscreen change, a closed dialog) until it is
+      // observed afresh, so a hidden panel is observed again shortly.
+      clearTimeout(recheck);
+      if (!visible)
+        recheck = setTimeout(() => {
+          observer.unobserve(panel);
+          observer.observe(panel);
+        }, 250);
+    },
+    // trackVisibility and delay are IntersectionObserver v2 (Chromium).
+    { trackVisibility: true, delay: 100 } as IntersectionObserverInit,
+  );
+  observer.observe(panel);
+}
+
+/**
+ * Whether input may run a row: in a page, a key while the panel is visible
+ * and a click once it has been visible for a moment; ignored input says why.
+ * The popup and the tab are extension pages no website can cover.
+ */
+function inputAllowed(source: InputSource): boolean {
+  const allowed =
+    !embedded ||
+    (panelVisible &&
+      (source === "key" ||
+        performance.now() - panelVisibleSince >= POINTER_VISIBLE_MS));
+  if (!allowed) {
+    footerError = COVERED_MESSAGE;
+    renderFooter();
+  }
+  return allowed;
 }
 
 // Views ----------------------------------------------------------------------
@@ -472,7 +542,7 @@ function downloadRows(): Row[] {
     const entry = paletteCommand(id);
     if (!entry) continue;
     const row = commandRow(entry, pageGroup);
-    // X and YouTube pages that are not one post: the worker starts the picker.
+    // X and YouTube listing pages: the worker starts the picker.
     built.push(
       page.needsPick && !row.warn
         ? { ...row, subtitle: "Pick a post on this page" }
@@ -838,7 +908,11 @@ function back(): void {
 }
 
 function close(): void {
-  if (embedded) window.parent.postMessage({ lens: "close" }, parentOrigin());
+  if (embedded)
+    window.parent.postMessage(
+      { lens: "close", held: [...heldKeys] },
+      parentOrigin(),
+    );
   else window.close();
 }
 
@@ -850,6 +924,7 @@ function parentOrigin(): string {
 // Keys -----------------------------------------------------------------------
 
 function onKeyDown(event: KeyboardEvent): void {
+  heldKeys.add(event.code);
   const key = paletteKey(event, {
     actionsOpen,
     query: actionsOpen ? actionsInput.value : input.value,
@@ -860,8 +935,12 @@ function onKeyDown(event: KeyboardEvent): void {
   event.stopPropagation();
   switch (key.type) {
     case "digit":
-      if (actionsOpen) void runAction(key.index);
-      else void runRow(rows.findIndex((row) => row.digit === key.index + 1));
+      if (actionsOpen) void runAction(key.index, "key");
+      else
+        void runRow(
+          rows.findIndex((row) => row.digit === key.index + 1),
+          "key",
+        );
       return;
     case "move":
       if (actionsOpen) setActionActive(actionActive + key.delta);
@@ -873,8 +952,8 @@ function onKeyDown(event: KeyboardEvent): void {
       else setActive(key.edge === "first" ? 0 : rows.length - 1);
       return;
     case "run":
-      if (actionsOpen) void runAction(actionActive);
-      else void runRow(active);
+      if (actionsOpen) void runAction(actionActive, "key");
+      else void runRow(active, "key");
       return;
     case "actions":
       toggleActions();
@@ -901,9 +980,9 @@ function onKeyDown(event: KeyboardEvent): void {
   }
 }
 
-async function runRow(index: number): Promise<void> {
+async function runRow(index: number, source: InputSource): Promise<void> {
   const row = rows[index];
-  if (!row) return;
+  if (!row || !inputAllowed(source)) return;
   setActive(index);
   await row.run?.();
 }
@@ -942,7 +1021,11 @@ function closeActions(): void {
 
 function actionsFor(row: Row): ActionItem[] {
   const index = rows.indexOf(row);
-  const run = (): Promise<void> => runRow(index);
+  // runAction has already checked the input.
+  const run = async (): Promise<void> => {
+    setActive(index);
+    await row.run?.();
+  };
   const saved = row.record;
   if (saved)
     return [
@@ -971,9 +1054,9 @@ function actionsFor(row: Row): ActionItem[] {
   return items;
 }
 
-async function runAction(index: number): Promise<void> {
+async function runAction(index: number, source: InputSource): Promise<void> {
   const item = shownActions[index];
-  if (!item) return;
+  if (!item || !inputAllowed(source)) return;
   closeActions();
   await item.run();
 }
@@ -1006,7 +1089,7 @@ function renderActions(): void {
       option.addEventListener("mousemove", () => {
         if (actionActive !== index) setActionActive(index);
       });
-      option.addEventListener("click", () => void runAction(index));
+      option.addEventListener("click", () => void runAction(index, "pointer"));
       return option;
     }),
   );
@@ -1174,7 +1257,7 @@ function rowElements(row: Row, index: number): HTMLElement[] {
   option.addEventListener("mousemove", () => {
     if (active !== index) setActive(index);
   });
-  option.addEventListener("click", () => void runRow(index));
+  option.addEventListener("click", () => void runRow(index, "pointer"));
   option.addEventListener("contextmenu", (event) => {
     event.preventDefault();
     setActive(index);

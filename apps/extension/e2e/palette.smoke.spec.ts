@@ -21,6 +21,7 @@ const PAGE_HTML = `<!doctype html>
 <html lang="en">
   <body style="margin: 0; min-height: 100vh;">
     <input id="field" aria-label="Page field">
+    <button id="spot" type="button">Page button</button>
     <div id="stage" style="width: 640px; height: 360px; background: #ccc;"></div>
     <dialog id="modal" style="width: 300px; height: 120px;">
       <button id="modal-button">Modal button</button>
@@ -227,14 +228,27 @@ function paletteFrame(page: Page): Frame | undefined {
     .find((frame) => URL.parse(frame.url())?.pathname === "/palette.html");
 }
 
-/** Opens the palette from the toolbar and waits until it shows. */
+/** Opens the palette from the toolbar and waits until it takes input. */
 async function openPalette(lens: Lens, page: Page): Promise<Frame> {
   await clickToolbar(lens, page);
   await expect.poll(() => paletteFrame(page) !== undefined).toBe(true);
   const frame = paletteFrame(page) as Frame;
   await expect(frame.locator("#panel")).toBeVisible();
   await expect(frame.locator("#query")).toBeFocused();
+  await takesClicks(page, frame);
   return frame;
+}
+
+/**
+ * Waits until the palette reports its panel visible, and a little longer,
+ * since a click runs a row only once the panel has been visible for 500 ms.
+ */
+async function takesClicks(page: Page, frame: Frame): Promise<void> {
+  await expect(frame.locator("#palette")).toHaveAttribute(
+    "data-visible",
+    "true",
+  );
+  await page.waitForTimeout(600);
 }
 
 function hostCount(page: Page): Promise<number> {
@@ -296,7 +310,8 @@ test("mounts the palette through the worker without starting an action or a requ
   try {
     const page = await lens.context.newPage();
     await page.goto(`${lens.origin}/page.html`);
-    await page.locator("#field").focus();
+    // Not a field: the page records every key that reaches it.
+    await page.locator("#spot").focus();
     lens.requests.length = 0;
 
     const frame = await openPalette(lens, page);
@@ -315,14 +330,15 @@ test("mounts the palette through the worker without starting an action or a requ
       (await observed(lens)).filter(({ frameId }) => frameId !== 0),
     ).toEqual([]);
 
-    // Keys stay inside the frame; Esc at the root closes and returns focus.
+    // Keys stay inside the frame; Esc at the root closes and returns focus,
+    // and the closing Esc's keyup does not reach the page either.
     await page.keyboard.type("clip");
     await expect(frame.getByRole("option", { name: /^Clip/u })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(frame.locator("#query")).toHaveValue("");
     await pressClosing(page, "Escape");
     await expect.poll(() => hostCount(page)).toBe(0);
-    await expect(page.locator("#field")).toBeFocused();
+    await expect(page.locator("#spot")).toBeFocused();
     expect(
       await page.evaluate(
         () => (window as Window & { __pageEvents?: string[] }).__pageEvents,
@@ -389,7 +405,7 @@ test("Alt+Digit1 sends start-action from the palette frame for its own tab", asy
   }
 });
 
-test("a palette frame without its token stays blank, and an embedding page gets nothing", async () => {
+test("a palette without its token stays blank, and an embedding page gets nothing", async () => {
   const lens = await launchLens();
   try {
     // A real palette consumes its token; a page that learns it later finds
@@ -455,6 +471,17 @@ test("a palette frame without its token stays blank, and an embedding page gets 
           .some((open) => open.url().includes("/disclosure.html")),
       ).toBe(false);
       await embedding.close();
+    }
+
+    // Opened as a tab or as the popup page, with no record from the worker,
+    // the palette stays blank too.
+    for (const source of [base, `${base}?host=popup`]) {
+      const opened = await lens.context.newPage();
+      await opened.goto(source);
+      await opened.waitForTimeout(1_000);
+      await expect(opened.locator("#palette")).toHaveAttribute("hidden", "");
+      expect(await opened.locator("#list").innerHTML()).toBe("");
+      await opened.close();
     }
     expect(
       lens.requests.filter((url) => !url.startsWith(`${lens.origin}/`)),
@@ -538,11 +565,12 @@ test("a click lands in the palette above a modal dialog and a fullscreen element
     await expect(frame.locator("#chip")).toBeHidden();
     await pressClosing(page, "Escape");
     await expect.poll(() => hostCount(page)).toBe(0);
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __pageEvents?: string[] }).__pageEvents,
+      ),
+    ).toEqual([]);
 
-    // The closing Esc keyup lands on the page once the frame is gone.
-    await page.evaluate(() => {
-      (window as Window & { __pageEvents?: string[] }).__pageEvents = [];
-    });
     await page.evaluate(() =>
       document.querySelector("#stage")?.requestFullscreen(),
     );
@@ -577,6 +605,33 @@ test("a click lands in the palette above a modal dialog and a fullscreen element
       ),
     ).toEqual([]);
 
+    // The root element going fullscreen keeps the host's parent, and the
+    // host is shown again above the fullscreen layer.
+    await page.evaluate(() => document.documentElement.requestFullscreen());
+    await expect
+      .poll(() =>
+        page.evaluate(() => document.fullscreenElement?.localName ?? null),
+      )
+      .toBe("html");
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            document
+              .elementFromPoint(innerWidth / 2, innerHeight / 2)
+              ?.hasAttribute("data-provenance-lens-palette") ?? false,
+        ),
+      )
+      .toBe(true);
+    await takesClicks(page, frame);
+    await frame.getByRole("option", { name: /^Recent/u }).click();
+    await expect(frame.locator("#chip")).toHaveText("Recent");
+    await frame.locator("#chip").click();
+    await page.evaluate(() => document.exitFullscreen());
+    await expect
+      .poll(() => page.evaluate(() => document.fullscreenElement))
+      .toBeNull();
+
     // Entering fullscreen with the palette open mounts it inside the
     // fullscreen element, on top, still focused and taking clicks.
     await frame.locator("#query").focus();
@@ -594,6 +649,7 @@ test("a click lands in the palette above a modal dialog and a fullscreen element
       )
       .toBe("stage");
     await expect(frame.locator("#query")).toBeFocused();
+    await takesClicks(page, frame);
     await frame.getByRole("option", { name: /^Recent/u }).click();
     await expect(frame.locator("#chip")).toHaveText("Recent");
     await page.evaluate(() => document.exitFullscreen());
@@ -632,6 +688,65 @@ test("a click lands in the palette above a modal dialog and a fullscreen element
         () => (window as Window & { __pageEvents?: string[] }).__pageEvents,
       ),
     ).toEqual([]);
+  } finally {
+    await lens.close();
+  }
+});
+
+test("ignores a click on a row while the page hides the palette", async () => {
+  const lens = await launchLens();
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/page.html`);
+    const frame = await openPalette(lens, page);
+    await frame.getByRole("option", { name: /^Verify/u }).click();
+    await expect(frame.locator("#chip")).toHaveText("Verify");
+
+    // The page makes the host transparent: the click still lands on the
+    // row, but the row does not run.
+    await page.evaluate(() =>
+      document
+        .querySelector<HTMLElement>("[data-provenance-lens-palette]")
+        ?.style.setProperty("opacity", "0", "important"),
+    );
+    await expect(frame.locator("#palette")).toHaveAttribute(
+      "data-visible",
+      "false",
+    );
+    const pickRow = frame.getByRole("option", {
+      name: /^Pick an image to verify/u,
+    });
+    await pickRow.click();
+    await expect(frame.locator("#status-text")).toHaveText(
+      "The page is covering Lens. Press Esc and open it again.",
+    );
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(500);
+    const starts = async () =>
+      (await observed(lens)).filter(
+        ({ message }) => message["type"] === "start-action",
+      );
+    expect(await starts()).toEqual([]);
+    expect(await hostCount(page)).toBe(1);
+
+    // Visible again, the same click runs the row.
+    await page.evaluate(() =>
+      document
+        .querySelector<HTMLElement>("[data-provenance-lens-palette]")
+        ?.style.setProperty("opacity", "1", "important"),
+    );
+    await takesClicks(page, frame);
+    await pickRow.click();
+    await expect.poll(() => hostCount(page)).toBe(0);
+    await expect
+      .poll(async () => (await starts()).map(({ message }) => message))
+      .toEqual([
+        {
+          type: "start-action",
+          actionId: "verify-openai-provenance",
+          trigger: "popup",
+        },
+      ]);
   } finally {
     await lens.close();
   }

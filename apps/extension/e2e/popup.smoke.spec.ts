@@ -1,4 +1,10 @@
-import { chromium, expect, test } from "@playwright/test";
+import {
+  chromium,
+  expect,
+  test,
+  type BrowserContext,
+  type Page,
+} from "@playwright/test";
 import {
   DEFAULT_BACKEND_URL,
   PICKER_RUNTIME_VERSION,
@@ -7,6 +13,38 @@ import { once } from "node:events";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
+
+/**
+ * The palette in a tab, as the fallback opens it: with its own single-use
+ * record. Without a token the page reads no record, so it can store one first.
+ */
+async function openPaletteTab(
+  context: BrowserContext,
+  extensionId: string,
+): Promise<Page> {
+  const base = `chrome-extension://${extensionId}/palette.html`;
+  const page = await context.newPage();
+  await page.goto(base);
+  const token = await page.evaluate(async () => {
+    const token = crypto.randomUUID();
+    await chrome.storage.session.set({
+      "provenanceLens.paletteOpen": {
+        token,
+        tabId: 1,
+        view: "root",
+        host: "tab",
+        page: "none",
+        hostname: "",
+        scope: "page",
+        needsPick: false,
+      },
+    });
+    return token;
+  });
+  await page.goto(`${base}#t=${token}`);
+  await page.reload();
+  return page;
+}
 
 test("loads the unpacked extension settings page", async () => {
   const extensionPath = resolve(process.cwd(), "dist");
@@ -178,8 +216,7 @@ test("loads the unpacked extension settings page", async () => {
     }, record);
 
     // The palette in a tab opens a saved result from its Recent view.
-    const palette = await context.newPage();
-    await palette.goto(`chrome-extension://${extensionId}/palette.html`);
+    const palette = await openPaletteTab(context, extensionId);
     await palette.getByRole("option", { name: /^Recent/u }).click();
     const savedResult = palette.getByRole("option", { name: /page\.example/u });
     await expect(savedResult).toBeVisible();
@@ -205,8 +242,7 @@ test("loads the unpacked extension settings page", async () => {
     ).toBe(true);
     await detailsPage.close();
 
-    const historyPalette = await context.newPage();
-    await historyPalette.goto(`chrome-extension://${extensionId}/palette.html`);
+    const historyPalette = await openPaletteTab(context, extensionId);
     await historyPalette.locator("#query").fill("history");
     const historyPagePromise = context.waitForEvent("page");
     await historyPalette

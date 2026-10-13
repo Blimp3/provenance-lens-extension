@@ -17,6 +17,7 @@ import {
   makeIndeterminateResult,
   originPattern,
   parseAllowedImageUrl,
+  resultLabel,
   sanitizeDisplayText,
   sha256Hex,
   type ActionId,
@@ -336,7 +337,8 @@ function isPageFrameSender(sender: chrome.runtime.MessageSender): boolean {
 
 /**
  * A palette frame inside a page acts only for the tab the worker mounted it
- * into, and only while that tab is the active one.
+ * into, only while that tab is the active one, and only as the frame of that
+ * mount's token: another palette frame the page embeds is refused.
  */
 async function handlePageFrameMessage(
   message: ExtensionMessage,
@@ -344,7 +346,12 @@ async function handlePageFrameMessage(
 ): Promise<void> {
   const tabId = sender.tab?.id;
   if (tabId === undefined || sender.tab?.active !== true) return;
-  if (!(await hasPaletteMount(tabId))) return;
+  const token = await paletteMountToken(tabId);
+  if (
+    token === null ||
+    sender.url !== chrome.runtime.getURL(`palette.html#t=${token}`)
+  )
+    return;
   await handleExtensionMessage(message, sender);
 }
 
@@ -468,8 +475,8 @@ const PAGE_LINK_FAILED_TITLE = "Page link not sent";
  * The page-link action reports through the workflow state and a toast on the
  * bound page; the badge is handled here, where its timer lives. The options
  * (an audio output or a clip range) travel with the link unchanged. An X or
- * YouTube page that is not one post or video starts the post picker with the
- * same options instead.
+ * YouTube listing page (a timeline, profile, channel, search or playlist)
+ * starts the post picker with the same options instead.
  */
 async function sendPageLinkFromActiveTab(
   send: PageLinkSender,
@@ -585,7 +592,10 @@ async function deliverPageLink(
 
 function linkOutput(options: LinkDownloadOptions): LinkOutput {
   if (options.startSeconds !== undefined) return "clip";
-  return options.output ?? "video";
+  // Lens sends no MP3, though the shared schema keeps DigiBot's mp3 output.
+  return options.output === "voice" || options.output === "m4a"
+    ? options.output
+    : "video";
 }
 
 function linkHost(url: string | undefined): string {
@@ -3481,11 +3491,31 @@ async function openFallbackPopup(
     );
   } catch {
     await discardPaletteRecord(record.token);
-    await chrome.tabs
-      .create({ url: chrome.runtime.getURL("palette.html#settings") })
-      .catch(() => undefined);
+    await openPaletteTab(record);
   } finally {
     await chrome.action.setPopup({ tabId, popup: "" }).catch(() => undefined);
+  }
+}
+
+/** The palette in a tab, with its own record and no page to act on. */
+async function openPaletteTab(from: PaletteOpenRecord): Promise<void> {
+  const record: PaletteOpenRecord = {
+    ...from,
+    token: crypto.randomUUID(),
+    view: "root",
+    host: "tab",
+    page: "none",
+    hostname: "",
+    scope: "page",
+    needsPick: false,
+  };
+  await chrome.storage.session.set({ [PALETTE_OPEN_KEY]: record });
+  try {
+    await chrome.tabs.create({
+      url: chrome.runtime.getURL(`palette.html#t=${record.token}`),
+    });
+  } catch {
+    await discardPaletteRecord(record.token);
   }
 }
 
@@ -3559,12 +3589,14 @@ function forgetPaletteMount(match: {
   );
 }
 
-async function hasPaletteMount(tabId: number): Promise<boolean> {
+/** The token of the palette mounted into a tab, or null when none is. */
+async function paletteMountToken(tabId: number): Promise<string | null> {
   await paletteMountMutation;
   try {
-    return (await readPaletteMounts()).some((mount) => mount.tabId === tabId);
+    const mounts = await readPaletteMounts();
+    return mounts.find((mount) => mount.tabId === tabId)?.token ?? null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -3639,11 +3671,8 @@ async function finishPageAudioCheck(
   if (evidence) {
     const detected = evidence.verdict === "openai_signal_detected";
     const indeterminate = evidence.verdict === "indeterminate";
-    const title = detected
-      ? "OpenAI audio signal detected"
-      : indeterminate
-        ? "Audio could not be verified"
-        : "No supported OpenAI audio signal detected";
+    // The same title as History and the result details give this evidence.
+    const title = resultLabel(evidence, "audio");
     await setWorkflow(
       "idle",
       sanitizeDisplayText(`${title}. ${evidence.summary}`, 512),

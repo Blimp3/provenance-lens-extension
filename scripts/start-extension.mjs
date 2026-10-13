@@ -35,7 +35,7 @@ Usage:
 
 Options:
   --browser <name>  auto, brave-origin, chrome, or all
-  --show-popup      Open the Lens palette in a browser tab
+  --show-popup      Open the Lens settings page in a browser tab
   --dry-run         Print the resolved launch plan without opening a browser
   -h, --help        Show this help
 
@@ -216,7 +216,7 @@ export async function createLaunchPlan({
     extensionPath,
     help: false,
     manifestPath,
-    popupUrl: `chrome-extension://${extensionId}/palette.html`,
+    popupUrl: `chrome-extension://${extensionId}/settings.html`,
     showPopup: options.showPopup,
   };
 }

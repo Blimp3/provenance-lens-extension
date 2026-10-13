@@ -101,8 +101,44 @@ afterEach(() => {
   hostRoot()?.remove();
   delete (globalThis as Record<string, unknown>)["__provenanceLensPaletteHost"];
   delete (document as { fullscreenElement?: unknown }).fullscreenElement;
+  Reflect.deleteProperty(HTMLElement.prototype, "showPopover");
+  Reflect.deleteProperty(HTMLElement.prototype, "hidePopover");
   document.body.replaceChildren();
 });
+
+/** jsdom has no popovers: these record each call and track which are open. */
+function stubPopovers(): {
+  calls: string[];
+} {
+  const calls: string[] = [];
+  const open = new WeakSet<Element>();
+  Object.defineProperty(HTMLElement.prototype, "showPopover", {
+    configurable: true,
+    value(this: HTMLElement) {
+      if (open.has(this)) throw new DOMException("already open");
+      open.add(this);
+      calls.push("show");
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "hidePopover", {
+    configurable: true,
+    value(this: HTMLElement) {
+      open.delete(this);
+      calls.push("hide");
+    },
+  });
+  const matches = Object.getOwnPropertyDescriptor(Element.prototype, "matches")
+    ?.value as (this: Element, selector: string) => boolean;
+  vi.spyOn(Element.prototype, "matches").mockImplementation(function (
+    this: Element,
+    selector: string,
+  ) {
+    return selector === ":popover-open"
+      ? open.has(this)
+      : matches.call(this, selector);
+  });
+  return { calls };
+}
 
 describe("palette port names", () => {
   it("carry the token, so each palette keeps its own port", () => {
@@ -463,6 +499,42 @@ describe("the palette host's mount rule", () => {
     void mountPaletteHost(FRAME_URL, TOKEN, 1_500);
     expect(hostRoot()?.parentElement).toBe(document.documentElement);
     expect(hostRoot()).not.toBe(root);
+  });
+
+  it("mounts a new palette when the page removed the open one with no close event", async () => {
+    const [dialog, button] = dialogWithButton();
+    document.body.append(dialog);
+    const open = openModal(dialog);
+    button.focus();
+    const first = mountPaletteHost(FRAME_URL, TOKEN, 1_500);
+    post({ lens: "ready" });
+    await first;
+    const root = hostRoot();
+    expect(root?.parentElement).toBe(dialog);
+
+    // dialog.remove() without close(): no event tells the host.
+    open.delete(dialog);
+    dialog.remove();
+    expect(root?.isConnected).toBe(false);
+
+    void mountPaletteHost(FRAME_URL, TOKEN, 1_500);
+    expect(hostRoot()?.parentElement).toBe(document.documentElement);
+    expect(hostRoot()).not.toBe(root);
+    expect(shadows).toHaveLength(2);
+    expect(ports[0]?.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the host again on top when the root element goes fullscreen", () => {
+    const { calls } = stubPopovers();
+    void mountPaletteHost(FRAME_URL, TOKEN, 1_500);
+    expect(calls).toEqual(["show"]);
+
+    // The parent stays the root element, but the fullscreen layer is now
+    // above the host until it is shown again.
+    fullscreen(document.documentElement);
+    document.dispatchEvent(new Event("fullscreenchange"));
+    expect(hostRoot()?.parentElement).toBe(document.documentElement);
+    expect(calls).toEqual(["show", "hide", "show"]);
   });
 
   it("does not mount again once the palette has closed", async () => {

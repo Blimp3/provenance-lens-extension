@@ -33,6 +33,12 @@ const X_CARD_SELECTOR = 'article, div[role="link"]';
 const YOUTUBE_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/u;
 const YOUTUBE_SHORTS_PATH = /^\/shorts\/([A-Za-z0-9_-]{11})\/?$/u;
 const YOUTU_BE_PATH = /^\/([A-Za-z0-9_-]{11})\/?$/u;
+/** X home, search, explore, or a profile and its media, replies or likes tab. */
+const X_LISTING_PATH =
+  /^\/(?:home|search|explore(?:\/.*)?|[A-Za-z0-9_]{1,15}(?:\/(?:media|with_replies|likes|highlights))?)?\/?$/u;
+/** YouTube home, search results, a feed, a channel or a playlist. */
+const YOUTUBE_LISTING_PATH =
+  /^\/(?:results|playlist|feed(?:\/.*)?|@[^/]+(?:\/.*)?|(?:channel|c|user)\/[^/]+(?:\/.*)?)?\/?$/u;
 /** More links than any card has; a container this large is not one post. */
 const MAX_CARD_LINKS = 32;
 
@@ -51,16 +57,21 @@ export function pickedLinkUrl(href: string, base?: string): string | null {
 }
 
 /**
- * Whether a page's own address is not one post or video: an X or YouTube
- * timeline, home or search page. Its video is sent by picking a post there.
+ * Whether a page's own address is a listing page, whose video is sent by
+ * picking a post there: X home, search, explore or a profile, or YouTube
+ * home, search results, a feed, a channel or a playlist. Every other page,
+ * a post, a video, a live or clip page or a YouTube Music page among them,
+ * is sent as it is.
  */
 export function needsPostPick(pageUrl: string): boolean {
   const url = resolveHttpUrl(pageUrl, undefined);
   if (!url) return false;
   const host = hostOf(url);
-  return (
-    (isXHost(host) || isYouTubeHost(host)) && pickedLinkUrl(pageUrl) === null
-  );
+  if (X_HOST.test(host)) return X_LISTING_PATH.test(url.pathname);
+  if (YOUTUBE_HOST.test(host) && host !== "music.youtube.com") {
+    return YOUTUBE_LISTING_PATH.test(url.pathname);
+  }
+  return false;
 }
 
 /**
