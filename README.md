@@ -67,10 +67,11 @@ The popup shows its actions in this order:
 
 1. **Verify an image on this page**
 2. **Pick an image to download**
-3. **Check audio or video segment**
-4. **Send this page's link to Telegram**, under the **Send to Telegram as**
+3. **Check with Google SynthID…**
+4. **Check audio or video segment**
+5. **Send this page's link to Telegram**, under the **Send to Telegram as**
    dropdown
-5. **Pick a video on this page**, under the same dropdown
+6. **Pick a video on this page**, under the same dropdown
 
 Until you pair the browser, these controls stay disabled:
 
@@ -78,6 +79,11 @@ Until you pair the browser, these controls stay disabled:
 - the **Send to Telegram as** dropdown
 - **Send this page's link to Telegram**
 - **Pick a video on this page**
+
+**Check with Google SynthID…** does not need DigiBot. Lens saves the exact
+bytes of the image that you pick and opens Google's SynthID Detector in a new
+tab. You upload the file there yourself. Lens uploads nothing to Google and keeps
+no history record or cache entry for this check.
 
 ### Send this page's link to Telegram
 
@@ -168,12 +174,16 @@ For local review, load `apps/extension/dist` as an unpacked extension.
   to Telegram** when the popup opens.
 - `scripting` injects the video picker into the active page in the same way as
   the image picker.
-- Because of these two uses of `activeTab` and `scripting`, the link features
+- **Send this page's link to Telegram** also uses `scripting` to inject that
+  page runtime, which shows the send's progress and result as a toast on the
+  page.
+- Because of these uses of `activeTab` and `scripting`, the link features
   add no permission.
 - The only required host permission is the DigiBot gateway. It gives no access
   to other sites.
 - The optional `downloads` permission saves the exact selected file in Website
-  review mode or in the manual fallback of API mode.
+  review mode, in the manual fallback of API mode and for the **Check with
+  Google SynthID…** handoff.
 - The optional `http://*/*` and `https://*/*` permissions let Lens get an image
   that you select from its host.
 - **Grant optional access**, in the popup or in Settings, asks the browser for

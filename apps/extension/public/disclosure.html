@@ -43,7 +43,22 @@
             are not stored in either cache or in result history.
           </p>
         </div>
-        <p class="muted">
+        <div id="synthid-disclosure" class="stack" hidden>
+          <p>
+            Google has no SynthID API yet, so this handoff saves the exact bytes
+            Lens retrieved for the selected image and opens Google's SynthID
+            Detector in a new tab. You upload the file there yourself, signed in
+            to Google, under Google's terms. Your browser keeps the copy in its
+            download folder and may retain a record in its download history.
+          </p>
+          <p class="muted">
+            Google's site says that Google keeps a signature of each uploaded
+            file for 24 hours. Provenance Lens does not upload the file to
+            Google, automate or read the SynthID Detector page, or add the
+            handoff to extension history or cache.
+          </p>
+        </div>
+        <p id="checks-note" class="muted">
           Image API checks also verify embedded Content Credentials on the
           backend. Audio checks look for supported OpenAI SynthID signals.
           Finding no supported signal does not establish human origin; these

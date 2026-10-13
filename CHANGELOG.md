@@ -2,11 +2,43 @@
 
 ## [Unreleased]
 
+Adds the pick banner and result toasts. The extension version stays 1.0.0 and
+the picker runtime is 0.9.0.
+
+### Added
+
+- Picker: a banner at the top of the page names the action (**Verify**,
+  **Send image**, **Send video** or **Google SynthID**), what to click and Esc
+  to cancel. A click on nothing pickable shows a 2-second warning in the
+  banner, and the hover label names the verb (Click to verify, send or save).
+- Toasts: a progress toast with a spinner while work runs, with **Cancel** for
+  an image check (**Stop waiting** for a connected one), then a result toast in
+  a success, detected, no-signal, pending or error tone with up to two
+  buttons: **Details**, **History**, **Retry**, **Connect DigiBot**,
+  **Grant access**, **Switch to API** or **Also check with Google ↗**. A
+  success toast hides after 6 seconds, paused while hovered or focused. Toasts
+  follow the light and dark theme, forced colors and reduced motion. A toast
+  button ignores a click while the toast host's computed opacity is not 1 or
+  its visibility is not visible. A page can still hide a toast button under its
+  own content; toast buttons only run follow-up actions that the user already
+  started, and the page cannot read their results.
+- **Check with Google SynthID…** in the popup, with the note "Google has no
+  SynthID API yet, so Lens opens Google's SynthID Detector with your file. Lens
+  will check it directly once Google releases an API.", and **Also check with
+  Google ↗** on an image result whose exact file Lens retrieved (not on a
+  screenshot copy). After one click on the image, Lens saves its
+  exact bytes and opens Google's SynthID Detector (`https://synthid.com/`) in a
+  new tab, where you upload the file yourself. Lens uploads nothing to Google,
+  never scripts that site and keeps no history record or cache entry for it.
+  The first handoff asks once for an acknowledgement that names Google, the
+  copy in the download folder and Google's 24-hour file signature. Download
+  access stays optional.
+
 ### Changed
 
-- Connected DigiBot requests stop after 30 s, and the wait for an operation
-  status stops after 60 s. Before, a request or status wait that got no answer
-  did not stop.
+- Each connected DigiBot request stops after 30 s. A status request also stops
+  when the 60 s status wait ends. Before, one request that got no answer did
+  not stop.
 - When the last status request reaches the 60 s limit, Lens shows the latest
   status and says that the check is still processing. It does not show a
   timeout error.
@@ -18,14 +50,34 @@
   can still finish a request that it accepted, and the result then shows in
   History.
 - A blob context-menu image opens the picker to select the image again.
+- The banner, the picker overlay and the toast mount inside the modal dialog
+  that holds the focus, else a fullscreen element (unless that element is the
+  media itself), else the modal dialog hit at the top-left corner, else the
+  last modal dialog, also inside an open shadow root, so they stay visible and
+  clickable there. They mount again when the page closes that dialog, also
+  when it then removes the dialog, and when it enters or leaves fullscreen.
+  The toast's buttons work while the picker is armed. Page handlers in the
+  bubble phase do not see the toast's mouse-button, pointer-button and key
+  events. Capture-phase listeners on window or document can still see a click
+  on the toast host, and movement, touch, wheel and focus events still bubble.
+- A page-link send from the popup shows its progress and result as a toast on
+  the page. A failed send offers **Retry** once, and a missing DigiBot
+  connection offers **Connect DigiBot**. An image check that is still running
+  on that page still shows its result there.
+- Copy: a link send reports "Queued in DigiBot. The result arrives in your
+  Telegram chat." A delivered image download shows **Image sent to Telegram**,
+  and Website mode and the SynthID handoff show **Exact image saved**.
 
 ### Fixed
 
 - **Stop waiting** during a token refresh stops at once, with no error toast.
   The refresh continues with its own 30 s deadline, and Lens always saves the
-  new tokens.
+  new tokens (#12).
 - A stop during image retrieval shows "Stopped before anything was sent." for
-  Verify and for Download.
+  Verify and for Download (#12).
+- A result toast for a picked image now shows when it carries a button. Its
+  saved binding kept the picker session's other fields, failed validation and
+  dropped the toast.
 - Explicitly saved loopback backend URLs (`127.0.0.1`, `localhost` or `[::1]`)
   stay unchanged. Only a legacy settings record with exactly
   `http://127.0.0.1:8787` and no client token changes to the default backend
@@ -42,6 +94,11 @@
 - Dependency updates for security advisories: music-metadata 11.16.1
   (CVE-2026-107391, CVE-2026-107389), sharp 0.35.5 (CVE-2026-96889) and
   source-map-js 1.2.2 (CVE-2026-93749).
+
+### Documentation
+
+- README: the popup actions include **Check with Google SynthID…**, with what
+  it saves and sends.
 
 ## [1.0.0] - 2026-10-02
 

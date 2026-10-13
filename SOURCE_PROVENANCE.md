@@ -21,6 +21,10 @@ connected-check fixes, the **Send this page's link to Telegram** button with its
 link-download options and the DigiBot gateway contract fixture; the
 [CHANGELOG](CHANGELOG.md) describes each by its effect for users.
 
+Unreleased since v1.0.0: the changes in the [CHANGELOG](CHANGELOG.md)
+Unreleased section. They add the pick banner and result toasts. The extension
+version stays 1.0.0 and the picker runtime is 0.9.0.
+
 Included:
 
 - `apps/extension`: Chromium extension source, static pages, deterministic

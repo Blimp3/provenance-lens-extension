@@ -1,13 +1,33 @@
 import {
   OPENAI_VERIFY_URL,
+  SYNTHID_DETECTOR_URL,
   type ImageSelection,
 } from "@provenance-lens/shared";
 import { describe, expect, it, vi } from "vitest";
 
+import { checkSelectionOnSynthId } from "../../src/actions/check-synthid-website.js";
 import {
   verifySelectionOnWebsite,
   type WebsiteBrowser,
 } from "../../src/actions/verify-openai-website.js";
+
+const writes = vi.hoisted(() => ({
+  findLocalCache: vi.fn(),
+  saveLocalCache: vi.fn(),
+  isCacheableResult: vi.fn(),
+  appendHistory: vi.fn(),
+}));
+
+// A website handoff never sees a result, so it writes no cache entry and no
+// history record; these spies fail the tests if it ever does.
+vi.mock("../../src/cache.js", () => ({
+  findLocalCache: writes.findLocalCache,
+  saveLocalCache: writes.saveLocalCache,
+  isCacheableResult: writes.isCacheableResult,
+}));
+vi.mock("../../src/storage.js", () => ({
+  appendHistory: writes.appendHistory,
+}));
 
 const selection: ImageSelection = {
   url: "https://page.example/image.png",
@@ -73,6 +93,8 @@ describe("Website verification action", () => {
       status: "opened",
       message:
         "The exact image was downloaded. Upload it to OpenAI Verify to review its supported provenance signals.",
+      toastMessage:
+        "Upload it to OpenAI Verify to review its supported provenance signals.",
     });
     expect(browser.download).toHaveBeenCalledTimes(1);
     const options = browser.download.mock.calls[0]?.[0] as {
@@ -162,5 +184,78 @@ describe("Website verification action", () => {
     });
     expect(browser.download).not.toHaveBeenCalled();
     expect(browser.createTab).not.toHaveBeenCalled();
+  });
+});
+
+describe("Google SynthID handoff", () => {
+  it("saves the exact retrieved bytes and opens Google's SynthID Detector", async () => {
+    const browser = browserMocks();
+    const result = await checkSelectionOnSynthId(
+      selection,
+      { fetchImpl: fetchImage() },
+      browser,
+    );
+
+    expect(result).toEqual({
+      kind: "website",
+      status: "opened",
+      message:
+        "The exact image was saved. Upload it on Google's SynthID Detector in the new tab.",
+      toastMessage: "Upload it on Google's SynthID Detector in the new tab.",
+    });
+    expect(SYNTHID_DETECTOR_URL).toBe("https://synthid.com/");
+    const options = browser.download.mock.calls[0]?.[0] as {
+      url: string;
+      filename: string;
+      conflictAction: string;
+      saveAs: boolean;
+    };
+    expect(options).toMatchObject({
+      filename: "selected-image.png",
+      conflictAction: "uniquify",
+      saveAs: false,
+    });
+    // No resize, crop or re-encode: the saved file is the retrieved bytes.
+    expect(options.url.startsWith("data:image/png;base64,")).toBe(true);
+    expect(decodeDataUrl(options.url)).toEqual(imageBytes);
+    expect(browser.createTab).toHaveBeenCalledTimes(1);
+    expect(browser.createTab).toHaveBeenCalledWith({
+      url: "https://synthid.com/",
+    });
+    expect(writes.appendHistory).not.toHaveBeenCalled();
+    expect(writes.saveLocalCache).not.toHaveBeenCalled();
+    expect(writes.findLocalCache).not.toHaveBeenCalled();
+  });
+
+  it("names download access and opens nothing when the file cannot be saved", async () => {
+    const browser = browserMocks();
+    browser.download.mockRejectedValue(new Error("permission denied"));
+
+    await expect(
+      checkSelectionOnSynthId(selection, { fetchImpl: fetchImage() }, browser),
+    ).resolves.toEqual({
+      kind: "website",
+      status: "error",
+      errorCode: "permission_denied",
+      message:
+        "Grant optional download access in Settings before checking with Google SynthID.",
+    });
+    expect(browser.createTab).not.toHaveBeenCalled();
+  });
+
+  it("keeps the saved file manual when the SynthID Detector cannot be opened", async () => {
+    const browser = browserMocks();
+    browser.createTab.mockRejectedValue(new Error("tab creation denied"));
+
+    await expect(
+      checkSelectionOnSynthId(selection, { fetchImpl: fetchImage() }, browser),
+    ).resolves.toMatchObject({
+      status: "error",
+      errorCode: "invalid_request",
+      message:
+        "The exact image was saved, but Google's SynthID Detector could not be opened. Open synthid.com to upload the file.",
+    });
+    expect(writes.appendHistory).not.toHaveBeenCalled();
+    expect(writes.saveLocalCache).not.toHaveBeenCalled();
   });
 });

@@ -1,10 +1,53 @@
 import {
   resultLabel,
+  sanitizeDisplayText,
   type NormalizedProvenanceResult,
   type ResultToastBinding,
+  type ToastAction,
 } from "@provenance-lens/shared";
 
 export type { ResultToastBinding } from "@provenance-lens/shared";
+
+/** Fixed toast copy. */
+export const TOAST_COPY = Object.freeze({
+  verifying: "Verifying image…",
+  sending: "Sending to DigiBot…",
+  imageSentTitle: "Image sent to Telegram",
+  imageSentMessage: "The image was sent to your DigiBot chat.",
+  exactImageSaved: "Exact image saved",
+});
+
+/** A toast holds at most two buttons besides ×. */
+const MAX_TOAST_BUTTONS = 2;
+/**
+ * Buttons that act once: Details opens the result, Retry sends, Cancel and
+ * Stop waiting stop.
+ */
+const ONE_SHOT_TOAST_ACTIONS: ReadonlySet<ToastAction> = new Set([
+  "details",
+  "retry",
+  "cancel",
+  "stop-waiting",
+]);
+
+/** The progress line under the spinner: "{host} · {mode}". */
+export function progressToastMessage(host: string, mode: string): string {
+  return `${sanitizeDisplayText(host, 200) || "This page"} · ${mode}`;
+}
+
+/**
+ * A toast's buttons: a saved standalone result always offers Details first,
+ * then the next step, if any.
+ */
+export function toastActions(
+  resultId: string | null,
+  actions: readonly ToastAction[] = [],
+): ToastAction[] {
+  const others = actions.filter((action) => action !== "details");
+  return [
+    ...new Set(resultId ? ["details" as const, ...others] : others),
+  ].slice(0, MAX_TOAST_BUTTONS);
+}
 
 export function detectedToastCopy(result: NormalizedProvenanceResult): {
   title: string;
@@ -66,6 +109,53 @@ export function matchesResultToastBinding(
     binding.frameId === sender.frameId &&
     binding.documentId === sender.documentId
   );
+}
+
+/** Whether a toast button from this page may use the page's toast binding. */
+export function matchesToastActionBinding(
+  binding: ResultToastBinding,
+  request: { sessionToken: string; action: ToastAction },
+  sender: {
+    tabId: number | undefined;
+    frameId: number | undefined;
+    documentId: string | undefined;
+  },
+): boolean {
+  return (
+    binding.actions.includes(request.action) &&
+    binding.sessionToken === request.sessionToken &&
+    binding.tabId === sender.tabId &&
+    binding.frameId === sender.frameId &&
+    binding.documentId === sender.documentId
+  );
+}
+
+/**
+ * The binding after a button was used: a one-shot button is removed, and
+ * Details also gives up the result. Null when the toast accepts nothing more.
+ */
+export function spendToastAction(
+  binding: ResultToastBinding,
+  action: ToastAction,
+): ResultToastBinding | null {
+  if (!ONE_SHOT_TOAST_ACTIONS.has(action)) return binding;
+  const { retry, ...rest } = binding;
+  const next: ResultToastBinding = {
+    ...rest,
+    resultId: action === "details" ? null : binding.resultId,
+    actions: binding.actions.filter((existing) => existing !== action),
+    ...(retry && action !== "retry" ? { retry } : {}),
+  };
+  return next.resultId === null && next.actions.length === 0 ? null : next;
+}
+
+export function replaceResultToastBinding(
+  bindings: ResultToastBinding[],
+  current: ResultToastBinding,
+  next: ResultToastBinding | null,
+): ResultToastBinding[] {
+  const others = removeResultToastBinding(bindings, current);
+  return next ? [...others, next] : others;
 }
 
 export function sameResultToastBinding(
