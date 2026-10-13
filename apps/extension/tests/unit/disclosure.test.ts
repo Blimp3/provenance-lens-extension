@@ -23,6 +23,7 @@ describe("disclosure acknowledgement", () => {
       <div id="website-disclosure"></div>
       <div id="api-disclosure"></div>
       <div id="synthid-disclosure"></div>
+      <p id="checks-note"></p>
       <h1 id="page-title">Before your first verification</h1>
       <button id="acknowledge" type="button"></button>
       <button id="cancel" type="button"></button>
@@ -73,6 +74,7 @@ describe("disclosure acknowledgement", () => {
     await vi.waitFor(() =>
       expect((acknowledge as HTMLButtonElement).disabled).toBe(false),
     );
+    expect(document.getElementById("checks-note")?.hidden).toBe(false);
     acknowledge?.dispatchEvent(new MouseEvent("click"));
 
     await vi.waitFor(() =>
@@ -104,6 +106,9 @@ describe("disclosure acknowledgement", () => {
       "Google keeps a signature of each uploaded file for 24 hours",
     );
     expect(text).toContain("does not upload the file to Google");
+    expect(parsed.getElementById("checks-note")?.textContent).toContain(
+      "Audio checks look for supported OpenAI SynthID signals",
+    );
 
     history.replaceState(
       null,
@@ -119,6 +124,8 @@ describe("disclosure acknowledgement", () => {
     expect(document.getElementById("synthid-disclosure")?.hidden).toBe(false);
     expect(document.getElementById("website-disclosure")?.hidden).toBe(true);
     expect(document.getElementById("api-disclosure")?.hidden).toBe(true);
+    // The OpenAI checks note does not apply to Google's site.
+    expect(document.getElementById("checks-note")?.hidden).toBe(true);
     expect(document.getElementById("page-title")?.textContent).toBe(
       "Before you check with Google SynthID",
     );

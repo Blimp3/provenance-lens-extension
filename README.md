@@ -174,12 +174,16 @@ For local review, load `apps/extension/dist` as an unpacked extension.
   to Telegram** when the popup opens.
 - `scripting` injects the video picker into the active page in the same way as
   the image picker.
+- **Send this page's link to Telegram** also uses `scripting` to inject that
+  page runtime, which shows the send's progress and result as a toast on the
+  page.
 - Because of these two uses of `activeTab` and `scripting`, the link features
   add no permission.
 - The only required host permission is the DigiBot gateway. It gives no access
   to other sites.
 - The optional `downloads` permission saves the exact selected file in Website
-  review mode or in the manual fallback of API mode.
+  review mode, in the manual fallback of API mode and for the **Check with
+  Google SynthID…** handoff.
 - The optional `http://*/*` and `https://*/*` permissions let Lens get an image
   that you select from its host.
 - **Grant optional access**, in the popup or in Settings, asks the browser for

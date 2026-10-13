@@ -298,14 +298,19 @@ function setupMocks() {
   mocks.isIntegrationConnected.mockResolvedValue(false);
   let recordIndex = 0;
   mocks.createHistoryRecord.mockImplementation(
-    (_selection: unknown, outcome: VerificationOutcome) => ({
+    (
+      _selection: unknown,
+      outcome: VerificationOutcome,
+      _includePageTitle: boolean,
+      inputKind: "original_file" | "screenshot_copy" = "original_file",
+    ) => ({
       id:
         [FIRST_RESULT_ID, SECOND_RESULT_ID][recordIndex++] ?? SECOND_RESULT_ID,
       actionId: ACTION_ID,
       createdAt: "2026-09-04T00:00:00.000Z",
       sourceHostname: "page.example",
       pageTitle: null,
-      inputKind: "original_file",
+      inputKind,
       imageSha256: outcome.imageSha256,
       result: outcome.result,
       cache: outcome.cache,
@@ -701,6 +706,7 @@ describe("background verification workflow boundaries", () => {
 
   it("retains screenshot-fallback bytes for the manual download action", async () => {
     const chromeState = setupChrome();
+    chromeState.setBadgeText.mockResolvedValue(undefined);
     const snapshot = {
       documentMarker: "marker-1",
       url: PAGE_URL,
@@ -761,6 +767,7 @@ describe("background verification workflow boundaries", () => {
     });
     mocks.verifyRetrievedImage.mockImplementation((image: unknown) => ({
       ...unavailableOutcome(),
+      imageSha256: "b".repeat(64),
       retrieved: image,
       manualFallbackAvailable: true,
       screenshotFallbackAvailable: false,
@@ -807,6 +814,14 @@ describe("background verification workflow boundaries", () => {
       extensionPageSender("details.html"),
     );
     await waitForCall(mocks.appendHistory, 2);
+    // A screenshot copy is not the exact file, so its result offers no
+    // Google SynthID check.
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "show-toast").at(-1)).toMatchObject({
+        resultId: SECOND_RESULT_ID,
+        actions: ["details"],
+      }),
+    );
     const fetchCall = fetchMock.mock.calls[0] as unknown as [
       RequestInfo | URL,
       RequestInit,
@@ -2023,6 +2038,69 @@ describe("background verification workflow boundaries", () => {
       ]),
     );
     expect(tabMessages(chromeState, "show-toast")).toHaveLength(1);
+  });
+
+  it("keeps a page-link Retry when a verify that ran before it on the page stops", async () => {
+    const chromeState = setupChrome();
+    const store = boundPage(chromeState);
+    const sendLink = vi.fn().mockRejectedValue(new Error("network down"));
+    mocks.getActionDefinition.mockImplementation((actionId: string) =>
+      actionId === LINK_ACTION_ID
+        ? { inputType: "page-link", handler: sendLink }
+        : { inputType: "image-file", handler: mocks.actionHandler },
+    );
+    mocks.actionHandler.mockImplementation(
+      ({ retrieval }: { retrieval: { signal: AbortSignal } }) =>
+        new Promise((resolve) => {
+          retrieval.signal.addEventListener("abort", () =>
+            resolve({
+              kind: "api",
+              outcome: { ...unavailableOutcome(), errorCode: "user_cancelled" },
+            }),
+          );
+        }),
+    );
+    await loadBackground();
+
+    contextMenuVerify(chromeState);
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "show-toast")).toHaveLength(1),
+    );
+    const verifyToken = boundToken(chromeState);
+    // The popup's page-link send binds the page again while the verify runs.
+    startPageLink(chromeState);
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "show-toast").at(-1)).toMatchObject({
+        tone: "error",
+        actions: ["retry"],
+      }),
+    );
+    const linkToken = boundToken(chromeState);
+    expect(linkToken).not.toBe(verifyToken);
+
+    messageListenerOf(chromeState)(
+      { type: "cancel-active" },
+      extensionPageSender("popup.html"),
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "hide-toast")).toEqual([
+        {
+          type: "hide-toast",
+          runtimeVersion: "0.9.0",
+          sessionToken: verifyToken,
+        },
+      ]),
+    );
+    // The stop takes only its own binding; the send's Retry still works.
+    expect(store.get(TOAST_BINDINGS_KEY)).toEqual([
+      expect.objectContaining({ sessionToken: linkToken, actions: ["retry"] }),
+    ]);
+    sendLink.mockResolvedValue(undefined);
+    messageListenerOf(chromeState)(
+      { type: "toast-action", sessionToken: linkToken, action: "retry" },
+      pickerSender(),
+    );
+    await waitForCall(sendLink, 2);
   });
 
   it("names the connected progress button Stop waiting, which ends only the wait", async () => {

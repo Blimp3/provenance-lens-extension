@@ -151,7 +151,6 @@ export const ACTION_REGISTRY: readonly ActionDefinition[] = Object.freeze([
     inputType: "image-file",
     resultType: "website-handoff",
     settings: [],
-    // Owner-approved text (docs/design/palette-2.0.md §3.4).
     rowNote:
       "Google has no SynthID API yet, so Lens opens Google's SynthID Detector with your file. Lens will check it directly once Google releases an API.",
     handler: (context) =>

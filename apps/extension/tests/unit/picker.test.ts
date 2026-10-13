@@ -1192,13 +1192,18 @@ describe("pick banner", () => {
 describe("mount rule for the banner, overlay and toast", () => {
   beforeEach(resetPickerEnvironment);
 
-  function mountedRoots(): HTMLElement[] {
-    return [overlayElement(), bannerRoot(), toastRoot()].filter(
-      (root): root is HTMLElement => root !== null,
+  /** The overlay, banner and toast hosts, also inside a shadow root. */
+  function mountedRoots(scope: ParentNode = document): HTMLElement[] {
+    return Array.from(
+      scope.querySelectorAll<HTMLElement>(
+        '[data-provenance-lens-picker], [data-provenance-lens-toast="true"]',
+      ),
     );
   }
 
-  async function showAll(): Promise<ReturnType<typeof vi.fn>> {
+  async function showAll(
+    scope: ParentNode = document,
+  ): Promise<ReturnType<typeof vi.fn>> {
     const showPopover = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "showPopover", {
       configurable: true,
@@ -1208,7 +1213,7 @@ describe("mount rule for the banner, overlay and toast", () => {
     await import("../../src/picker.js");
     startMessage(sendPickerMessage);
     sendPickerMessage(showToastMessage());
-    expect(mountedRoots()).toHaveLength(3);
+    expect(mountedRoots(scope)).toHaveLength(3);
     return showPopover;
   }
 
@@ -1259,6 +1264,80 @@ describe("mount rule for the banner, overlay and toast", () => {
       expect(root.parentElement).toBe(document.documentElement);
   });
 
+  /**
+   * Lets closest("dialog:modal") find these dialogs, listed outer to inner,
+   * as it finds open modal dialogs.
+   */
+  function openModalDialogs(dialogs: readonly Element[]): void {
+    const closest = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      "closest",
+    )?.value as (this: Element, selector: string) => Element | null;
+    vi.spyOn(Element.prototype, "closest").mockImplementation(function (
+      this: Element,
+      selector: string,
+    ): Element | null {
+      if (selector !== "dialog:modal") return closest.call(this, selector);
+      return dialogs.filter((dialog) => dialog.contains(this)).at(-1) ?? null;
+    });
+  }
+
+  it("mounts inside the modal dialog on top when two were opened in reverse document order", async () => {
+    const first = document.createElement("dialog");
+    const second = document.createElement("dialog");
+    const button = document.createElement("button");
+    first.append(button);
+    document.body.append(first, second);
+    // The second dialog opened first; the first one opened over it and took
+    // the focus, so the last one in document order is the covered one.
+    openModalDialogs([first, second]);
+    const querySelectorAll = document.querySelectorAll.bind(document);
+    vi.spyOn(document, "querySelectorAll").mockImplementation(((
+      selector: string,
+    ) =>
+      selector === "dialog:modal"
+        ? [first, second]
+        : querySelectorAll(selector)) as typeof document.querySelectorAll);
+    button.focus();
+    await showAll();
+    for (const root of mountedRoots()) expect(root.parentElement).toBe(first);
+  });
+
+  it("mounts inside a modal dialog in an open shadow root", async () => {
+    const host = document.createElement("div");
+    const shadow = host.attachShadow({ mode: "open" });
+    const dialog = document.createElement("dialog");
+    const button = document.createElement("button");
+    dialog.append(button);
+    shadow.append(dialog);
+    document.body.append(host);
+    openModalDialogs([dialog]);
+    button.focus();
+    await showAll(shadow);
+    for (const root of mountedRoots(shadow))
+      expect(root.parentElement).toBe(dialog);
+  });
+
+  it("mounts inside the fullscreen element of an open shadow root", async () => {
+    const host = document.createElement("div");
+    const shadow = host.attachShadow({ mode: "open" });
+    const player = document.createElement("div");
+    shadow.append(player);
+    document.body.append(host);
+    // The document names only the shadow host.
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => host,
+    });
+    Object.defineProperty(shadow, "fullscreenElement", {
+      configurable: true,
+      get: () => player,
+    });
+    await showAll(shadow);
+    for (const root of mountedRoots(shadow))
+      expect(root.parentElement).toBe(player);
+  });
+
   it("moves an updated toast into a modal dialog opened after it", async () => {
     const { sendPickerMessage } = installChrome();
     await import("../../src/picker.js");
@@ -1281,7 +1360,7 @@ describe("mount rule for the banner, overlay and toast", () => {
     expect(root?.parentElement).toBe(dialog);
   });
 
-  it("keeps toast clicks from the modal dialog and the page", async () => {
+  it("keeps toast input from the modal dialog and the page's bubble-phase handlers", async () => {
     const { sendMessage, sendPickerMessage } = installChrome();
     const shadows = captureShadows();
     const dialog = document.createElement("dialog");
@@ -1294,23 +1373,51 @@ describe("mount rule for the banner, overlay and toast", () => {
         ? [dialog]
         : querySelectorAll(selector)) as typeof document.querySelectorAll);
     const pageEvents: string[] = [];
-    for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
+    const mouseTypes = [
+      "pointerdown",
+      "mousedown",
+      "mouseup",
+      "click",
+      "dblclick",
+      "auxclick",
+      "contextmenu",
+    ];
+    const keyTypes = ["keydown", "keyup"];
+    for (const type of [...mouseTypes, ...keyTypes]) {
       dialog.addEventListener(type, () => pageEvents.push(`dialog ${type}`));
       document.addEventListener(type, () => pageEvents.push(`page ${type}`));
     }
+    // The limit: a capture-phase listener on the document still sees the
+    // click, on the toast's host.
+    const capturedTargets: (EventTarget | null)[] = [];
+    document.addEventListener(
+      "click",
+      (event) => capturedTargets.push(event.target),
+      true,
+    );
     await import("../../src/picker.js");
     bindMessage(sendPickerMessage);
     sendPickerMessage(showToastMessage({ actions: ["history"] }));
-    expect(toastRoot()?.parentElement).toBe(dialog);
+    const root = toastRoot();
+    expect(root?.parentElement).toBe(dialog);
 
     const history = shadows.toast?.querySelector<HTMLButtonElement>(
       '[data-toast-action="history"]',
     );
-    for (const type of ["pointerdown", "mousedown", "mouseup"])
+    for (const type of mouseTypes.filter((type) => type !== "click"))
       history?.dispatchEvent(
         new MouseEvent(type, { bubbles: true, composed: true }),
       );
+    for (const type of keyTypes)
+      history?.dispatchEvent(
+        new KeyboardEvent(type, {
+          key: "Enter",
+          bubbles: true,
+          composed: true,
+        }),
+      );
     history?.click();
+    expect(capturedTargets).toEqual([root]);
     await vi.waitFor(() =>
       expect(sendMessage).toHaveBeenCalledWith({
         type: "toast-action",
@@ -1368,6 +1475,155 @@ describe("result toast", () => {
     region?.dispatchEvent(new FocusEvent("focusout"));
     vi.advanceTimersByTime(6_000);
     expect(toastRoot()).toBeNull();
+  });
+
+  it("hides a success toast after a new render removed the hovered or focused button", async () => {
+    vi.useFakeTimers();
+    const { sendPickerMessage } = installChrome();
+    const shadows = captureShadows();
+    await import("../../src/picker.js");
+    bindMessage(sendPickerMessage);
+    sendPickerMessage(showToastMessage({ tone: "error", actions: ["retry"] }));
+    const region = shadows.toast?.querySelector<HTMLElement>(
+      '[data-toast-region="true"]',
+    );
+    // Retry is hovered and focused when it is clicked. The new render removes
+    // it, and the browser sends no pointerleave or focusout for that.
+    region?.dispatchEvent(new Event("pointerenter"));
+    region?.dispatchEvent(new FocusEvent("focusin"));
+    sendPickerMessage(showToastMessage({ tone: "progress" }));
+    sendPickerMessage(showToastMessage());
+    vi.advanceTimersByTime(5_999);
+    expect(toastRoot()).not.toBeNull();
+    vi.advanceTimersByTime(1);
+    expect(toastRoot()).toBeNull();
+  });
+
+  it("keeps a success toast that is still hovered or focused at 6 s", async () => {
+    vi.useFakeTimers();
+    const { sendPickerMessage } = installChrome();
+    const shadows = captureShadows();
+    await import("../../src/picker.js");
+    bindMessage(sendPickerMessage);
+    sendPickerMessage(showToastMessage());
+    const region = shadows.toast?.querySelector<HTMLElement>(
+      '[data-toast-region="true"]',
+    );
+    if (!region) throw new Error("Missing toast region");
+    const matches = vi.spyOn(region, "matches").mockReturnValue(true);
+    vi.advanceTimersByTime(6_000);
+    expect(matches).toHaveBeenCalledWith(":hover, :focus-within");
+    expect(toastRoot()).not.toBeNull();
+    matches.mockReturnValue(false);
+    vi.advanceTimersByTime(6_000);
+    expect(toastRoot()).toBeNull();
+  });
+
+  it("keeps a running verify's toast after a page-link send binds the page again", async () => {
+    const { sendMessage, sendPickerMessage } = installChrome();
+    const shadows = captureShadows();
+    await import("../../src/picker.js");
+    // The verify's binding and its progress toast.
+    bindMessage(sendPickerMessage);
+    sendPickerMessage(
+      showToastMessage({
+        tone: "progress",
+        title: "Verifying image…",
+        actions: ["cancel"],
+      }),
+    );
+    // The popup's page-link send binds the page again and reports first.
+    sendPickerMessage({
+      type: "page-bind",
+      runtimeVersion: PICKER_RUNTIME_VERSION,
+      sessionToken: OTHER_SESSION_TOKEN,
+    });
+    sendPickerMessage(
+      showToastMessage({
+        sessionToken: OTHER_SESSION_TOKEN,
+        tone: "progress",
+        title: "Sending to DigiBot…",
+      }),
+    );
+    sendPickerMessage(showToastMessage({ sessionToken: OTHER_SESSION_TOKEN }));
+
+    sendPickerMessage(
+      showToastMessage({
+        tone: "detected",
+        title: "OpenAI provenance detected",
+        actions: ["history"],
+      }),
+    );
+    expect(
+      shadows.toast?.querySelector('[data-toast-title="true"]')?.textContent,
+    ).toBe("OpenAI provenance detected");
+    shadows.toast
+      ?.querySelector<HTMLButtonElement>('[data-toast-action="history"]')
+      ?.click();
+    await vi.waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith({
+        type: "toast-action",
+        sessionToken: SESSION_TOKEN,
+        action: "history",
+      }),
+    );
+
+    // A hide for the send leaves the verify's toast; its own hide removes it.
+    sendPickerMessage({
+      type: "hide-toast",
+      runtimeVersion: PICKER_RUNTIME_VERSION,
+      sessionToken: OTHER_SESSION_TOKEN,
+    });
+    expect(toastRoot()).not.toBeNull();
+    sendPickerMessage({
+      type: "hide-toast",
+      runtimeVersion: PICKER_RUNTIME_VERSION,
+      sessionToken: SESSION_TOKEN,
+    });
+    expect(toastRoot()).toBeNull();
+
+    // Only the latest binding starts the picker.
+    sendPickerMessage({
+      type: "picker-start",
+      runtimeVersion: PICKER_RUNTIME_VERSION,
+      sessionToken: SESSION_TOKEN,
+    });
+    expect(bannerRoot()).toBeNull();
+    sendPickerMessage({
+      type: "picker-start",
+      runtimeVersion: PICKER_RUNTIME_VERSION,
+      sessionToken: OTHER_SESSION_TOKEN,
+    });
+    expect(bannerRoot()).not.toBeNull();
+  });
+
+  it("ignores a toast button while the page hides the toast's host", async () => {
+    const { sendMessage, sendPickerMessage } = installChrome();
+    const shadows = captureShadows();
+    await import("../../src/picker.js");
+    bindMessage(sendPickerMessage);
+    sendPickerMessage(showToastMessage({ actions: ["history"] }));
+    const root = toastRoot();
+    const history = shadows.toast?.querySelector<HTMLButtonElement>(
+      '[data-toast-action="history"]',
+    );
+    root?.style.setProperty("opacity", "0.01", "important");
+    history?.click();
+    root?.style.setProperty("opacity", "1", "important");
+    root?.style.setProperty("visibility", "hidden", "important");
+    history?.click();
+    await flush();
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    root?.style.setProperty("visibility", "visible", "important");
+    history?.click();
+    await vi.waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith({
+        type: "toast-action",
+        sessionToken: SESSION_TOKEN,
+        action: "history",
+      }),
+    );
   });
 
   it("shows a labelled spinner and Cancel while work runs", async () => {

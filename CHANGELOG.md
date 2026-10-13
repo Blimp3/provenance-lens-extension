@@ -18,11 +18,13 @@ picker runtime is 0.9.0.
   buttons: **Details**, **History**, **Retry**, **Connect DigiBot**,
   **Grant access**, **Switch to API** or **Also check with Google ↗**. A
   success toast hides after 6 seconds, paused while hovered or focused. Toasts
-  follow the light and dark theme, forced colors and reduced motion.
+  follow the light and dark theme, forced colors and reduced motion. A toast
+  button ignores a click while the page makes the toast transparent or hidden.
 - **Check with Google SynthID…** in the popup, with the note "Google has no
   SynthID API yet, so Lens opens Google's SynthID Detector with your file. Lens
   will check it directly once Google releases an API.", and **Also check with
-  Google ↗** on an image result. After one click on the image, Lens saves its
+  Google ↗** on an image result whose exact file Lens retrieved (not on a
+  screenshot copy). After one click on the image, Lens saves its
   exact bytes and opens Google's SynthID Detector (`https://synthid.com/`) in a
   new tab, where you upload the file yourself. Lens uploads nothing to Google,
   never scripts that site and keeps no history record or cache entry for it.
@@ -48,11 +50,14 @@ picker runtime is 0.9.0.
 - A blob context-menu image opens the picker to select the image again.
 - The banner, the picker overlay and the toast mount inside a fullscreen
   element (unless that element is the media itself) or the topmost modal
-  dialog, so they stay visible and clickable there. Clicks on a toast never
-  reach the page.
+  dialog, also inside an open shadow root, so they stay visible and clickable
+  there. Page handlers in the bubble phase do not see toast input.
+  Capture-phase listeners on window or document can still see a click on the
+  toast host.
 - A page-link send from the popup shows its progress and result as a toast on
   the page. A failed send offers **Retry** once, and a missing DigiBot
-  connection offers **Connect DigiBot**.
+  connection offers **Connect DigiBot**. An image check that is still running
+  on that page still shows its result there.
 - Copy: a link send reports "Queued in DigiBot. The result arrives in your
   Telegram chat." A delivered image download shows **Image sent to Telegram**,
   and Website mode and the SynthID handoff show **Exact image saved**.

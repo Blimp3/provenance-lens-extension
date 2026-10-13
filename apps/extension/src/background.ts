@@ -22,6 +22,7 @@ import {
   type DisclosureMode,
   type ExtensionMessage,
   type ErrorCode,
+  type HistoryRecord,
   type ImageSelection,
   type LinkDownloadOptions,
   type PickerLabel,
@@ -1469,7 +1470,7 @@ async function executeAction(
       });
       pruneScreenshotFallbacks();
     }
-    await finishVerification(tabId, record.id, outcome, options.pageTarget);
+    await finishVerification(tabId, record, outcome, options.pageTarget);
     if (
       options.reopenPopupWhenComplete &&
       outcome.errorCode !== "user_cancelled"
@@ -1541,7 +1542,7 @@ async function executeAction(
       settings?.includePageTitle ?? false,
     );
     await appendHistory(record, settings?.historyRetention ?? 20);
-    await finishVerification(tabId, record.id, outcome, options.pageTarget);
+    await finishVerification(tabId, record, outcome, options.pageTarget);
     if (options.reopenPopupWhenComplete) await openActionPopup(tabId, record);
   } finally {
     transientApiImage?.bytes.fill(0);
@@ -1692,17 +1693,18 @@ function archiveStatusMessage(
 
 async function finishVerification(
   tabId: number,
-  resultId: string,
+  record: Pick<HistoryRecord, "id" | "inputKind">,
   outcome: VerificationOutcome,
   pageTarget: PageTarget | null,
 ): Promise<void> {
+  const resultId = record.id;
   if (outcome.errorCode === "user_cancelled") {
     await setWorkflow("idle", "Verification cancelled.");
     await clearBadge(tabId);
     await hidePageToast(pageTarget);
     return;
   }
-  const actions = standaloneResultActions(outcome);
+  const actions = standaloneResultActions(outcome, record.inputKind);
   const credentials = outcome.result.contentCredentials;
   if (credentials?.status === "verified" || credentials?.status === "invalid") {
     const copy = noSignalToastCopy(outcome.result);
@@ -1765,11 +1767,16 @@ async function finishVerification(
 /**
  * The button next to Details on a standalone image result: Grant access when
  * access stopped the check, else "Also check with Google ↗" once the exact
- * file was retrieved (docs/design/palette-2.0.md §6).
+ * file was retrieved. A screenshot copy is not that file.
  */
-function standaloneResultActions(outcome: VerificationOutcome): ToastAction[] {
+function standaloneResultActions(
+  outcome: VerificationOutcome,
+  inputKind: HistoryRecord["inputKind"],
+): ToastAction[] {
   if (outcome.errorCode === "permission_denied") return ["grant-access"];
-  return outcome.imageSha256 ? ["check-synthid"] : [];
+  return outcome.imageSha256 && inputKind === "original_file"
+    ? ["check-synthid"]
+    : [];
 }
 
 async function handleScreenshotFallback(fallbackId: string): Promise<void> {
@@ -1858,7 +1865,7 @@ async function handleScreenshotFallback(fallbackId: string): Promise<void> {
     }
     await finishVerification(
       fallback.tabId,
-      record.id,
+      record,
       outcome,
       fallback.pageTarget,
     );
@@ -2695,10 +2702,18 @@ async function showPageToast(
   }
 }
 
-/** Removes the page's toast for a run that ends with nothing to report. */
+/**
+ * Removes the page's toast for a run that ends with nothing to report. Another
+ * run on the page may show its own toast by now, so only this run's binding
+ * goes, and the page keeps a toast that belongs to another run.
+ */
 async function hidePageToast(pageTarget: PageTarget | null): Promise<void> {
   if (!pageTarget) return;
-  await forgetPageResultToastBindings(pageTarget).catch(() => undefined);
+  await mutateResultToastBindings((bindings) =>
+    bindings.filter(
+      (binding) => binding.sessionToken !== pageTarget.sessionToken,
+    ),
+  ).catch(() => undefined);
   try {
     await chrome.tabs.sendMessage(
       pageTarget.tabId,
@@ -2832,7 +2847,7 @@ async function openResultDetails(
  * A toast button other than Details, from the page and document that show
  * the toast. Its binding says which buttons that toast has; Retry and Cancel
  * act once. The settings buttons open settings.html until the palette's
- * views arrive (docs/design/palette-2.0.md §12, L1).
+ * views arrive.
  */
 async function handleToastAction(
   message: Extract<ExtensionMessage, { type: "toast-action" }>,
@@ -2932,10 +2947,10 @@ async function startSynthIdPickFromActiveTab(
 }
 
 /**
- * Arms the picker in SynthID mode (docs/design/palette-2.0.md §3.4). The
- * handoff saves a file, so it needs the optional download access; the first
- * one asks for its one-time acknowledgement. Lens keeps no copy of a checked
- * image, so the user clicks the image again.
+ * Arms the picker in SynthID mode. The handoff saves a file, so it needs the
+ * optional download access; the first one asks for its one-time
+ * acknowledgement. Lens keeps no copy of a checked image, so the user clicks
+ * the image again.
  */
 async function startSynthIdPick(
   tabId: number,

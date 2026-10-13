@@ -1,8 +1,8 @@
 /**
- * The Lens color tokens of docs/design/palette-2.0.md §8, light and dark.
- * The picker, its banner and the result toast style a closed shadow root
- * through the CSSOM only, so they set these as custom properties on their own
- * container and pick the set with matchMedia.
+ * The Lens color tokens, light and dark. The picker, its banner and the
+ * result toast style a closed shadow root through the CSSOM only, so they set
+ * these as custom properties on their own container and pick the set with
+ * matchMedia.
  */
 export const LENS_TOKENS = {
   light: {

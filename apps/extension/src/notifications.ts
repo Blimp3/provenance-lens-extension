@@ -8,7 +8,7 @@ import {
 
 export type { ResultToastBinding } from "@provenance-lens/shared";
 
-/** Fixed toast copy (docs/design/palette-2.0.md §6). */
+/** Fixed toast copy. */
 export const TOAST_COPY = Object.freeze({
   verifying: "Verifying image…",
   sending: "Sending to DigiBot…",

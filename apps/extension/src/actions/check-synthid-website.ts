@@ -14,10 +14,10 @@ import {
 /**
  * Google has no public SynthID detection API, and the SynthID Detector is a
  * signed-in portal whose terms forbid automated use. So Lens hands the file
- * over: the Website-mode handoff with Google's site as the target
- * (docs/design/palette-2.0.md §3.4). Lens never injects into, fills, reads or
- * automates synthid.com, uploads nothing to Google, and keeps no history
- * record or cache entry, because it never sees Google's result.
+ * over: the Website-mode handoff with Google's site as the target. Lens never
+ * injects into, fills, reads or automates synthid.com, uploads nothing to
+ * Google, and keeps no history record or cache entry, because it never sees
+ * Google's result.
  */
 export const SYNTHID_HANDOFF_TARGET: WebsiteHandoffTarget = Object.freeze({
   url: SYNTHID_DETECTOR_URL,

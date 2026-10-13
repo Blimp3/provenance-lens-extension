@@ -60,6 +60,8 @@ type ShowToastMessage = Extract<PickerRuntimeMessage, { type: "show-toast" }>;
 type PageToast = {
   root: HTMLElement;
   region: HTMLElement;
+  /** The run whose toast this is now; a hide for another run leaves it. */
+  sessionToken: string;
   render: (message: ShowToastMessage) => void;
   cleanup: () => void;
 };
@@ -86,6 +88,11 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
   let activePicker: PickerState | null = null;
   let activeToast: PageToast | null = null;
   let boundSessionToken: string | null = null;
+  // Every run bound in this document may still report on the page's toast:
+  // a page-link send binds the page again while a verification still runs.
+  // Only the latest binding may start the picker.
+  const boundSessionTokens = new Set<string>();
+  const MAX_BOUND_SESSION_TOKENS = 16;
 
   const BANNER_TEXT: Record<
     PickerLabel,
@@ -133,7 +140,7 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     "switch-to-api": "Switch to API",
     "check-synthid": "Also check with Google ↗",
   };
-  // 16px icons on a 24 viewBox, 1.5 stroke (docs/design/palette-2.0.md §8).
+  // 16px icons on a 24 viewBox, 1.5 stroke.
   const ICON_PATHS: Record<IconName, readonly string[]> = {
     check: ["M5 12.5l4.5 4.5L19 7.5"],
     "shield-check": [
@@ -185,6 +192,11 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
           activePicker = null;
         }
         boundSessionToken = parsed.data.sessionToken;
+        boundSessionTokens.add(parsed.data.sessionToken);
+        if (boundSessionTokens.size > MAX_BOUND_SESSION_TOKENS) {
+          const oldest = boundSessionTokens.values().next().value;
+          if (oldest !== undefined) boundSessionTokens.delete(oldest);
+        }
         return;
       case "picker-start": {
         if (boundSessionToken !== parsed.data.sessionToken) return;
@@ -203,13 +215,13 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
         }
         return;
       case "show-toast":
-        if (boundSessionToken === parsed.data.sessionToken) {
+        if (boundSessionTokens.has(parsed.data.sessionToken)) {
           showToast(parsed.data);
         }
         return;
       case "hide-toast":
-        if (boundSessionToken === parsed.data.sessionToken) {
-          activeToast?.cleanup();
+        if (activeToast?.sessionToken === parsed.data.sessionToken) {
+          activeToast.cleanup();
         }
         return;
     }
@@ -403,12 +415,12 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
   }
 
   /**
-   * The mount rule (docs/design/palette-2.0.md §2 step 4, §11.2 fix 2): a
-   * surface outside a fullscreen element or a modal dialog is hidden or inert,
-   * so it goes inside them, and then into the top layer as a manual popover.
+   * The mount rule: a surface outside a fullscreen element or a modal dialog
+   * is hidden or inert, so it goes inside them, and then into the top layer
+   * as a manual popover.
    */
   function mountParent(): Element {
-    const fullscreen = document.fullscreenElement;
+    const fullscreen = fullscreenElement();
     if (fullscreen && !FULLSCREEN_MEDIA_ELEMENTS.has(fullscreen.localName)) {
       return fullscreen;
     }
@@ -417,9 +429,30 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     return document.documentElement ?? document.body;
   }
 
+  /** The fullscreen element itself, also inside open shadow roots. */
+  function fullscreenElement(): Element | null {
+    let element = document.fullscreenElement;
+    while (element?.shadowRoot?.fullscreenElement)
+      element = element.shadowRoot.fullscreenElement;
+    return element;
+  }
+
+  /**
+   * The modal dialog on top holds the focused element, so this starts there
+   * and looks through open shadow roots and across their hosts. With no focus
+   * inside a modal dialog, it takes the last one in document order.
+   */
   function topmostModalDialog(): Element | null {
     try {
-      // A nested modal dialog comes after its parent in document order.
+      let focused = document.activeElement;
+      while (focused?.shadowRoot?.activeElement)
+        focused = focused.shadowRoot.activeElement;
+      for (let node: Element | null = focused; node;) {
+        const dialog = node.closest("dialog:modal");
+        if (dialog) return dialog;
+        const root = node.getRootNode();
+        node = root instanceof ShadowRoot ? root.host : null;
+      }
       return (
         Array.from(document.querySelectorAll("dialog:modal")).at(-1) ?? null
       );
@@ -728,6 +761,7 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     const entering = activeToast === null;
     const toast = activeToast ?? createToast();
     activeToast = toast;
+    toast.sessionToken = message.sessionToken;
     toast.render(message);
     mountOnTop(toast.root);
     if (entering && !prefersReducedMotion()) {
@@ -798,23 +832,29 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     });
     const stopTheme = followTheme(region);
     shadowRoot.append(region);
-    // A click on the toast is Lens's own; the page (or the modal dialog the
-    // toast sits in) never sees it and so cannot close or act on it.
+    // Page handlers in the bubble phase, the modal dialog the toast sits in
+    // among them, do not see toast input. Capture-phase listeners on window
+    // or document can still see a click on the toast host.
     for (const type of [
       "pointerdown",
       "pointerup",
       "mousedown",
       "mouseup",
       "click",
+      "dblclick",
+      "auxclick",
+      "contextmenu",
+      "keydown",
+      "keyup",
     ])
       region.addEventListener(type, (event) => event.stopPropagation());
 
     // Success hides after 6 s; hover or keyboard focus pauses the countdown.
+    // A new render can remove the hovered or focused button without a
+    // pointerleave or focusout, so the end of the countdown checks again.
     let hideTimer: number | null = null;
     let remainingMs = 0;
     let startedAt = 0;
-    let hovered = false;
-    let focused = false;
     const stopTimer = (): void => {
       if (hideTimer === null) return;
       window.clearTimeout(hideTimer);
@@ -822,29 +862,28 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       remainingMs = Math.max(0, remainingMs - (Date.now() - startedAt));
     };
     const runTimer = (): void => {
-      if (hideTimer !== null || remainingMs <= 0 || hovered || focused) return;
+      if (hideTimer !== null || remainingMs <= 0) return;
       startedAt = Date.now();
-      hideTimer = window.setTimeout(cleanup, remainingMs);
+      hideTimer = window.setTimeout(expire, remainingMs);
     };
-    region.addEventListener("pointerenter", () => {
-      hovered = true;
-      stopTimer();
-    });
-    region.addEventListener("pointerleave", () => {
-      hovered = false;
-      runTimer();
-    });
-    region.addEventListener("focusin", () => {
-      focused = true;
-      stopTimer();
-    });
+    const expire = (): void => {
+      hideTimer = null;
+      if (region.matches(":hover, :focus-within")) {
+        remainingMs = SUCCESS_TOAST_MS;
+        runTimer();
+        return;
+      }
+      cleanup();
+    };
+    region.addEventListener("pointerenter", stopTimer);
+    region.addEventListener("pointerleave", runTimer);
+    region.addEventListener("focusin", stopTimer);
     region.addEventListener("focusout", (event) => {
       if (
         event.relatedTarget instanceof Node &&
         region.contains(event.relatedTarget)
       )
         return;
-      focused = false;
       runTimer();
     });
 
@@ -975,6 +1014,9 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
           const button = toastButton(TOAST_BUTTON_TEXT[action]);
           button.dataset["toastAction"] = action;
           button.addEventListener("click", () => {
+            // A page can restyle the host to hide a button under a lure.
+            const style = window.getComputedStyle(root);
+            if (style.opacity !== "1" || style.visibility !== "visible") return;
             void chrome.runtime
               .sendMessage(
                 action === "details"
@@ -1023,7 +1065,7 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       runTimer();
     };
 
-    return { root, region, render, cleanup };
+    return { root, region, sessionToken: "", render, cleanup };
   }
 
   function toastButton(label: string): HTMLButtonElement {

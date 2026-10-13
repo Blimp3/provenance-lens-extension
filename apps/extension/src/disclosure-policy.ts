@@ -1,9 +1,9 @@
 import type { DisclosureMode, VerificationMode } from "@provenance-lens/shared";
 
 /**
- * The Google SynthID handoff's one-time acknowledgement
- * (docs/design/palette-2.0.md §3.4). It is stored apart from the verification
- * modes; raise the version when the disclosure changes what it names.
+ * The Google SynthID handoff's one-time acknowledgement. It is stored apart
+ * from the verification modes; raise the version when the disclosure changes
+ * what it names.
  */
 export const SYNTHID_DISCLOSURE_VERSION = 1;
 
@@ -37,10 +37,10 @@ export function hasVerificationModeAcknowledgement(
 
 /** Whether the stored SynthID acknowledgement covers today's disclosure. */
 export function hasSynthIdAcknowledgement(
-  acknowledgedVersion: unknown,
+  acknowledgedVersion: number | null,
 ): boolean {
   return (
-    typeof acknowledgedVersion === "number" &&
+    acknowledgedVersion !== null &&
     acknowledgedVersion >= SYNTHID_DISCLOSURE_VERSION
   );
 }

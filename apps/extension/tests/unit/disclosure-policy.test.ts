@@ -46,8 +46,6 @@ describe("disclosure mode binding", () => {
 
   it("asks for the SynthID handoff's acknowledgement only once", () => {
     expect(hasSynthIdAcknowledgement(null)).toBe(false);
-    expect(hasSynthIdAcknowledgement(undefined)).toBe(false);
-    expect(hasSynthIdAcknowledgement("1")).toBe(false);
     expect(hasSynthIdAcknowledgement(SYNTHID_DISCLOSURE_VERSION - 1)).toBe(
       false,
     );

@@ -9,10 +9,12 @@ const status = required<HTMLElement>("disclosure-status");
 const websiteDisclosure = required<HTMLElement>("website-disclosure");
 const apiDisclosure = required<HTMLElement>("api-disclosure");
 const synthIdDisclosure = required<HTMLElement>("synthid-disclosure");
+// The note on Lens's own checks; the SynthID handoff checks nothing.
+const checksNote = required<HTMLElement>("checks-note");
 const acknowledgeButton = required<HTMLButtonElement>("acknowledge");
 const query = new URLSearchParams(location.search);
 const pendingId = query.get("pending");
-// The Google SynthID handoff has its own one-time disclosure (§3.4).
+// The Google SynthID handoff has its own one-time disclosure.
 const synthIdHandoff = query.get("kind") === "synthid";
 let renderedMode: DisclosureMode | null = null;
 
@@ -92,6 +94,7 @@ function renderModeDisclosure(mode: DisclosureMode): void {
   websiteDisclosure.hidden = mode !== "website";
   apiDisclosure.hidden = mode !== "api";
   synthIdDisclosure.hidden = mode !== "synthid";
+  checksNote.hidden = mode === "synthid";
   if (mode === "synthid") {
     document.title = "Before you check with Google SynthID";
     const heading = document.getElementById("page-title");
