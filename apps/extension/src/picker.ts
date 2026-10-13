@@ -90,9 +90,9 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
   let boundSessionToken: string | null = null;
   // Every run bound in this document may still report on the page's toast:
   // a page-link send binds the page again while a verification still runs.
-  // Only the latest binding may start the picker.
+  // Only the latest binding may start the picker. The set lives only as long
+  // as the document.
   const boundSessionTokens = new Set<string>();
-  const MAX_BOUND_SESSION_TOKENS = 16;
 
   const BANNER_TEXT: Record<
     PickerLabel,
@@ -193,10 +193,6 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
         }
         boundSessionToken = parsed.data.sessionToken;
         boundSessionTokens.add(parsed.data.sessionToken);
-        if (boundSessionTokens.size > MAX_BOUND_SESSION_TOKENS) {
-          const oldest = boundSessionTokens.values().next().value;
-          if (oldest !== undefined) boundSessionTokens.delete(oldest);
-        }
         return;
       case "picker-start": {
         if (boundSessionToken !== parsed.data.sessionToken) return;
@@ -314,6 +310,7 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     };
     state.cleanup = cleanup;
     activePicker = state;
+    raiseToast();
 
     document.addEventListener("pointermove", onPointerMove, {
       capture: true,
@@ -410,23 +407,46 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
   }
 
   function targetsToast(event: Event): boolean {
-    // A closed shadow root retargets its events to the toast's host element.
-    return activeToast !== null && event.target === activeToast.root;
+    if (activeToast === null) return false;
+    // A closed shadow root retargets its events to the toast's host element,
+    // and a page's open shadow root retargets them again to its own host.
+    return (
+      event.target === activeToast.root ||
+      event.composedPath().includes(activeToast.root)
+    );
   }
 
   /**
-   * The mount rule: a surface outside a fullscreen element or a modal dialog
-   * is hidden or inert, so it goes inside them, and then into the top layer
-   * as a manual popover.
+   * The mount rule: a surface outside a modal dialog or a fullscreen element
+   * is inert or hidden, so it goes inside the one on top, and then into the
+   * top layer as a manual popover. In order: the modal dialog that holds the
+   * focus; the fullscreen element, unless it is media; the modal dialog hit
+   * at the top-left corner, since a modal dialog's ::backdrop hit-tests to
+   * the dialog; the last modal dialog in document order; the root element.
+   * The focus, the fullscreen element and the hit test are followed into
+   * open shadow roots.
    */
   function mountParent(): Element {
+    const focused = modalDialogAround(deepActiveElement());
+    if (focused) return focused;
     const fullscreen = fullscreenElement();
     if (fullscreen && !FULLSCREEN_MEDIA_ELEMENTS.has(fullscreen.localName)) {
       return fullscreen;
     }
-    const dialog = topmostModalDialog();
-    if (dialog) return dialog;
-    return document.documentElement ?? document.body;
+    return (
+      modalDialogAround(deepestElementsFromPoint(document, 0, 0)[0]) ??
+      lastModalDialog() ??
+      document.documentElement ??
+      document.body
+    );
+  }
+
+  /** The focused element, also inside open shadow roots. */
+  function deepActiveElement(): Element | null {
+    let focused = document.activeElement;
+    while (focused?.shadowRoot?.activeElement)
+      focused = focused.shadowRoot.activeElement;
+    return focused;
   }
 
   /** The fullscreen element itself, also inside open shadow roots. */
@@ -437,22 +457,25 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     return element;
   }
 
-  /**
-   * The modal dialog on top holds the focused element, so this starts there
-   * and looks through open shadow roots and across their hosts. With no focus
-   * inside a modal dialog, it takes the last one in document order.
-   */
-  function topmostModalDialog(): Element | null {
+  /** The nearest modal dialog around an element, across shadow hosts. */
+  function modalDialogAround(
+    element: Element | undefined | null,
+  ): Element | null {
     try {
-      let focused = document.activeElement;
-      while (focused?.shadowRoot?.activeElement)
-        focused = focused.shadowRoot.activeElement;
-      for (let node: Element | null = focused; node;) {
+      for (let node = element ?? null; node;) {
         const dialog = node.closest("dialog:modal");
         if (dialog) return dialog;
         const root = node.getRootNode();
         node = root instanceof ShadowRoot ? root.host : null;
       }
+    } catch {
+      // A browser without :modal.
+    }
+    return null;
+  }
+
+  function lastModalDialog(): Element | null {
+    try {
       return (
         Array.from(document.querySelectorAll("dialog:modal")).at(-1) ?? null
       );
@@ -461,15 +484,82 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     }
   }
 
-  function mountOnTop(root: HTMLElement): void {
+  /**
+   * Mounts a surface by the mount rule. Raising shows it again, which puts it
+   * last in the top layer.
+   */
+  function mountOnTop(root: HTMLElement, raise = false): void {
     const parent = mountParent();
     if (root.parentNode !== parent) parent.append(root);
+    watchMountParent(root, parent);
     if (typeof root.showPopover !== "function") return;
     try {
+      if (raise && typeof root.hidePopover === "function") root.hidePopover();
       root.showPopover();
     } catch {
       // Already in the top layer, or the browser has no popover support.
     }
+  }
+
+  /**
+   * The toast stays above the picker's banner and overlay. A box shown over
+   * it later would make its buttons ignore clicks (see observeVisibility).
+   */
+  function raiseToast(): void {
+    if (activeToast) mountOnTop(activeToast.root, true);
+  }
+
+  // Each surface's listener for the dialog close or fullscreen exit that
+  // would leave it hidden while still attached.
+  const parentWatches = new WeakMap<HTMLElement, () => void>();
+
+  /**
+   * A surface in a modal dialog or a fullscreen element disappears when the
+   * page closes that dialog or leaves fullscreen, so it mounts again then.
+   */
+  function watchMountParent(root: HTMLElement, parent: Element): void {
+    parentWatches.get(root)?.();
+    parentWatches.delete(root);
+    const [target, type]: [EventTarget, string] | [null, null] =
+      parent === fullscreenElement()
+        ? [document, "fullscreenchange"]
+        : parent.localName === "dialog"
+          ? [parent, "close"]
+          : [null, null];
+    if (!target) return;
+    const remount = (): void => {
+      parentWatches.delete(root);
+      if (!root.isConnected) return;
+      mountOnTop(root);
+      if (root !== activeToast?.root) raiseToast();
+    };
+    target.addEventListener(type, remount, { once: true });
+    parentWatches.set(root, () => target.removeEventListener(type, remount));
+  }
+
+  /**
+   * IntersectionObserver v2 reports whether the browser paints the element
+   * uncovered and undistorted: nothing painted over it, full opacity, no
+   * filter, and no transform beyond a 2D move or an even enlargement.
+   * Without it, the element counts as not visible.
+   */
+  function observeVisibility(
+    element: Element,
+    update: (visible: boolean) => void,
+  ): () => void {
+    if (typeof IntersectionObserver !== "function") return () => undefined;
+    const options: IntersectionObserverInit & {
+      trackVisibility: boolean;
+      delay: number;
+    } = { trackVisibility: true, delay: 100 };
+    const observer = new IntersectionObserver((entries) => {
+      const entry:
+        (IntersectionObserverEntry & { isVisible?: boolean }) | undefined =
+        entries.at(-1);
+      if (entry) update(entry.isVisible === true);
+    }, options);
+    observer.observe(element);
+    return () => observer.disconnect();
   }
 
   function createSurfaceRoot(dataName: string, value: string): HTMLElement {
@@ -833,8 +923,9 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     const stopTheme = followTheme(region);
     shadowRoot.append(region);
     // Page handlers in the bubble phase, the modal dialog the toast sits in
-    // among them, do not see toast input. Capture-phase listeners on window
-    // or document can still see a click on the toast host.
+    // among them, do not see the toast's mouse, pointer-button and key
+    // events. Capture-phase listeners on window or document can still see a
+    // click on the toast host, and touch, wheel and focus events still bubble.
     for (const type of [
       "pointerdown",
       "pointerup",
@@ -887,12 +978,20 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       runTimer();
     });
 
+    // A page can hide a button under a lure, by covering the toast or by
+    // fading, filtering or restyling its host.
+    let visible = false;
+    const stopVisibility = observeVisibility(region, (isVisible) => {
+      visible = isVisible;
+    });
+
     let closed = false;
     const cleanup = (): void => {
       if (closed) return;
       closed = true;
       if (hideTimer !== null) window.clearTimeout(hideTimer);
       hideTimer = null;
+      stopVisibility();
       stopTheme();
       root.remove();
       if (activeToast?.root === root) activeToast = null;
@@ -1014,9 +1113,16 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
           const button = toastButton(TOAST_BUTTON_TEXT[action]);
           button.dataset["toastAction"] = action;
           button.addEventListener("click", () => {
-            // A page can restyle the host to hide a button under a lure.
+            // The click counts only when the browser last reported the
+            // toast visible (observeVisibility) and the host's computed
+            // opacity is 1 and its visibility is visible.
             const style = window.getComputedStyle(root);
-            if (style.opacity !== "1" || style.visibility !== "visible") return;
+            if (
+              !visible ||
+              style.opacity !== "1" ||
+              style.visibility !== "visible"
+            )
+              return;
             void chrome.runtime
               .sendMessage(
                 action === "details"

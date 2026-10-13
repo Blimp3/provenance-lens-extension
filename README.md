@@ -82,7 +82,7 @@ Until you pair the browser, these controls stay disabled:
 
 **Check with Google SynthID…** does not need DigiBot. Lens saves the exact
 bytes of the image that you pick and opens Google's SynthID Detector in a new
-tab. You upload the file there yourself. Lens sends nothing to Google and keeps
+tab. You upload the file there yourself. Lens uploads nothing to Google and keeps
 no history record or cache entry for this check.
 
 ### Send this page's link to Telegram
@@ -177,7 +177,7 @@ For local review, load `apps/extension/dist` as an unpacked extension.
 - **Send this page's link to Telegram** also uses `scripting` to inject that
   page runtime, which shows the send's progress and result as a toast on the
   page.
-- Because of these two uses of `activeTab` and `scripting`, the link features
+- Because of these uses of `activeTab` and `scripting`, the link features
   add no permission.
 - The only required host permission is the DigiBot gateway. It gives no access
   to other sites.

@@ -22,9 +22,8 @@ link-download options and the DigiBot gateway contract fixture; the
 [CHANGELOG](CHANGELOG.md) describes each by its effect for users.
 
 Unreleased since v1.0.0: the changes in the [CHANGELOG](CHANGELOG.md)
-Unreleased section. They include the Lens 2.0 pick banner and result toasts
-(build step L1), copied from the private edition's matching change with the
-same public-edition differences. The extension version stays 1.0.0.
+Unreleased section. They add the pick banner and result toasts. The extension
+version stays 1.0.0 and the picker runtime is 0.9.0.
 
 Included:
 

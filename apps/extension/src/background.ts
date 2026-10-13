@@ -2846,8 +2846,7 @@ async function openResultDetails(
 /**
  * A toast button other than Details, from the page and document that show
  * the toast. Its binding says which buttons that toast has; Retry and Cancel
- * act once. The settings buttons open settings.html until the palette's
- * views arrive.
+ * act once. The settings buttons open settings.html.
  */
 async function handleToastAction(
   message: Extract<ExtensionMessage, { type: "toast-action" }>,

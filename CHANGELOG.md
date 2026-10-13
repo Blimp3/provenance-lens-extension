@@ -2,9 +2,8 @@
 
 ## [Unreleased]
 
-Lens 2.0 build step L1 adds the pick banner and result toasts, from the
-private edition's matching change. The extension version stays 1.0.0, and the
-picker runtime is 0.9.0.
+Adds the pick banner and result toasts. The extension version stays 1.0.0 and
+the picker runtime is 0.9.0.
 
 ### Added
 
@@ -19,7 +18,10 @@ picker runtime is 0.9.0.
   **Grant access**, **Switch to API** or **Also check with Google ↗**. A
   success toast hides after 6 seconds, paused while hovered or focused. Toasts
   follow the light and dark theme, forced colors and reduced motion. A toast
-  button ignores a click while the page makes the toast transparent or hidden.
+  button ignores a click unless the browser last reported the toast uncovered
+  and undistorted (IntersectionObserver v2: nothing painted over it, full
+  opacity, no filter and no distorting transform) and the toast host's
+  computed opacity is 1 and its visibility is visible.
 - **Check with Google SynthID…** in the popup, with the note "Google has no
   SynthID API yet, so Lens opens Google's SynthID Detector with your file. Lens
   will check it directly once Google releases an API.", and **Also check with
@@ -48,12 +50,16 @@ picker runtime is 0.9.0.
   can still finish a request that it accepted, and the result then shows in
   History.
 - A blob context-menu image opens the picker to select the image again.
-- The banner, the picker overlay and the toast mount inside a fullscreen
-  element (unless that element is the media itself) or the topmost modal
-  dialog, also inside an open shadow root, so they stay visible and clickable
-  there. Page handlers in the bubble phase do not see toast input.
-  Capture-phase listeners on window or document can still see a click on the
-  toast host.
+- The banner, the picker overlay and the toast mount inside the modal dialog
+  that holds the focus, else a fullscreen element (unless that element is the
+  media itself), else the modal dialog hit at the top-left corner, else the
+  last modal dialog, also inside an open shadow root, so they stay visible and
+  clickable there. When the page closes that dialog or leaves fullscreen, they
+  mount again. The toast stays above the picker's banner and overlay, and its
+  buttons work while the picker is armed. Page handlers in the bubble phase do
+  not see the toast's mouse, pointer-button and key events. Capture-phase
+  listeners on window or document can still see a click on the toast host,
+  and touch, wheel and focus events still bubble.
 - A page-link send from the popup shows its progress and result as a toast on
   the page. A failed send offers **Retry** once, and a missing DigiBot
   connection offers **Connect DigiBot**. An image check that is still running

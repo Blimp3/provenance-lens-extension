@@ -15,8 +15,9 @@ import { join, resolve } from "node:path";
 
 const CANCEL_SESSION_TOKEN = "123e4567-e89b-42d3-a456-426614174000";
 const SELECT_SESSION_TOKEN = "223e4567-e89b-42d3-a456-426614174000";
+const ARMED_SESSION_TOKEN = "423e4567-e89b-42d3-a456-426614174000";
 
-test("activates the bundled picker through extension transport on first and repeated use, and keeps toast clicks inside an open modal dialog", async ({
+test("activates the bundled picker through extension transport on first and repeated use, and keeps toast clicks inside an open modal dialog, visible and above the armed picker", async ({
   browserName,
 }) => {
   expect(browserName).toBe("chromium");
@@ -167,7 +168,7 @@ test("activates the bundled picker through extension transport on first and repe
       }
       dialog.showModal();
     });
-    await sendToPage(worker, fixtureUrl, {
+    const toastMessage = {
       type: "show-toast",
       runtimeVersion: PICKER_RUNTIME_VERSION,
       sessionToken: SELECT_SESSION_TOKEN,
@@ -176,23 +177,22 @@ test("activates the bundled picker through extension transport on first and repe
       message: "No signal is not proof of human authorship.",
       resultId: null,
       actions: ["history"],
-    });
+    };
+    await sendToPage(worker, fixtureUrl, toastMessage);
     const toast = page.locator('[data-provenance-lens-toast="true"]');
     await expect(toast).toHaveCount(1);
     expect(
       await toast.evaluate((element) => element.parentElement?.id ?? null),
     ).toBe("modal");
 
-    await clickShadowElement(page, cdp, "data-toast-action", "history");
-    await expect
-      .poll(() => observedMessages(worker, "toast-action"))
-      .toEqual([
-        {
-          type: "toast-action",
-          sessionToken: SELECT_SESSION_TOKEN,
-          action: "history",
-        },
-      ]);
+    await clickToastUntilSent(page, cdp, worker, 1);
+    expect(await observedMessages(worker, "toast-action")).toEqual([
+      {
+        type: "toast-action",
+        sessionToken: SELECT_SESSION_TOKEN,
+        action: "history",
+      },
+    ]);
     await clickShadowElement(page, cdp, "data-toast-dismiss", "true");
     await expect(toast).toHaveCount(0);
     expect(
@@ -201,6 +201,61 @@ test("activates the bundled picker through extension transport on first and repe
         events: (window as Window & { __pageEvents?: string[] }).__pageEvents,
       })),
     ).toEqual({ open: true, events: [] });
+
+    // A closed dialog hides what is inside it, so the toast mounts again on
+    // the root element.
+    await sendToPage(worker, fixtureUrl, toastMessage);
+    await expect(toast).toHaveCount(1);
+    expect(
+      await toast.evaluate((element) => element.parentElement?.id ?? null),
+    ).toBe("modal");
+    await page.evaluate(() =>
+      document.querySelector<HTMLDialogElement>("#modal")?.close(),
+    );
+    await expect
+      .poll(() =>
+        toast.evaluate((element) => ({
+          parent: element.parentElement?.localName,
+          visible: element.checkVisibility(),
+        })),
+      )
+      .toEqual({ parent: "html", visible: true });
+
+    // A page lure over the toast that lets clicks through, or a filter that
+    // fades the host while its computed opacity stays 1, turns the toast's
+    // buttons off.
+    await page.evaluate(() => {
+      const lure = document.createElement("div");
+      lure.id = "lure";
+      lure.popover = "manual";
+      lure.style.cssText =
+        "inset: 0; width: 100vw; height: 100vh; margin: 0; padding: 0; border: 0; background: transparent; pointer-events: none;";
+      document.body.append(lure);
+      lure.showPopover();
+    });
+    await expectToastClickIgnored(page, cdp, worker, 1);
+    await page.evaluate(() =>
+      document.querySelector<HTMLElement>("#lure")?.hidePopover(),
+    );
+    await clickToastUntilSent(page, cdp, worker, 2);
+    await toast.evaluate((element) =>
+      element.style.setProperty("filter", "opacity(0)", "important"),
+    );
+    expect(
+      await toast.evaluate((element) => getComputedStyle(element).opacity),
+    ).toBe("1");
+    await expectToastClickIgnored(page, cdp, worker, 2);
+    await toast.evaluate((element) => element.style.removeProperty("filter"));
+    await clickToastUntilSent(page, cdp, worker, 3);
+
+    // A picker armed after the toast leaves the toast on top and usable.
+    await activatePicker(worker, fixtureUrl, ARMED_SESSION_TOKEN);
+    await expect(banner).toHaveCount(1);
+    await clickToastUntilSent(page, cdp, worker, 4);
+    await expect(banner).toHaveCount(1);
+    expect(await observedMessages(worker, "picker-selected")).toHaveLength(1);
+    await page.keyboard.press("Escape");
+    await expect(banner).toHaveCount(0);
   } finally {
     await context.close();
     await new Promise<void>((resolveClose, rejectClose) => {
@@ -327,6 +382,43 @@ async function clickShadowElement(
   })) as { model: { content: number[] } };
   const [x1 = 0, y1 = 0, , , x3 = 0, y3 = 0] = model.content;
   await page.mouse.click((x1 + x3) / 2, (y1 + y3) / 2);
+}
+
+/**
+ * Clicks the toast's History button until the worker has seen this many
+ * toast actions. The button ignores clicks until the browser reports the
+ * toast visible, which it does at most every 100 ms.
+ */
+async function clickToastUntilSent(
+  page: Page,
+  cdp: CDPSession,
+  worker: Worker,
+  count: number,
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const sent = (await observedMessages(worker, "toast-action")).length;
+        if (sent < count)
+          await clickShadowElement(page, cdp, "data-toast-action", "history");
+        return sent;
+      },
+      { intervals: [250], timeout: 10_000 },
+    )
+    .toBe(count);
+}
+
+/** Clicks History once the browser had time to report the toast hidden. */
+async function expectToastClickIgnored(
+  page: Page,
+  cdp: CDPSession,
+  worker: Worker,
+  count: number,
+): Promise<void> {
+  await page.waitForTimeout(500);
+  await clickShadowElement(page, cdp, "data-toast-action", "history");
+  await page.waitForTimeout(500);
+  expect(await observedMessages(worker, "toast-action")).toHaveLength(count);
 }
 
 async function installMessageObserver(worker: Worker): Promise<void> {
