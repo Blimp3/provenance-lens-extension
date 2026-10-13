@@ -7,57 +7,6 @@ const OTHER_SESSION_TOKEN = "323e4567-e89b-42d3-a456-426614174000";
 
 type PickerMessageListener = (message: unknown) => void;
 
-/**
- * A stand-in for IntersectionObserver v2. Each observer reports the
- * visibility a test sets, when it starts observing and on every change.
- */
-class FakeIntersectionObserver {
-  static isVisible = true;
-  static observers: FakeIntersectionObserver[] = [];
-  readonly callback: IntersectionObserverCallback;
-  readonly options: IntersectionObserverInit | undefined;
-  readonly targets: Element[] = [];
-  disconnected = false;
-
-  constructor(
-    callback: IntersectionObserverCallback,
-    options?: IntersectionObserverInit,
-  ) {
-    this.callback = callback;
-    this.options = options;
-    FakeIntersectionObserver.observers.push(this);
-  }
-
-  static report(isVisible: boolean): void {
-    FakeIntersectionObserver.isVisible = isVisible;
-    for (const observer of FakeIntersectionObserver.observers)
-      observer.report();
-  }
-
-  observe(target: Element): void {
-    this.targets.push(target);
-    this.report();
-  }
-
-  disconnect(): void {
-    this.disconnected = true;
-  }
-
-  report(): void {
-    if (this.disconnected) return;
-    this.callback(
-      this.targets.map(
-        (target) =>
-          ({
-            target,
-            isVisible: FakeIntersectionObserver.isVisible,
-          }) as unknown as IntersectionObserverEntry,
-      ),
-      this as unknown as IntersectionObserver,
-    );
-  }
-}
-
 function installChrome(): {
   sendMessage: ReturnType<typeof vi.fn>;
   sendPickerMessage: (message: unknown) => void;
@@ -79,12 +28,6 @@ function installChrome(): {
         sendMessage,
       },
     },
-  });
-  FakeIntersectionObserver.isVisible = true;
-  FakeIntersectionObserver.observers = [];
-  Object.defineProperty(globalThis, "IntersectionObserver", {
-    configurable: true,
-    value: FakeIntersectionObserver,
   });
   return {
     sendMessage,
@@ -330,8 +273,6 @@ function resetPickerEnvironment(): void {
   Reflect.deleteProperty(window, "matchMedia");
   Reflect.deleteProperty(document, "fullscreenElement");
   Reflect.deleteProperty(HTMLElement.prototype, "showPopover");
-  Reflect.deleteProperty(HTMLElement.prototype, "hidePopover");
-  Reflect.deleteProperty(globalThis, "IntersectionObserver");
   (
     window as Window & { __provenanceLensPickerInstalled?: boolean | string }
   ).__provenanceLensPickerInstalled = false;
@@ -1559,40 +1500,6 @@ describe("mount rule for the banner, overlay and toast", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
-  it("raises the toast above the banner and overlay of a picker started after it", async () => {
-    const showPopover = vi.fn();
-    const hidePopover = vi.fn();
-    Object.defineProperty(HTMLElement.prototype, "showPopover", {
-      configurable: true,
-      value: showPopover,
-    });
-    Object.defineProperty(HTMLElement.prototype, "hidePopover", {
-      configurable: true,
-      value: hidePopover,
-    });
-    const { sendPickerMessage } = installChrome();
-    await import("../../src/picker.js");
-    bindMessage(sendPickerMessage);
-    sendPickerMessage(
-      showToastMessage({ tone: "detected", actions: ["check-synthid"] }),
-    );
-    sendPickerMessage({
-      type: "picker-start",
-      runtimeVersion: PICKER_RUNTIME_VERSION,
-      sessionToken: SESSION_TOKEN,
-      label: "synthid",
-    });
-    // Shown again, the toast is last in the top layer, so the banner does not
-    // cover it.
-    expect(showPopover.mock.contexts).toEqual([
-      toastRoot(),
-      overlayElement(),
-      bannerRoot(),
-      toastRoot(),
-    ]);
-    expect(hidePopover.mock.contexts).toEqual([toastRoot()]);
-  });
-
   it("mounts inside a focused modal dialog that sits inside a fullscreen element", async () => {
     const player = document.createElement("div");
     const settings = document.createElement("dialog");
@@ -1654,7 +1561,50 @@ describe("mount rule for the banner, overlay and toast", () => {
     dialog.dispatchEvent(new Event("close"));
     for (const root of mountedRoots())
       expect(root.parentElement).toBe(document.documentElement);
-    expect(showPopover.mock.contexts.at(-1)).toBe(toastRoot());
+    expect(showPopover).toHaveBeenCalledTimes(6);
+  });
+
+  it("mounts the overlay, banner and toast again after the page closes and removes their modal dialog", async () => {
+    const dialog = document.createElement("dialog");
+    document.body.append(dialog);
+    let modalDialogs: Element[] = [dialog];
+    const querySelectorAll = document.querySelectorAll.bind(document);
+    vi.spyOn(document, "querySelectorAll").mockImplementation(((
+      selector: string,
+    ) =>
+      selector === "dialog:modal"
+        ? modalDialogs
+        : querySelectorAll(selector)) as typeof document.querySelectorAll);
+    await showAll();
+    for (const root of mountedRoots()) expect(root.parentElement).toBe(dialog);
+
+    // dialog.close(); dialog.remove(): the close event comes after the
+    // removal took the surfaces out of the document.
+    modalDialogs = [];
+    dialog.remove();
+    expect(mountedRoots()).toHaveLength(0);
+    dialog.dispatchEvent(new Event("close"));
+    expect(mountedRoots()).toHaveLength(3);
+    for (const root of mountedRoots())
+      expect(root.parentElement).toBe(document.documentElement);
+  });
+
+  it("mounts the overlay, banner and toast into a fullscreen element entered after they show", async () => {
+    const player = document.createElement("div");
+    document.body.append(player);
+    let fullscreen: Element | null = null;
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => fullscreen,
+    });
+    await showAll();
+    for (const root of mountedRoots())
+      expect(root.parentElement).toBe(document.documentElement);
+
+    // For example the YouTube "f" key while the picker is armed.
+    fullscreen = player;
+    document.dispatchEvent(new Event("fullscreenchange"));
+    for (const root of mountedRoots()) expect(root.parentElement).toBe(player);
   });
 
   it("mounts the overlay, banner and toast again when the page leaves fullscreen", async () => {
@@ -1898,49 +1848,6 @@ describe("result toast", () => {
         action: "history",
       }),
     );
-  });
-
-  it("ignores a toast button until the browser reports the toast visible", async () => {
-    const { sendMessage, sendPickerMessage } = installChrome();
-    const shadows = captureShadows();
-    // A page covers the toast with a lure, or fades its host with a filter;
-    // the host's computed opacity stays 1.
-    FakeIntersectionObserver.isVisible = false;
-    await import("../../src/picker.js");
-    bindMessage(sendPickerMessage);
-    sendPickerMessage(
-      showToastMessage({ tone: "detected", actions: ["history"] }),
-    );
-    const region = shadows.toast?.querySelector('[data-toast-region="true"]');
-    const observer = FakeIntersectionObserver.observers.at(-1);
-    expect(observer?.options).toEqual({ trackVisibility: true, delay: 100 });
-    expect(observer?.targets).toEqual([region]);
-    const history = shadows.toast?.querySelector<HTMLButtonElement>(
-      '[data-toast-action="history"]',
-    );
-    history?.click();
-    await flush();
-    expect(sendMessage).not.toHaveBeenCalled();
-
-    FakeIntersectionObserver.report(true);
-    history?.click();
-    await vi.waitFor(() =>
-      expect(sendMessage).toHaveBeenCalledWith({
-        type: "toast-action",
-        sessionToken: SESSION_TOKEN,
-        action: "history",
-      }),
-    );
-    sendMessage.mockClear();
-    FakeIntersectionObserver.report(false);
-    history?.click();
-    await flush();
-    expect(sendMessage).not.toHaveBeenCalled();
-
-    shadows.toast
-      ?.querySelector<HTMLButtonElement>('[data-toast-dismiss="true"]')
-      ?.click();
-    expect(observer?.disconnected).toBe(true);
   });
 
   it("shows a labelled spinner and Cancel while work runs", async () => {

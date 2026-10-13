@@ -304,13 +304,12 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       document.removeEventListener("keydown", onKeyDown, true);
       document.documentElement.style.cursor = state.previousCursor;
       overlay.stopTheme();
-      overlay.root.remove();
+      unmount(overlay.root);
       banner.remove();
       state.candidate = null;
     };
     state.cleanup = cleanup;
     activePicker = state;
-    raiseToast();
 
     document.addEventListener("pointermove", onPointerMove, {
       capture: true,
@@ -484,82 +483,53 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     }
   }
 
-  /**
-   * Mounts a surface by the mount rule. Raising shows it again, which puts it
-   * last in the top layer.
-   */
-  function mountOnTop(root: HTMLElement, raise = false): void {
+  function mountOnTop(root: HTMLElement): void {
     const parent = mountParent();
     if (root.parentNode !== parent) parent.append(root);
     watchMountParent(root, parent);
     if (typeof root.showPopover !== "function") return;
     try {
-      if (raise && typeof root.hidePopover === "function") root.hidePopover();
       root.showPopover();
     } catch {
       // Already in the top layer, or the browser has no popover support.
     }
   }
 
-  /**
-   * The toast stays above the picker's banner and overlay. A box shown over
-   * it later would make its buttons ignore clicks (see observeVisibility).
-   */
-  function raiseToast(): void {
-    if (activeToast) mountOnTop(activeToast.root, true);
-  }
-
-  // Each surface's listener for the dialog close or fullscreen exit that
-  // would leave it hidden while still attached.
+  // Each mounted surface's listeners for a dialog close or a fullscreen
+  // change that would leave it hidden.
   const parentWatches = new WeakMap<HTMLElement, () => void>();
 
   /**
-   * A surface in a modal dialog or a fullscreen element disappears when the
-   * page closes that dialog or leaves fullscreen, so it mounts again then.
+   * A surface in a modal dialog disappears when the page closes that dialog,
+   * and a fullscreen element entered later covers it, so the parent dialog's
+   * close and every fullscreen change mount the surface again. That holds
+   * after the page also removed the dialog, while the surface is still the
+   * current toast, banner or overlay; unmount drops the watch.
    */
   function watchMountParent(root: HTMLElement, parent: Element): void {
     parentWatches.get(root)?.();
-    parentWatches.delete(root);
-    const [target, type]: [EventTarget, string] | [null, null] =
-      parent === fullscreenElement()
-        ? [document, "fullscreenchange"]
-        : parent.localName === "dialog"
-          ? [parent, "close"]
-          : [null, null];
-    if (!target) return;
+    const dialog = parent.localName === "dialog" ? parent : null;
     const remount = (): void => {
-      parentWatches.delete(root);
-      if (!root.isConnected) return;
-      mountOnTop(root);
-      if (root !== activeToast?.root) raiseToast();
+      if (
+        root === activeToast?.root ||
+        root === activePicker?.banner.root ||
+        root === activePicker?.overlay.root
+      )
+        mountOnTop(root);
     };
-    target.addEventListener(type, remount, { once: true });
-    parentWatches.set(root, () => target.removeEventListener(type, remount));
+    document.addEventListener("fullscreenchange", remount);
+    dialog?.addEventListener("close", remount);
+    parentWatches.set(root, () => {
+      parentWatches.delete(root);
+      document.removeEventListener("fullscreenchange", remount);
+      dialog?.removeEventListener("close", remount);
+    });
   }
 
-  /**
-   * IntersectionObserver v2 reports whether the browser paints the element
-   * uncovered and undistorted: nothing painted over it, full opacity, no
-   * filter, and no transform beyond a 2D move or an even enlargement.
-   * Without it, the element counts as not visible.
-   */
-  function observeVisibility(
-    element: Element,
-    update: (visible: boolean) => void,
-  ): () => void {
-    if (typeof IntersectionObserver !== "function") return () => undefined;
-    const options: IntersectionObserverInit & {
-      trackVisibility: boolean;
-      delay: number;
-    } = { trackVisibility: true, delay: 100 };
-    const observer = new IntersectionObserver((entries) => {
-      const entry:
-        (IntersectionObserverEntry & { isVisible?: boolean }) | undefined =
-        entries.at(-1);
-      if (entry) update(entry.isVisible === true);
-    }, options);
-    observer.observe(element);
-    return () => observer.disconnect();
+  /** Removes a surface and its parent watch. */
+  function unmount(root: HTMLElement): void {
+    parentWatches.get(root)?.();
+    root.remove();
   }
 
   function createSurfaceRoot(dataName: string, value: string): HTMLElement {
@@ -841,7 +811,7 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       remove: () => {
         clearWarning();
         stopTheme();
-        root.remove();
+        unmount(root);
       },
     };
   }
@@ -923,9 +893,10 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     const stopTheme = followTheme(region);
     shadowRoot.append(region);
     // Page handlers in the bubble phase, the modal dialog the toast sits in
-    // among them, do not see the toast's mouse, pointer-button and key
+    // among them, do not see the toast's mouse-button, pointer-button and key
     // events. Capture-phase listeners on window or document can still see a
-    // click on the toast host, and touch, wheel and focus events still bubble.
+    // click on the toast host, and movement, touch, wheel and focus events
+    // still bubble.
     for (const type of [
       "pointerdown",
       "pointerup",
@@ -978,22 +949,14 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       runTimer();
     });
 
-    // A page can hide a button under a lure, by covering the toast or by
-    // fading, filtering or restyling its host.
-    let visible = false;
-    const stopVisibility = observeVisibility(region, (isVisible) => {
-      visible = isVisible;
-    });
-
     let closed = false;
     const cleanup = (): void => {
       if (closed) return;
       closed = true;
       if (hideTimer !== null) window.clearTimeout(hideTimer);
       hideTimer = null;
-      stopVisibility();
       stopTheme();
-      root.remove();
+      unmount(root);
       if (activeToast?.root === root) activeToast = null;
     };
 
@@ -1113,16 +1076,14 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
           const button = toastButton(TOAST_BUTTON_TEXT[action]);
           button.dataset["toastAction"] = action;
           button.addEventListener("click", () => {
-            // The click counts only when the browser last reported the
-            // toast visible (observeVisibility) and the host's computed
-            // opacity is 1 and its visibility is visible.
+            // A page can restyle the host to hide a button under a lure, so
+            // the click counts only while the host's computed opacity is 1
+            // and its visibility is visible. A page can still hide a toast
+            // button under its own content; toast buttons only run follow-up
+            // actions that the user already started, and the page cannot
+            // read their results.
             const style = window.getComputedStyle(root);
-            if (
-              !visible ||
-              style.opacity !== "1" ||
-              style.visibility !== "visible"
-            )
-              return;
+            if (style.opacity !== "1" || style.visibility !== "visible") return;
             void chrome.runtime
               .sendMessage(
                 action === "details"

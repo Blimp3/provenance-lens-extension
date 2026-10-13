@@ -4,7 +4,7 @@ a6b98ea7cb6d61ed8d430dd0dffa46c87012b5cf859d4ce7207898954951fdcd  ./.editorconfi
 7151cf397def0c2cb0ab65643701d27d335a72c90f775675b5f826bc7005818a  ./.npmrc
 5b9d0e73029969ae9000117cb877f17bb9841c1279bfe8024e294acfcf017800  ./.nvmrc
 e9ee6ed217f073ec0a13b0b1c9068e1336f108f2c78f72bb2bbde46281efb973  ./.prettierignore
-d5c3ead370d648aedc52fa1f3715837f4c0d6e9f27cee06cb566b066380eb0f6  ./CHANGELOG.md
+6d75d4ad175fe17c92100668df9ad3e4a7c5649e51d1dcb4793e304463929aee  ./CHANGELOG.md
 c4ca45404313d3f20d849f9392093b708068d16fdbfb052013a4c1429673cc7d  ./CLAUDE.md
 b7d35f9202a9e47d4a747744631daa208068daf8432c143c1866bca2c21b0336  ./LICENSE
 8a42220cf25eb2fe245e751ce468ec0635b0e49250dbda2845823360b0af8abf  ./README.md
@@ -12,7 +12,7 @@ c897d631b750c74365459cca390e751148654002956d14c868b830747ca62731  ./SOURCE_PROVE
 d59ab9ac18d67216ba20c2ee57b755947361ff64ea1a766192895ca4cb608341  ./THIRD_PARTY_NOTICES.txt
 4c27a4d7c3e62374affba4c0594bcdcf8e43ebe29250a0ef5e3f8e4d65f2d1bb  ./apps/extension/e2e/integration.smoke.spec.ts
 49be4b0b38ed1a4e18b1c5d2c3de6b97bb84f2fdbc50c51026587582fa1f04a5  ./apps/extension/e2e/media.smoke.spec.ts
-596c229f48da849c665ce0be85b97d9805230d68d221b1ce9659601000a5a487  ./apps/extension/e2e/picker-runtime.smoke.spec.ts
+e5b50b41c8b8b926d8f3deac6f9efccc93678dfb4e2bac8befc7f9e2abf297cb  ./apps/extension/e2e/picker-runtime.smoke.spec.ts
 74a6e3c64666ae31e282b15264008a1f3e9e5cbffdc4984079ad795cae8901c2  ./apps/extension/e2e/popup.smoke.spec.ts
 e6d57bc637388f5e7535d510365094160a8138c478fa608325d478c9a03e716a  ./apps/extension/manifest.json
 10d64cf38cb2b0fb7284e34ee82fe3d208106c87dc43394283af898b95762a4a  ./apps/extension/package.json
@@ -26,7 +26,7 @@ f20d037a40994c84705c737bef395896c41b75d01e16643296dbf78ddda131a2  ./apps/extensi
 e5015766a5db6367e807dee6eb290863fa3ee84057c8860484434ca293f43c0d  ./apps/extension/public/icons/icon-32.png
 7acb88bf1c0bf2a4684a48c79f8fcfe8947fc327fe57bfaffdff90b07fb39778  ./apps/extension/public/icons/icon-48.png
 15d4831219545750dafbc1d6236984dc6fb37349e267a49077e6257087ba73b4  ./apps/extension/public/icons/icon-source.svg
-60765b68810250ca2aebe6be6785fa4d06f74785e16b1ffbe651924fc3b7fb3e  ./apps/extension/public/popup.html
+c6692ec05bb71b0cd33c1cbe22516b3c5b98031d75ce7658b8f9e62eb21fb22f  ./apps/extension/public/popup.html
 4860897118d61f9c4739cb59ad1a69706c8633a10bf92ab8c86d9410b4dcb2ed  ./apps/extension/public/settings.html
 d3bff7f165cf6004c1b42d6d52895974aab369262409c619ab454dea60a21935  ./apps/extension/public/styles.css
 e0475f3bf3acee7a02af84d00c28dd437baeba08183f9fae43da862bfae8c546  ./apps/extension/scripts/build.mjs
@@ -50,7 +50,7 @@ d7dfc1d0d76bc35fbea66a7c8895dbedfb91794592d7a4361929895724514ae5  ./apps/extensi
 43364ebef1a03896e22ae07d6ddb4a5d1a1925959b8830a05392f5ce03fd4065  ./apps/extension/src/notifications.ts
 bdf0641dfdbae8fff41e5be4005b3ad8c338044e3f3c754d0162ed3d4b3a12a8  ./apps/extension/src/page-link-candidates.ts
 e7fa7318ab70c18279367e2d45cfd275f9a323b4a6547712c617939c59ecb4db  ./apps/extension/src/page-policy.ts
-fc7f15b59d7ec0bd065ad07c31aa576e6d23676d8de38b7ea2db3c2bba814957  ./apps/extension/src/picker.ts
+999da0e550fd67c69a752def1f685bcb6bfae230d66618b424c9c66b7261df0b  ./apps/extension/src/picker.ts
 f8027d0f661d426b57fe52b8177e25b601b480dd749c37e34302ca96f9c36066  ./apps/extension/src/routing.ts
 27d10af97e653a26360c6ad50b3621c30636b9669faf0610ebfc055a014b2087  ./apps/extension/src/screenshot-binding.ts
 c3b475fe7ea60ed7f8468c9a741d9e94063b2882a748bf682b7ea549e383dd95  ./apps/extension/src/screenshot-guard.ts
@@ -93,7 +93,7 @@ ff5dfda707a581302c39ed5a157665ddf9091a8cfe847cb86dd5cb8739e03389  ./apps/extensi
 f234af890dba2b367b248564965f22ad3349eba02097f31349de61284a95fdad  ./apps/extension/tests/unit/optional-access.test.ts
 baf3be78d0debc686a7a8a47a7fdaf49572b7cd3d54bc26f8d5c3eaf227e490b  ./apps/extension/tests/unit/page-link-candidates.test.ts
 b78b71e070320d11258897eaa3a0775191faccc518aa63216e45461afb5a1881  ./apps/extension/tests/unit/page-policy.test.ts
-7fe81d39b4e12cc882e15cd43a072dd80d836a89d07d5271034c97a60d33056b  ./apps/extension/tests/unit/picker.test.ts
+ebc63f80cb173791cb836709eb6ae460d30a717aa9003f3eafb20bc2db972e8a  ./apps/extension/tests/unit/picker.test.ts
 d6ab5d6c6e0d90e2e8eee76eee0b5d3ea2dc290bb2eac3c4262703f43ee8edde  ./apps/extension/tests/unit/popup.test.ts
 ba5b1ec8daa9f89e07dda01b7324a7e774ec7c66b53f7c42f534611c42eae72c  ./apps/extension/tests/unit/registry.test.ts
 3a3d7e7841f136c472958e27528b2f0020c1ce163742c6d0c002023394ca46b0  ./apps/extension/tests/unit/retrieval.test.ts
