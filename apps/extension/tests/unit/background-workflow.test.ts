@@ -1840,7 +1840,7 @@ describe("background verification workflow boundaries", () => {
     expect(sent.page).not.toHaveBeenCalled();
   });
 
-  it("sends a download pick's X video as the video pick, keeping /video/3", async () => {
+  it("sends a download pick's X video as the video pick, keeping /video/<n>", async () => {
     const chromeState = setupChrome();
     connectedVideoPick(chromeState);
     const sent = mediaPickActions();
@@ -1921,6 +1921,24 @@ describe("background verification workflow boundaries", () => {
       tabId: TAB_ID,
       text: "!",
     });
+
+    // Without the tab's address, as when the page's grant has lapsed.
+    getTab.mockResolvedValue({ id: TAB_ID });
+    const third = await startMediaPick(chromeState, 3);
+    listener(
+      { type: "picker-page-selected", sessionToken: third },
+      pickerSender(),
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "show-toast")).toHaveLength(4),
+    );
+    expect(tabMessages(chromeState, "show-toast")[3]).toMatchObject({
+      sessionToken: third,
+      tone: "error",
+      message:
+        "Lens cannot read this tab's address. Reload the page, then pick again.",
+    });
+    expect(sent.page).toHaveBeenCalledTimes(1);
   });
 
   it("takes a stored download pick once after the worker restarted", async () => {

@@ -21,6 +21,12 @@ import { parseClockRange, type ClipRangeResult } from "./link-output.js";
 export const PALETTE_OPEN_KEY = "provenanceLens.paletteOpen";
 /** Aliases and Last used, apart from ExtensionSettings. */
 export const PALETTE_PREFS_KEY = "provenanceLens.palette";
+/**
+ * The workflow message of the download pick for an image or a video; the
+ * DOWNLOAD action's image-only pick from the context menu has its own.
+ */
+export const MEDIA_PICK_MESSAGE =
+  "Click an image or a video to send it to Telegram.";
 
 /** The browser commands in the manifest, in its order. */
 export const DECLARED_COMMAND_IDS = [

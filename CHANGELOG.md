@@ -20,10 +20,14 @@ and the picker runtime is 0.9.0.
   (a key) or 500 ms (a click), with no hidden report in between. A key pressed
   in its first second waits for that unless the palette is reported hidden
   first; other refused input is dropped, and the palette shows "The page is
-  covering Lens. Press Esc and open it again." The palette closes when the
-  page restyles or hides its host. The key that closes the palette sends no
-  keyup to the page, though a page's own capture listener on window can still
-  see that keyup.
+  covering Lens. Press Esc and open it again." A page zoom restarts that
+  wait. The palette closes when the page restyles or hides its host or
+  cancels its show. The key that closes the palette sends no keyup to the
+  page, though a page's own capture listener on window can still see that
+  keyup. Over a fullscreen element, Lens holds Esc with Keyboard Lock while the
+  palette is open, so Esc steps back in the palette; press and hold Esc to
+  leave fullscreen. Known limit: closing the palette also ends a keyboard lock
+  the page held.
 - Ten browser commands: **Open or close the Lens palette** (suggested
   Alt+Shift+Space), **Pick an image for OpenAI provenance review** (Alt+Shift+V,
   unchanged), and, with no key until you set one, send this page's video, voice
@@ -32,10 +36,14 @@ and the picker runtime is 0.9.0.
   the palette at Clip. When the browser leaves the palette key unassigned,
   **Choose a palette shortcut** opens its shortcuts page.
 - **Pick to download…** (alias p) in the Download view: one pick where the
-  click decides. An image goes to DigiBot as the image download, and a video
-  as its link with the checks and limits of **Send video**. On X a post with
-  more than one photo or video sends the clicked video as
-  `https://x.com/<user>/status/<id>/video/<n>`. It replaces the two picks
+  topmost layer under the click decides. An image goes to DigiBot as the image
+  download, and a video as its link with the checks and limits of **Send
+  video**. On X a post with two or more videos, a quoted post's counted, sends
+  the clicked one as `https://x.com/<user>/status/<id>/video/<n>`, and any
+  other post its plain address. Known limit: a GIF in a post with two or more
+  videos cannot be sent alone. A YouTube or Vimeo embed sends its video's own
+  page, and a video with no post or video link sends the page, as **Send
+  video** does. It replaces the two picks
   **Pick a post → video…** and **Pick an image → Telegram…**: a shortcut set
   for either old command is gone, so set it again for **Pick an image or a
   video and send it to Telegram**. A Last used entry of either old pick shows

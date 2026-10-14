@@ -14,6 +14,7 @@ import {
 
 import { readBoundedResponseBytes } from "./bounded-response.js";
 import {
+  embedVideoUrl,
   linkCandidateFor,
   needsPostPick,
   postVideosAround,
@@ -1399,12 +1400,14 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
   }
 
   /**
-   * The download pick: the clicked element decides. A rendered video under
-   * the pointer, or anything its player draws on it, is the video, and so is
-   * its poster; then an image in the hit chains, where a YouTube thumbnail
-   * in a video link stands for that video. A click on neither, such as a
-   * post's text or empty area, takes the post's video when the post shows
-   * exactly one.
+   * The download pick: the topmost layer under the pointer decides. Walking
+   * the hits from the top, a rendered video or an embedded player counts
+   * until the first image, where a YouTube thumbnail in a video link stands
+   * for that video. A video below that image, or one its player takes out
+   * of hit testing, counts only when the nearest element around the top hit
+   * that holds it is no larger than the video: its player, whose controls
+   * and overlays sit on its box. A click on neither, such as a post's text
+   * or empty area, takes the post's video when the post shows exactly one.
    */
   function mediaCandidateAt(
     hits: Element[],
@@ -1415,31 +1418,32 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     // The toast covers what is under it.
     if (activeToast && hits.includes(activeToast.root)) return null;
     const pageHits = hits.filter((element) => !isPickerOverlayElement(element));
-    // A video's controls and overlays sit on its box; a player can also take
-    // the video itself out of hit testing.
-    const video = [
-      ...pageHits,
-      ...Array.from(document.querySelectorAll("video")).reverse(),
-    ].find((element) => isRenderedVideo(element, clientX, clientY));
-    if (video) return videoCandidate(video);
+    let image: ImageCandidate | null = null;
     for (const element of pageHits) {
-      let current: Element | null = element;
-      while (current && visit(current)) {
-        // A poster belongs to its video, which is not under the pointer.
-        const image =
-          current instanceof HTMLVideoElement
-            ? null
-            : candidateForElement(current);
-        if (image) {
-          const url = youtubeLinkAround(image.element, document.baseURI);
-          return url
-            ? { kind: "link", element: image.element, url, host: hostname(url) }
-            : image;
-        }
-        current = current.parentElement;
-      }
+      if (isRenderedVideo(element, clientX, clientY))
+        return videoCandidate(element);
+      if (element instanceof HTMLIFrameElement) return frameCandidate(element);
+      image = imageInChain(element, visit);
+      if (image) break;
     }
     const top = pageHits[0];
+    const video = top
+      ? [
+          ...pageHits,
+          ...Array.from(document.querySelectorAll("video")).reverse(),
+        ].find(
+          (element) =>
+            isRenderedVideo(element, clientX, clientY) &&
+            heldByPlayer(top, element),
+        )
+      : undefined;
+    if (video) return videoCandidate(video);
+    if (image) {
+      const url = youtubeLinkAround(image.element, document.baseURI);
+      return url
+        ? { kind: "link", element: image.element, url, host: hostname(url) }
+        : image;
+    }
     const videos = top ? postVideosAround(top, document.baseURI) : null;
     if (videos === null) return null;
     const shown = videos.filter((element) => isRenderedVideo(element));
@@ -1447,6 +1451,54 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     return only
       ? videoCandidate(only)
       : { kind: "refused", message: "Click the image or the video itself" };
+  }
+
+  /** The first image up a hit's chain. */
+  function imageInChain(
+    element: Element,
+    visit: (element: Element) => boolean,
+  ): ImageCandidate | null {
+    for (
+      let current: Element | null = element;
+      current && visit(current);
+      current = current.parentElement
+    ) {
+      // A poster belongs to its video, which is not under the pointer.
+      if (current instanceof HTMLVideoElement) continue;
+      const image = candidateForElement(current);
+      if (image) return image;
+    }
+    return null;
+  }
+
+  /**
+   * Whether the nearest element around the top hit that holds the video,
+   * across shadow roots and past wrappers without a box, is no larger than
+   * the video's box.
+   */
+  function heldByPlayer(top: Element, video: Element): boolean {
+    const around = new Set<Element>();
+    for (
+      let element: Element | null = video;
+      element;
+      element = composedParent(element)
+    )
+      around.add(element);
+    let holder: Element | null = top;
+    while (holder && !around.has(holder)) holder = composedParent(holder);
+    for (; holder; holder = composedParent(holder)) {
+      const box = holder.getBoundingClientRect();
+      if (box.width <= 0 || box.height <= 0) continue;
+      const frame = video.getBoundingClientRect();
+      return box.width <= frame.width + 1 && box.height <= frame.height + 1;
+    }
+    return false;
+  }
+
+  function composedParent(element: Element): Element | null {
+    if (element.parentElement) return element.parentElement;
+    const root = element.getRootNode();
+    return root instanceof ShadowRoot ? root.host : null;
   }
 
   /** A `<video>` that shows on the page, under the point when one is given. */
@@ -1472,18 +1524,37 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
 
   /**
    * A picked video's link, or the page itself when the video has no post or
-   * video link. A listing page's video is picked on its own page.
+   * video link.
    */
   function videoCandidate(video: Element): PickCandidate | Refusal {
     const url = videoLinkFor(video, document.baseURI);
-    if (url !== null)
-      return { kind: "link", element: video, url, host: hostname(url) };
+    return url === null
+      ? pageCandidate(video)
+      : { kind: "link", element: video, url, host: hostname(url) };
+  }
+
+  /**
+   * An embedded player: a YouTube or Vimeo embed sends its video's page, any
+   * other frame the page, as a video with no link does.
+   */
+  function frameCandidate(frame: HTMLIFrameElement): PickCandidate | Refusal {
+    const url = embedVideoUrl(
+      frame.getAttribute("src") ?? "",
+      document.baseURI,
+    );
+    return url === null
+      ? pageCandidate(frame)
+      : { kind: "link", element: frame, url, host: hostname(url) };
+  }
+
+  /** The page itself; a listing page's video is picked on its own page. */
+  function pageCandidate(element: Element): PickCandidate | Refusal {
     if (needsPostPick(location.href))
       return {
         kind: "refused",
         message: "Open the video's own page, then pick it",
       };
-    return { kind: "page", element: video, host: location.hostname };
+    return { kind: "page", element, host: location.hostname };
   }
 
   function hostname(url: string): string {
@@ -1501,10 +1572,16 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     );
   }
 
+  /**
+   * The hits at a point with each open shadow root's own hits before its
+   * host. A shadow root's hits also hold its host and the host's ancestors,
+   * so each root is searched once.
+   */
   function deepestElementsFromPoint(
     root: Document | ShadowRoot,
     x: number,
     y: number,
+    searched = new Set<Node>([root]),
   ): Element[] {
     const pointLookup = root as Document & {
       elementsFromPoint?: (x: number, y: number) => Element[];
@@ -1526,18 +1603,17 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     const seen = new Set<Element>();
     for (const element of elements) {
       if (!(element instanceof Element) || seen.has(element)) continue;
-      if (element instanceof HTMLElement && element.shadowRoot) {
-        for (const nested of deepestElementsFromPoint(
-          element.shadowRoot,
-          x,
-          y,
-        )) {
+      const shadow = element instanceof HTMLElement ? element.shadowRoot : null;
+      if (shadow && !searched.has(shadow)) {
+        searched.add(shadow);
+        for (const nested of deepestElementsFromPoint(shadow, x, y, searched)) {
           if (!seen.has(nested)) {
             seen.add(nested);
             flattened.push(nested);
           }
         }
       }
+      if (seen.has(element)) continue;
       seen.add(element);
       flattened.push(element);
     }

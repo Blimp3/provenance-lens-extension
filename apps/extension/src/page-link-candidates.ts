@@ -17,8 +17,9 @@
  * - Anywhere else, the nearest HTTP(S) link is sent without its fragment.
  *
  * The download pick reuses these rules for a clicked video: on X its post,
- * with `/video/<n>` when the post holds more than one media item, elsewhere
- * the link around the video, else the page's own address.
+ * with `/video/<n>` when the post holds two or more videos, elsewhere the
+ * link around the video, else the page's own address. A YouTube or Vimeo
+ * embed is sent as its video's own page.
  *
  * Hosts match by suffix once trailing dots are stripped. The functions take
  * the base address explicitly, so the background can re-validate a picked
@@ -34,7 +35,7 @@ const YOUTUBE_HOST = /(^|\.)youtube\.com$/u;
 const X_STATUS_PATH = /^\/([A-Za-z0-9_]{1,15})\/status\/(\d{1,25})(?:\/|$)/u;
 /** A photo of an X post; X posts hold at most four media items. */
 const X_PHOTO_PATH =
-  /^\/[A-Za-z0-9_]{1,15}\/status\/\d{1,25}\/photo\/[1-4]\/?$/u;
+  /^\/[A-Za-z0-9_]{1,15}\/status\/\d{1,25}\/photo\/([1-4])\/?$/u;
 const X_VIDEO_PATH =
   /^\/[A-Za-z0-9_]{1,15}\/status\/\d{1,25}\/video\/([1-4])\/?$/u;
 /** An X post, or the quote card inside one. */
@@ -42,6 +43,9 @@ const X_CARD_SELECTOR = 'article, div[role="link"]';
 const YOUTUBE_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/u;
 const YOUTUBE_SHORTS_PATH = /^\/shorts\/([A-Za-z0-9_-]{11})\/?$/u;
 const YOUTU_BE_PATH = /^\/([A-Za-z0-9_-]{11})\/?$/u;
+const YOUTUBE_EMBED_HOST = /(^|\.)youtube(-nocookie)?\.com$/u;
+const YOUTUBE_EMBED_PATH = /^\/embed\/([A-Za-z0-9_-]{11})\/?$/u;
+const VIMEO_PLAYER_PATH = /^\/video\/(\d{1,12})\/?$/u;
 /** X home, search, explore, or a profile and its media, replies or likes tab. */
 const X_LISTING_PATH =
   /^\/(?:home|search|explore(?:\/.*)?|[A-Za-z0-9_]{1,15}(?:\/(?:media|with_replies|likes|highlights))?)?\/?$/u;
@@ -124,23 +128,49 @@ export function linkCandidateFor(
 
 /**
  * The address a download pick sends for a rendered video, or null for the
- * page's own address. On X that is the video's post, and a post with more
- * than one media item names the video as `/video/<n>`: n is its place among
- * the post's own videos and photo links in document order, the order of X's
- * media grid. Elsewhere it is the link around the video.
+ * page's own address. On X that is the video's post. DigiBot's downloader
+ * sends a post's address as its one video or GIF, its quoted post's
+ * included, and refuses a post with more as a playlist, while
+ * `/video/<n>` names the post's n-th media item, photos counted, and must be
+ * a video. So a post with two or more videos names the clicked one as
+ * `/video/<n>`, and a video in a quote card without its own permalink sends
+ * the outer post. Elsewhere it is the link around the video.
  */
 export function videoLinkFor(video: Element, base: string): string | null {
   const post = xPostAround(video, base);
   if (post) {
-    const media = xPostMedia(post, base);
-    const index = media.indexOf(video);
-    return media.length > 1 && index >= 0 && index < 4
-      ? `${post.status}/video/${index + 1}`
-      : post.status;
+    if (cardOf(video) !== post.card) return post.status;
+    if (post.card.querySelectorAll("video").length < 2) return post.status;
+    const place = xMediaPlace(post, video, base);
+    return place === null ? post.status : `${post.status}/video/${place}`;
   }
   if (isXPage(base)) return null;
   const link = video.closest("a[href]");
   return link ? pickedLinkUrl(link.getAttribute("href") ?? "", base) : null;
+}
+
+/**
+ * The page of the video a YouTube or Vimeo embed plays, or null for any
+ * other frame: `youtube.com/embed/<id>` and `youtube-nocookie.com/embed/<id>`
+ * as `https://www.youtube.com/watch?v=<id>`, `player.vimeo.com/video/<id>`
+ * as `https://vimeo.com/<id>`.
+ */
+export function embedVideoUrl(src: string, base: string): string | null {
+  const url = resolveHttpUrl(src, base);
+  if (!url) return null;
+  const host = hostOf(url);
+  if (YOUTUBE_EMBED_HOST.test(host)) {
+    const id = YOUTUBE_EMBED_PATH.exec(url.pathname)?.[1];
+    // A playlist embed is /embed/videoseries, an 11-character name too.
+    return id === undefined || id === "videoseries"
+      ? null
+      : `https://www.youtube.com/watch?v=${id}`;
+  }
+  if (host === "player.vimeo.com") {
+    const id = VIMEO_PLAYER_PATH.exec(url.pathname)?.[1];
+    return id === undefined ? null : `https://vimeo.com/${id}`;
+  }
+  return null;
 }
 
 /**
@@ -237,17 +267,46 @@ function xPostAround(element: Element, base: string): XPost | null {
 function xPostMedia(post: XPost, base: string): Element[] {
   return Array.from(
     post.card.querySelectorAll('video, a[href*="/photo/"]'),
-  ).filter((element) => {
-    if (xPostAround(element, base)?.card !== post.card) return false;
-    if (element.localName === "video") return true;
-    const url = resolveHttpUrl(element.getAttribute("href") ?? "", base);
-    return (
-      url !== null &&
-      isXHost(hostOf(url)) &&
-      X_PHOTO_PATH.test(url.pathname) &&
-      xStatusUrl(url)?.toLowerCase() === post.status.toLowerCase()
-    );
-  });
+  ).filter(
+    (element) =>
+      xPostAround(element, base)?.card === post.card &&
+      (element.localName === "video" || xPhotoPlace(element, post, base) > 0),
+  );
+}
+
+/** The k of a photo link `/photo/<k>` of the post's own status, else 0. */
+function xPhotoPlace(link: Element, post: XPost, base: string): number {
+  const url = resolveHttpUrl(link.getAttribute("href") ?? "", base);
+  if (!url || !isXHost(hostOf(url))) return 0;
+  const place = X_PHOTO_PATH.exec(url.pathname)?.[1];
+  return place !== undefined &&
+    xStatusUrl(url)?.toLowerCase() === post.status.toLowerCase()
+    ? Number(place)
+    : 0;
+}
+
+/**
+ * A video's 1-based place among the post's own media, a quote card's left
+ * out. A photo link names its place among all of them (`/photo/<k>`), so
+ * the videos take the places the photo links leave free, in document order;
+ * when the photo links do not fit, the place is the document order. null
+ * past four.
+ */
+function xMediaPlace(post: XPost, video: Element, base: string): number | null {
+  const media = xPostMedia(post, base).filter(
+    (element) => cardOf(element) === post.card,
+  );
+  const videos = media.filter((element) => element.localName === "video");
+  const taken = new Set(
+    media
+      .filter((element) => element.localName !== "video")
+      .map((link) => xPhotoPlace(link, post, base)),
+  );
+  const free = [1, 2, 3, 4].filter((place) => !taken.has(place));
+  const fits =
+    taken.size === media.length - videos.length && free.length >= videos.length;
+  const place = fits ? free[videos.indexOf(video)] : media.indexOf(video) + 1;
+  return place !== undefined && place >= 1 && place <= 4 ? place : null;
 }
 
 function cardOf(element: Element | null): Element | null {

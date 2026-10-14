@@ -364,6 +364,43 @@ function sessionValue(lens: Lens, key: string): Promise<unknown> {
   }, key);
 }
 
+type CdpNode = {
+  nodeType: number;
+  nodeValue: string;
+  attributes?: string[];
+  children?: CdpNode[];
+  shadowRoots?: CdpNode[];
+};
+
+/** The text of the page's toast, read through its closed shadow root. */
+async function toastText(page: Page): Promise<string> {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    const { root } = (await cdp.send("DOM.getDocument", {
+      depth: -1,
+      pierce: true,
+    })) as { root: CdpNode };
+    const inside = (node: CdpNode): CdpNode[] => [
+      ...(node.shadowRoots ?? []),
+      ...(node.children ?? []),
+    ];
+    const find = (node: CdpNode): CdpNode | null => {
+      if (node.attributes?.includes("data-provenance-lens-toast")) return node;
+      for (const child of inside(node)) {
+        const found = find(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const text = (node: CdpNode): string =>
+      node.nodeType === 3 ? node.nodeValue : inside(node).map(text).join(" ");
+    const toast = find(root);
+    return toast ? text(toast) : "";
+  } finally {
+    await cdp.detach();
+  }
+}
+
 /** The worker's workflow state, which lives in local storage. */
 function workflowState(lens: Lens): Promise<{ status?: string } | null> {
   return lens.worker.evaluate(async (name) => {
@@ -1108,6 +1145,257 @@ test("the SynthID pick and its toast stay above a modal dialog", async () => {
         .locator("dialog")
         .evaluate((d) => (d as HTMLDialogElement).open),
     ).toBe(true);
+  } finally {
+    await lens.close();
+  }
+});
+
+test("the first SynthID pick resumes above a modal dialog after the acknowledgement", async () => {
+  const lens = await launchLens({ downloads: true });
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/dialog.html`);
+    await page.click("#open");
+    const frame = await openPalette(lens, page);
+    await page.keyboard.type("g");
+    await expect(frame.getByRole("option").first()).toHaveAccessibleName(
+      /^Check with Google SynthID/u,
+    );
+    const opened = lens.context.waitForEvent("page");
+    await page.keyboard.press("Enter");
+    await expect.poll(() => hostCount(page)).toBe(0);
+
+    // The one-time acknowledgement opens in its own tab, then closes.
+    const disclosure = await opened;
+    await disclosure.waitForLoadState("load");
+    expect(new URL(disclosure.url()).pathname).toBe("/disclosure.html");
+    await expect(disclosure.locator("#acknowledge")).toBeEnabled();
+    const closed = disclosure.waitForEvent("close");
+    await disclosure.locator("#acknowledge").click();
+    await closed;
+
+    await page.bringToFront();
+    for (const surface of ["banner", "overlay"]) {
+      const root = page.locator(`[data-provenance-lens-picker="${surface}"]`);
+      await expect(root).toHaveCount(1);
+      await expect
+        .poll(() =>
+          root.evaluate((element) => ({
+            parent: element.parentElement?.localName,
+            open: element.matches(":popover-open"),
+          })),
+        )
+        .toEqual({ parent: "dialog", open: true });
+    }
+
+    const image = await page.locator("#image").boundingBox();
+    if (!image) throw new Error("The image has no box.");
+    await page.mouse.move(
+      image.x + image.width / 2,
+      image.y + image.height / 2,
+    );
+    await page.mouse.click(
+      image.x + image.width / 2,
+      image.y + image.height / 2,
+    );
+    const toast = page.locator("[data-provenance-lens-toast]");
+    await expect(toast).toHaveCount(1, { timeout: 15_000 });
+    await expect.poll(() => toastText(page)).toContain("Exact image saved");
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const root = document.querySelector<HTMLElement>(
+            "[data-provenance-lens-toast]",
+          );
+          if (!root?.matches(":popover-open")) return null;
+          const box = root.getBoundingClientRect();
+          return {
+            parent: root.parentElement?.localName,
+            onTop:
+              document.elementFromPoint(
+                box.x + box.width / 2,
+                box.y + box.height / 2,
+              ) === root,
+          };
+        }),
+      )
+      .toEqual({ parent: "dialog", onTop: true });
+    expect(
+      await page
+        .locator("dialog")
+        .evaluate((d) => (d as HTMLDialogElement).open),
+    ).toBe(true);
+  } finally {
+    await lens.close();
+  }
+});
+
+test("closes the palette when the page cancels the host's show, and no key reaches the worker", async () => {
+  const lens = await launchLens();
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/page.html`);
+    // The page cancels the host's way into the top layer, where it could
+    // then move and mask the host.
+    const cancelShows = (): Promise<void> =>
+      page.evaluate(() => {
+        const state = window as Window & { __cancelled?: number };
+        state.__cancelled = 0;
+        document.addEventListener(
+          "beforetoggle",
+          (event) => {
+            const target = event.target as HTMLElement | null;
+            if (
+              event.newState === "open" &&
+              target?.dataset["provenanceLensPalette"]
+            ) {
+              event.preventDefault();
+              state.__cancelled = (state.__cancelled ?? 0) + 1;
+            }
+          },
+          true,
+        );
+      });
+    const cancelled = (): Promise<number> =>
+      page.evaluate(
+        () => (window as Window & { __cancelled?: number }).__cancelled ?? 0,
+      );
+
+    // The show that stacks the open palette on top again, after the page
+    // closes the dialog the palette sits in.
+    await page.evaluate(() =>
+      document.querySelector<HTMLDialogElement>("#modal")?.showModal(),
+    );
+    await openPalette(lens, page);
+    expect(await hostParentName(page)).toBe("dialog");
+    await cancelShows();
+    await page.evaluate(() =>
+      document.querySelector<HTMLDialogElement>("#modal")?.close(),
+    );
+    await expect.poll(cancelled).toBe(1);
+    await expect.poll(() => hostCount(page)).toBe(0);
+
+    // The first show.
+    await clickToolbar(lens, page);
+    await expect.poll(cancelled).toBe(2);
+    await expect.poll(() => hostCount(page)).toBe(0);
+    await page.keyboard.type("v");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(500);
+    expect(await startActions(lens)).toEqual([]);
+  } finally {
+    await lens.close();
+  }
+});
+
+test("a zoom on the page restarts the 500 ms before a click runs a row", async () => {
+  const lens = await launchLens();
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/page.html`);
+    const frame = await openPalette(lens, page);
+    const verifyRow = frame.getByRole("option", { name: /^Verify/u });
+    const resting = await verifyRow.boundingBox();
+    if (!resting) throw new Error("The Verify row has no box.");
+    await page.mouse.move(
+      resting.x + resting.width / 2,
+      resting.y + resting.height / 2,
+    );
+
+    // The zoom moves the rows under the resting pointer; a click within
+    // 500 ms runs nothing.
+    const width = await frame.evaluate(() => innerWidth);
+    const zoomedAt = Date.now();
+    await page.evaluate(() => {
+      document.documentElement.style.zoom = "0.8";
+    });
+    await expect
+      .poll(() => frame.evaluate(() => innerWidth), { intervals: [10] })
+      .not.toBe(width);
+    const box = await verifyRow.boundingBox();
+    if (!box) throw new Error("The Verify row has no box.");
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    expect(Date.now() - zoomedAt).toBeLessThan(500);
+    await expect(frame.locator("#status-text")).toHaveText(
+      "The page is covering Lens. Press Esc and open it again.",
+    );
+    await expect(frame.locator("#chip")).toBeHidden();
+    expect(await startActions(lens)).toEqual([]);
+
+    // Once the panel has stayed put for 500 ms, the same click runs the row
+    // under it. Playwright's boxes leave the zoom out, so which row that is
+    // is not checked.
+    await page.waitForTimeout(600);
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(frame.locator("#chip")).toBeVisible();
+    await expect(frame.locator("#status-text")).not.toHaveText(
+      "The page is covering Lens. Press Esc and open it again.",
+    );
+  } finally {
+    await lens.close();
+  }
+});
+
+test("Esc closes the palette in fullscreen and the page stays fullscreen", async () => {
+  const lens = await launchLens();
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/page.html`);
+    await page.evaluate(() =>
+      document.querySelector("#stage")?.requestFullscreen(),
+    );
+    await expect
+      .poll(() => page.evaluate(() => document.fullscreenElement?.id ?? null))
+      .toBe("stage");
+    const frame = await openPalette(lens, page);
+    await frame.getByRole("option", { name: /^Recent/u }).click();
+    await expect(frame.locator("#chip")).toHaveText("Recent");
+
+    // Esc steps back first, then closes; headless Chromium does not run the
+    // browser's own Esc for fullscreen, which Keyboard Lock holds back.
+    await page.keyboard.press("Escape");
+    await expect(frame.locator("#chip")).toBeHidden();
+    await pressClosing(page, "Escape");
+    await expect.poll(() => hostCount(page)).toBe(0);
+    expect(
+      await page.evaluate(() => document.fullscreenElement?.id ?? null),
+    ).toBe("stage");
+  } finally {
+    await lens.close();
+  }
+});
+
+test("the Now row names the pick that runs", async () => {
+  const lens = await launchLens();
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/page.html`);
+    for (const [message, title] of [
+      ["Choose an image to download.", "Picking an image…"],
+      [
+        "Click an image or a video to send it to Telegram.",
+        "Picking an image or a video…",
+      ],
+    ] as const) {
+      await lens.worker.evaluate(
+        ({ key, text }) =>
+          chrome.storage.local.set({
+            [key]: {
+              status: "picking",
+              actionId: "download-original-media",
+              message: text,
+              updatedAt: new Date().toISOString(),
+            },
+          }),
+        { key: WORKFLOW_KEY, text: message },
+      );
+      const frame = await openPalette(lens, page);
+      await expect(frame.getByRole("option").first()).toHaveAccessibleName(
+        new RegExp(`^${title}`, "u"),
+      );
+      await pressClosing(page, "Escape");
+      await expect.poll(() => hostCount(page)).toBe(0);
+    }
   } finally {
     await lens.close();
   }

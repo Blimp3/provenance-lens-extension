@@ -55,6 +55,7 @@ import {
 } from "./palette-host.js";
 import {
   commandRoute,
+  MEDIA_PICK_MESSAGE,
   PALETTE_OPEN_KEY,
   type OpenView,
   type PaletteOpenRecord,
@@ -498,6 +499,9 @@ const SYNTHID_FAILED_TITLE = "Google SynthID handoff failed";
 const PAGE_LINK_FAILED_TITLE = "Page link not sent";
 /** Why a download pick on a listing page's video is refused. */
 const OWN_PAGE_MESSAGE = "Open the video's own page, then pick it.";
+/** Why a download pick is refused when the tab's address cannot be read. */
+const TAB_ADDRESS_MESSAGE =
+  "Lens cannot read this tab's address. Reload the page, then pick again.";
 
 /**
  * The page-link action reports through the workflow state and a toast on the
@@ -754,11 +758,7 @@ async function startMediaPickFromActiveTab(
       trigger,
       verificationMode: settings.verificationMode,
     });
-    await setWorkflow(
-      "picking",
-      "Click an image or a video to send it to Telegram.",
-      DOWNLOAD_ACTION_ID,
-    );
+    await setWorkflow("picking", MEDIA_PICK_MESSAGE, DOWNLOAD_ACTION_ID);
   } catch {
     await notifyStandaloneError(
       "permission_denied",
@@ -1432,11 +1432,11 @@ async function handlePickerPageSelected(
   await stopPicker(session);
   const tab = await chrome.tabs.get(session.tabId).catch(() => undefined);
   const action = getActionDefinition(LINK_ACTION_ID);
-  if (
-    !tab?.url ||
-    needsPostPick(tab.url) ||
-    action?.inputType !== "page-link"
-  ) {
+  if (!tab?.url || action?.inputType !== "page-link") {
+    await refusePick(session, TAB_ADDRESS_MESSAGE, LINK_ACTION_ID);
+    return;
+  }
+  if (needsPostPick(tab.url)) {
     await refusePick(session, OWN_PAGE_MESSAGE, LINK_ACTION_ID);
     return;
   }

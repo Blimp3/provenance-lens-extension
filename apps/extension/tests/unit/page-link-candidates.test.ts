@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  embedVideoUrl,
   linkCandidateFor,
   needsPostPick,
   pickedLinkUrl,
@@ -395,42 +396,112 @@ describe("download pick addresses", () => {
     return anchor;
   }
 
-  it("names a video by its place among an X post's media", () => {
+  it("keeps the plain status while a post holds one video or GIF", () => {
     const video = element("video");
     xPostWith(photo(1), photo(2), video);
-    expect(videoLinkFor(video, X_PAGE)).toBe(
+    expect(videoLinkFor(video, X_PAGE)).toBe("https://x.com/alice/status/1");
+    document.body.replaceChildren();
+
+    // X plays a GIF as a video too.
+    const gif = element("video");
+    xPostWith(photo(1), gif);
+    expect(videoLinkFor(gif, X_PAGE)).toBe("https://x.com/alice/status/1");
+    document.body.replaceChildren();
+
+    const only = element("video");
+    xPostWith(only);
+    expect(videoLinkFor(only, X_PAGE)).toBe("https://x.com/alice/status/1");
+  });
+
+  it("names a video by the place its post's photo links leave free once the post holds two", () => {
+    const first = element("video");
+    const second = element("video");
+    xPostWith(photo(1), photo(2), first, second);
+    expect(videoLinkFor(first, X_PAGE)).toBe(
       "https://x.com/alice/status/1/video/3",
+    );
+    expect(videoLinkFor(second, X_PAGE)).toBe(
+      "https://x.com/alice/status/1/video/4",
     );
     document.body.replaceChildren();
 
-    const first = element("video");
-    const second = element("video");
-    xPostWith(first, photo(2), second);
-    expect(videoLinkFor(first, X_PAGE)).toBe(
+    const lead = element("video");
+    const last = element("video");
+    xPostWith(lead, photo(2), last);
+    expect(videoLinkFor(lead, X_PAGE)).toBe(
       "https://x.com/alice/status/1/video/1",
     );
-    expect(videoLinkFor(second, X_PAGE)).toBe(
+    expect(videoLinkFor(last, X_PAGE)).toBe(
       "https://x.com/alice/status/1/video/3",
     );
   });
 
-  it("keeps the plain status for a post's only media item", () => {
-    const video = element("video");
-    xPostWith(video);
-    expect(videoLinkFor(video, X_PAGE)).toBe("https://x.com/alice/status/1");
+  it("falls back to the grid order when the photo links do not fit", () => {
+    const first = element("video");
+    const second = element("video");
+    xPostWith(photo(1), photo(1), first, second);
+    expect(videoLinkFor(first, X_PAGE)).toBe(
+      "https://x.com/alice/status/1/video/3",
+    );
+    expect(videoLinkFor(second, X_PAGE)).toBe(
+      "https://x.com/alice/status/1/video/4",
+    );
   });
 
-  it("counts only a post's own media, not a quoted post's or another status's", () => {
+  it("counts a quoted post's videos, but names a video only among its own post's media", () => {
     const quote = quoteCard();
     const quotedVideo = element("video");
     quote.append(link("https://x.com/carol/status/9", true), quotedVideo);
     const video = element("video");
     // A photo link of another status, such as a quoted post without a card.
     xPostWith(photo(1, "/carol/status/9"), quote, video);
-    expect(videoLinkFor(video, X_PAGE)).toBe("https://x.com/alice/status/1");
+    expect(videoLinkFor(video, X_PAGE)).toBe(
+      "https://x.com/alice/status/1/video/1",
+    );
     expect(videoLinkFor(quotedVideo, X_PAGE)).toBe(
       "https://x.com/carol/status/9",
     );
+  });
+
+  it("sends the outer post for a video in a quote card without its own permalink", () => {
+    const quote = quoteCard();
+    const quotedVideo = element("video");
+    quote.append(element("div", "Quoted post"), quotedVideo);
+    const video = element("video");
+    xPostWith(photo(1), video, quote);
+    expect(videoLinkFor(quotedVideo, X_PAGE)).toBe(
+      "https://x.com/alice/status/1",
+    );
+    expect(videoLinkFor(video, X_PAGE)).toBe(
+      "https://x.com/alice/status/1/video/2",
+    );
+  });
+
+  it("sends a YouTube or Vimeo embed as its video's page, and nothing for another frame", () => {
+    const base = "https://news.example/story";
+    expect(
+      [
+        "https://www.youtube.com/embed/abcdefghijk?start=10",
+        "https://www.youtube-nocookie.com/embed/abcdefghijk",
+        "//youtube.com/embed/abcdefghijk/",
+        "https://player.vimeo.com/video/76979871?h=8272103f6e",
+        "https://www.youtube.com/embed/videoseries?list=PL1",
+        "https://vimeo.com/76979871",
+        "https://www.youtube.com.evil.example/embed/abcdefghijk",
+        "https://ads.example/frame",
+        "",
+      ].map((src) => embedVideoUrl(src, base)),
+    ).toEqual([
+      "https://www.youtube.com/watch?v=abcdefghijk",
+      "https://www.youtube.com/watch?v=abcdefghijk",
+      "https://www.youtube.com/watch?v=abcdefghijk",
+      "https://vimeo.com/76979871",
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
   });
 
   it("sends a video's own link elsewhere, and the page for none", () => {

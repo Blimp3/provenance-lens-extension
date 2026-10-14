@@ -76,6 +76,11 @@ Until a later release, these rows and buttons open the Settings page in a tab:
 These keys reach only the palette. The page under it does not get them. When
 the palette closes, focus goes back to the page element that had it.
 
+Over a fullscreen video or element, Lens holds Esc with the browser's Keyboard
+Lock while the palette is open. Esc then goes back in the palette, and the
+browser asks you to press and hold Esc to leave fullscreen. Known limit: when
+the palette closes, it also ends a keyboard lock that the page itself held.
+
 ### Browser commands
 
 The browser lists these commands on its shortcuts page,
@@ -243,25 +248,33 @@ background, and the page shows its progress and result as a notice.
 ### Pick to download
 
 **Pick to download…** closes the palette and shows the download picker on the
-page: "Click an image or a video · Esc to cancel". What you click decides what
-Lens sends:
+page: "Click an image or a video · Esc to cancel". The topmost layer under the
+pointer decides what Lens sends:
 
 - **An image** (an `img`, a `picture` or a background image): the label reads
   **Image · W × H px · Send · Esc to cancel**, and Lens sends the original
   image file to DigiBot without verification.
 - **A video**: the label reads **Video · host · Send · Esc to cancel**, and
   Lens sends the video's link with the same checks and limits as **Send
-  video**. A rendered video counts with its player's controls and its poster.
-  A YouTube thumbnail in a `/watch?v=`, `/shorts/` or `youtu.be` link counts as
-  that video.
-- **X**: Lens sends a video as its post's status link. In a post with more than
-  one photo or video, Lens sends the clicked video as
+  video**. A rendered video counts with its player's controls, overlays and
+  poster. An image in a dialog or a viewer drawn over a video counts as that
+  image. A YouTube thumbnail in a `/watch?v=`, `/shorts/` or `youtu.be` link
+  counts as that video.
+- **X**: Lens sends a video as its post's status link, which DigiBot reads as
+  the post's one video or GIF. In a post with two or more videos, a quoted
+  post's counted, Lens sends the clicked video as
   `https://x.com/<user>/status/<id>/video/<n>`, where n is its place among the
-  post's photos and videos in the media grid. A photo there goes as an image.
-- **A video with no post or video link**, such as a news site's player or
-  YouTube's player on a watch page: Lens sends the page's own address. On an X
-  or YouTube listing page, the picker says "Open the video's own page, then
-  pick it".
+  post's own photos and videos. A GIF in such a post cannot be sent alone. A
+  video in a quoted post goes as that post when its card links to it, else as
+  the outer post. A photo goes as an image.
+- **An embedded YouTube or Vimeo player**: Lens sends its video's own page,
+  `https://www.youtube.com/watch?v=<id>` or `https://vimeo.com/<id>`.
+- **A video with no post or video link**, such as a news site's player,
+  YouTube's player on a watch page or another embedded player: Lens sends the
+  page's own address. On an X or YouTube listing page, the picker says "Open
+  the video's own page, then pick it". When Lens cannot read the tab's address,
+  it says "Lens cannot read this tab's address. Reload the page, then pick
+  again."
 - **A post's text or empty area**: Lens sends the post's video when the post
   shows exactly one. Otherwise the picker says "Click the image or the video
   itself". A click on nothing pickable says "Nothing to download here".

@@ -162,10 +162,13 @@ export function mountPaletteHost(
       }
     }
 
+    // A shadow root's hits also hold its host and the host's ancestors, so
+    // each root is searched once.
     function deepestElementsFromPoint(
       root: Document | ShadowRoot,
       x: number,
       y: number,
+      searched = new Set<Node>([root]),
     ): Element[] {
       const pointLookup = root as Document & {
         elementsFromPoint?: (x: number, y: number) => Element[];
@@ -187,11 +190,15 @@ export function mountPaletteHost(
       const seen = new Set<Element>();
       for (const element of elements) {
         if (!(element instanceof Element) || seen.has(element)) continue;
-        if (element instanceof HTMLElement && element.shadowRoot) {
+        const shadow =
+          element instanceof HTMLElement ? element.shadowRoot : null;
+        if (shadow && !searched.has(shadow)) {
+          searched.add(shadow);
           for (const nested of deepestElementsFromPoint(
-            element.shadowRoot,
+            shadow,
             x,
             y,
+            searched,
           )) {
             if (!seen.has(nested)) {
               seen.add(nested);
@@ -199,6 +206,7 @@ export function mountPaletteHost(
             }
           }
         }
+        if (seen.has(element)) continue;
         seen.add(element);
         flattened.push(element);
       }
@@ -213,7 +221,9 @@ export function mountPaletteHost(
      * moveBefore, which keeps the frame alive; append would reload it, and its
      * spent token would leave it blank until its port ends and it closes.
      * An open popover keeps its top-layer place, below a fullscreen element
-     * entered since, so it is hidden and shown again on top.
+     * entered since, so it is hidden and shown again on top. A page that
+     * cancels the show in beforetoggle leaves the host in its own stacking,
+     * where it can cover or mask it, so the palette closes then.
      */
     function mountOnTop(root: HTMLElement): void {
       const parent = mountParent();
@@ -226,13 +236,71 @@ export function mountPaletteHost(
       if (typeof root.showPopover !== "function") return;
       restacking = true;
       try {
-        if (root.matches(":popover-open")) root.hidePopover();
+        if (isOpenPopover(root)) root.hidePopover();
         root.showPopover();
       } catch {
-        // No popover support.
+        // The page moved the host out of the document.
       } finally {
         restacking = false;
       }
+      if (!isOpenPopover(root)) {
+        close(settled ? "closed" : "failed");
+        return;
+      }
+      lockEscape();
+    }
+
+    function isOpenPopover(root: HTMLElement): boolean {
+      try {
+        return root.matches(":popover-open");
+      } catch {
+        return false;
+      }
+    }
+
+    // Whether this host asked for a keyboard lock on Escape.
+    let escapeLocked = false;
+
+    /**
+     * Chromium leaves element fullscreen on Escape before the page sees the
+     * key unless Keyboard Lock holds it, so while the palette is open over a
+     * fullscreen element, Escape is locked: it reaches the palette, and the
+     * browser asks for a press and hold to leave fullscreen. Unlocking on
+     * close also ends a lock the page held.
+     */
+    function lockEscape(): void {
+      const keyboard = escapeKeyboard();
+      if (!document.fullscreenElement || !keyboard) return;
+      escapeLocked = true;
+      keyboard.lock(["Escape"]).catch(() => {
+        // The browser refused the lock.
+      });
+    }
+
+    function unlockEscape(): void {
+      if (!escapeLocked) return;
+      escapeLocked = false;
+      try {
+        escapeKeyboard()?.unlock();
+      } catch {
+        // Nothing was locked.
+      }
+    }
+
+    type EscapeKeyboard = {
+      lock: (codes: string[]) => Promise<void>;
+      unlock: () => void;
+    };
+
+    /** Keyboard Lock, which TypeScript's DOM types leave out. */
+    function escapeKeyboard(): EscapeKeyboard | null {
+      const { keyboard } = navigator as Navigator & {
+        keyboard?: Partial<EscapeKeyboard>;
+      };
+      return typeof keyboard?.lock === "function" &&
+        typeof keyboard.unlock === "function"
+        ? (keyboard as EscapeKeyboard)
+        : null;
     }
 
     // The host's listeners for a dialog close or a fullscreen change that
@@ -408,6 +476,7 @@ export function mountPaletteHost(
       } catch {
         // No popover support.
       }
+      unlockEscape();
       unmount(root);
       if (
         previousFocus instanceof HTMLElement &&

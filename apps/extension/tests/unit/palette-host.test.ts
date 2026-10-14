@@ -101,6 +101,7 @@ afterEach(() => {
   hostRoot()?.remove();
   delete (globalThis as Record<string, unknown>)["__provenanceLensPaletteHost"];
   delete (document as { fullscreenElement?: unknown }).fullscreenElement;
+  Reflect.deleteProperty(navigator, "keyboard");
   Reflect.deleteProperty(HTMLElement.prototype, "showPopover");
   Reflect.deleteProperty(HTMLElement.prototype, "hidePopover");
   document.body.replaceChildren();
@@ -142,6 +143,54 @@ function stubPopovers(): {
       : matches.call(this, selector);
   });
   return { calls };
+}
+
+/**
+ * Fires a cancelable beforetoggle before each show, as a browser does, and
+ * shows the popover only when no listener cancelled it.
+ */
+function cancelableShows(): void {
+  const show = Object.getOwnPropertyDescriptor(
+    HTMLElement.prototype,
+    "showPopover",
+  )?.value as (this: HTMLElement) => void;
+  Object.defineProperty(HTMLElement.prototype, "showPopover", {
+    configurable: true,
+    value(this: HTMLElement) {
+      const event = new Event("beforetoggle", { cancelable: true });
+      Object.defineProperty(event, "newState", { value: "open" });
+      if (this.dispatchEvent(event)) show.call(this);
+    },
+  });
+}
+
+/** A page listener that cancels the palette host's next shows. */
+function cancelPaletteShows(): () => void {
+  const cancel = (event: Event): void => {
+    if (
+      (event as ToggleEvent).newState === "open" &&
+      (event.target as HTMLElement).dataset["provenanceLensPalette"]
+    )
+      event.preventDefault();
+  };
+  document.addEventListener("beforetoggle", cancel, true);
+  return () => document.removeEventListener("beforetoggle", cancel, true);
+}
+
+/** Keyboard Lock's calls, on a navigator that has it. */
+function stubKeyboard(): {
+  lock: ReturnType<typeof vi.fn>;
+  unlock: ReturnType<typeof vi.fn>;
+} {
+  const keyboard = {
+    lock: vi.fn(() => Promise.resolve()),
+    unlock: vi.fn(),
+  };
+  Object.defineProperty(navigator, "keyboard", {
+    configurable: true,
+    value: keyboard,
+  });
+  return keyboard;
 }
 
 describe("palette port names", () => {
@@ -575,6 +624,68 @@ describe("the palette host's mount rule", () => {
     hostRoot()?.hidePopover();
     await Promise.resolve();
     expect(hostRoot()).toBeNull();
+  });
+
+  it("closes when the page cancels the host's show, so the worker opens the popup", async () => {
+    stubPopovers();
+    cancelableShows();
+    const stop = cancelPaletteShows();
+    await expect(mountPaletteHost(FRAME_URL, TOKEN, 1_500)).resolves.toEqual({
+      status: "failed",
+    });
+    expect(hostRoot()).toBeNull();
+    stop();
+
+    // Uncancelled, the same host opens.
+    const opened = mountPaletteHost(FRAME_URL, TOKEN, 1_500);
+    post({ lens: "ready" });
+    await expect(opened).resolves.toEqual({ status: "ready" });
+    expect(hostRoot()?.matches(":popover-open")).toBe(true);
+  });
+
+  it("closes when the page cancels the show that stacks the host on top again", async () => {
+    stubPopovers();
+    cancelableShows();
+    const opened = mountPaletteHost(FRAME_URL, TOKEN, 1_500);
+    post({ lens: "ready" });
+    await opened;
+    cancelPaletteShows();
+    fullscreen(document.documentElement);
+    document.dispatchEvent(new Event("fullscreenchange"));
+    expect(hostRoot()).toBeNull();
+    expect(ports[0]?.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("locks Escape while it is open over a fullscreen element, and unlocks on close", async () => {
+    stubPopovers();
+    const keyboard = stubKeyboard();
+    const player = document.createElement("div");
+    document.body.append(player);
+    fullscreen(player);
+    const opened = mountPaletteHost(FRAME_URL, TOKEN, 1_500);
+    post({ lens: "ready" });
+    await opened;
+    expect(keyboard.lock).toHaveBeenCalledExactlyOnceWith(["Escape"]);
+
+    // Each fullscreen change locks again, since the browser may drop it.
+    document.dispatchEvent(new Event("fullscreenchange"));
+    expect(keyboard.lock).toHaveBeenCalledTimes(2);
+    expect(keyboard.unlock).not.toHaveBeenCalled();
+
+    post({ lens: "close" });
+    expect(hostRoot()).toBeNull();
+    expect(keyboard.unlock).toHaveBeenCalledOnce();
+  });
+
+  it("leaves Keyboard Lock alone outside fullscreen", async () => {
+    stubPopovers();
+    const keyboard = stubKeyboard();
+    const opened = mountPaletteHost(FRAME_URL, TOKEN, 1_500);
+    post({ lens: "ready" });
+    await opened;
+    post({ lens: "close" });
+    expect(keyboard.lock).not.toHaveBeenCalled();
+    expect(keyboard.unlock).not.toHaveBeenCalled();
   });
 
   it("does not mount again once the palette has closed", async () => {

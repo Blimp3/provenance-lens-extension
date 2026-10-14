@@ -22,6 +22,7 @@ import {
   formatDuration,
   isDeclaredCommand,
   matchScore,
+  MEDIA_PICK_MESSAGE,
   nextTabStop,
   PALETTE_COMMANDS,
   PALETTE_OPEN_KEY,
@@ -365,6 +366,13 @@ function watchPanelVisibility(): void {
     { trackVisibility: true, delay: 100 } as IntersectionObserverInit,
   );
   observer.observe(panel);
+  // IntersectionObserver v2 does not count a zoom on the page as a
+  // transform, but the zoom resizes the frame and moves the rows under a
+  // resting pointer, so each resize restarts the visible clock.
+  window.addEventListener("resize", () => {
+    panelVisibleSince = performance.now();
+    runHeldWhenAllowed();
+  });
 }
 
 /**
@@ -552,7 +560,8 @@ function nowRows(): Row[] {
         title:
           workflow.actionId === PICK_VIDEO_ACTION_ID
             ? "Picking a post…"
-            : workflow.actionId === DOWNLOAD_ACTION_ID
+            : workflow.actionId === DOWNLOAD_ACTION_ID &&
+                workflow.message === MEDIA_PICK_MESSAGE
               ? "Picking an image or a video…"
               : "Picking an image…",
         subtitle: elapsed,
