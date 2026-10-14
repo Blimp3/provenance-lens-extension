@@ -2,16 +2,22 @@ import {
   AUDIO_ACTION_ID,
   DOWNLOAD_ACTION_ID,
   PICK_VIDEO_ACTION_ID,
-  resultLabel,
+  type ActivityEntry,
   type ExtensionMessage,
   type HistoryRecord,
   type LinkDownloadOptions,
   type WorkflowState,
 } from "@provenance-lens/shared";
 
+import { RECENT_LIMIT, recentRow } from "../activity.js";
 import { isIntegrationConnected } from "../integration-client.js";
 import { isOwnPalettePort } from "../palette-host.js";
-import { getHistory, getSettings, getWorkflowState } from "../storage.js";
+import {
+  getActivity,
+  getHistory,
+  getSettings,
+  getWorkflowState,
+} from "../storage.js";
 import {
   ALIAS_RULE,
   checkAlias,
@@ -85,12 +91,12 @@ type FrameData = {
   shortcuts: ReadonlyMap<string, string>;
   workflow: WorkflowState | null;
   history: readonly HistoryRecord[];
+  activity: readonly ActivityEntry[];
 };
 
 /** A job or footer message older than this is stale. */
 const FRESH_MS = 120_000;
 const SAVED_NOTE_MS = 2_500;
-const RECENT_LIMIT = 8;
 const RUNNING: ReadonlySet<WorkflowState["status"]> = new Set([
   "picking",
   "retrieving",
@@ -242,6 +248,7 @@ async function loadData(): Promise<FrameData> {
     downloadAccess,
     workflow,
     history,
+    activity,
     prefs,
     commands,
   ] = await Promise.all([
@@ -252,6 +259,7 @@ async function loadData(): Promise<FrameData> {
       .catch(() => false),
     getWorkflowState().catch(() => null),
     getHistory().catch(() => [] as HistoryRecord[]),
+    getActivity().catch(() => [] as ActivityEntry[]),
     chrome.storage.local
       .get(PALETTE_PREFS_KEY)
       .then((values) => values[PALETTE_PREFS_KEY])
@@ -281,6 +289,7 @@ async function loadData(): Promise<FrameData> {
     shortcuts,
     workflow,
     history,
+    activity,
   };
 }
 
@@ -525,17 +534,17 @@ function searchView(query: string): BuiltView {
       ...(alias ? { alias } : {}),
     };
   });
-  const results = recentRecords().map((saved) => ({
-    id: saved.id,
-    title: resultLabel(saved.result, saved.mediaKind),
-    saved,
+  const results = recentActivity().map((entry) => ({
+    id: entry.id,
+    title: [entry.title, entry.message].filter(Boolean).join(" · "),
+    entry,
   }));
   const built = [
     ...rankRows(query, commands, prefs.lastUsed).map(({ entry }) =>
       commandRow(entry, "Commands"),
     ),
-    ...rankRows(query, results, []).map(({ saved }) =>
-      recordRow(saved, "Results"),
+    ...rankRows(query, results, []).map(({ entry }) =>
+      activityRow(entry, "Recent"),
     ),
   ];
   return numbered({
@@ -731,16 +740,13 @@ function audioRangeView(): BuiltView {
 }
 
 function recentView(): BuiltView {
-  const saved = recentRecords();
-  const built = saved.map((entry) => recordRow(entry, "Saved results"));
+  const recent = recentActivity();
+  const built = recent.map((entry) => activityRow(entry, "Actions"));
   const history = paletteCommand("open-history");
   if (history) built.push(commandRow(history, "More"));
   return numbered({
     rows: built,
-    notes: [
-      ...(saved.length === 0 ? ["No saved results yet."] : []),
-      "DigiBot checks and sends are listed in Result history.",
-    ],
+    notes: recent.length === 0 ? ["No actions yet."] : [],
   });
 }
 
@@ -824,35 +830,37 @@ function commandRow(
   return row;
 }
 
-function recordRow(saved: HistoryRecord, group: string): Row {
-  const verdict = saved.result.verdict;
-  return {
+/** One started action, with its kind icon and its state. */
+function activityRow(entry: ActivityEntry, group: string): Row {
+  const history = data?.history ?? [];
+  const shown = recentRow(
+    entry,
+    new Set(history.map(({ id }) => id)),
+    timeAgo(entry.startedAt),
+  );
+  const row: Row = {
     group,
-    title: resultLabel(saved.result, saved.mediaKind),
-    subtitle: [
-      saved.sourceHostname || "Local file",
-      timeAgo(saved.createdAt),
-      saved.mediaKind === "audio"
-        ? "Audio file"
-        : saved.inputKind === "screenshot_copy"
-          ? "Screenshot copy"
-          : "Original image",
-    ].join(" · "),
-    dot:
-      saved.errorCode !== null || verdict === "indeterminate"
-        ? "danger"
-        : verdict === "openai_signal_detected"
-          ? "ok"
-          : "neutral",
-    trailing: "↗",
+    title: shown.title,
+    subtitle: shown.subtitle,
+    warn: shown.warn,
+    icon: shown.icon,
+    value: shown.state,
     verb: "Open",
-    record: saved,
-    run: () => openDetails(saved),
   };
+  const open = shown.open;
+  if (open === null) return row;
+  if (open.page === "address")
+    return { ...row, trailing: "↗", run: () => openAddress(open.url) };
+  if (open.page === "history")
+    return { ...row, trailing: "↗", run: () => openTab("history") };
+  const saved = history.find(({ id }) => id === open.recordId);
+  return saved
+    ? { ...row, trailing: "↗", record: saved, run: () => openDetails(saved) }
+    : row;
 }
 
-function recentRecords(): HistoryRecord[] {
-  return (data?.history ?? []).slice(0, RECENT_LIMIT);
+function recentActivity(): readonly ActivityEntry[] {
+  return (data?.activity ?? []).slice(0, RECENT_LIMIT);
 }
 
 function runningVerification(): boolean {
@@ -951,6 +959,18 @@ async function openTab(page: TabPage): Promise<void> {
     : chrome.runtime.getURL(target);
   try {
     await chrome.tabs.create({ url });
+  } catch {
+    footerError = "The page could not be opened.";
+    renderFooter();
+    return;
+  }
+  close();
+}
+
+/** The address a page link sent, in a new tab. */
+async function openAddress(address: string): Promise<void> {
+  try {
+    await chrome.tabs.create({ url: address });
   } catch {
     footerError = "The page could not be opened.";
     renderFooter();

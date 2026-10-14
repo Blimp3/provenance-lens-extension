@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   runIntegratedAudioFileAction: vi.fn(),
   runIntegratedAudioSegmentAction: vi.fn(),
+  startActivity: vi.fn(),
+  updateActivity: vi.fn(),
   updateSettings: vi.fn(),
   verifyAudioFile: vi.fn(),
 }));
@@ -25,6 +27,8 @@ vi.mock("../../src/integration-client.js", () => ({
 vi.mock("../../src/storage.js", () => ({
   appendHistory: mocks.appendHistory,
   getSettings: mocks.getSettings,
+  startActivity: mocks.startActivity,
+  updateActivity: mocks.updateActivity,
   updateSettings: mocks.updateSettings,
 }));
 
@@ -146,6 +150,8 @@ describe("audio check authorization", () => {
     mocks.getIntegrationSession.mockReset().mockResolvedValue(null);
     mocks.runIntegratedAudioFileAction.mockReset();
     mocks.runIntegratedAudioSegmentAction.mockReset();
+    mocks.startActivity.mockReset().mockResolvedValue(undefined);
+    mocks.updateActivity.mockReset().mockResolvedValue(undefined);
     Object.defineProperty(globalThis, "chrome", {
       configurable: true,
       value: { runtime: { openOptionsPage: vi.fn() } },
@@ -184,6 +190,26 @@ describe("audio check authorization", () => {
     );
     expect(authorization?.hidden).toBe(true);
     expect((checkbox as HTMLInputElement).required).toBe(false);
+    // Recent lists the check with its saved record.
+    expect(mocks.startActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Verify an audio file",
+        kind: "verify",
+        pageUrl: null,
+        state: "running",
+      }),
+      20,
+    );
+    const entryId = (
+      mocks.startActivity.mock.calls[0]?.[0] as { id: string } | undefined
+    )?.id;
+    await vi.waitFor(() =>
+      expect(mocks.updateActivity).toHaveBeenCalledWith(entryId, {
+        state: "done",
+        message: "OpenAI audio signal detected",
+        recordId: record.id,
+      }),
+    );
   });
 
   it("keeps the API-only action blocked in Website mode and shows Settings", async () => {
@@ -209,6 +235,8 @@ describe("audio check authorization", () => {
     );
     expect(mocks.updateSettings).not.toHaveBeenCalled();
     expect(mocks.verifyAudioFile).not.toHaveBeenCalled();
+    // A form the page refused never ran, so Recent lists nothing.
+    expect(mocks.startActivity).not.toHaveBeenCalled();
   });
   it("shows the connected check as complete once its verdict is saved", async () => {
     mocks.getSettings.mockResolvedValue(apiSettings);
@@ -248,6 +276,11 @@ describe("audio check authorization", () => {
       "Detected signals: SynthID.",
     );
     expect(mocks.verifyAudioFile).not.toHaveBeenCalled();
+    expect(mocks.updateActivity).toHaveBeenCalledWith(expect.any(String), {
+      state: "done",
+      message: "OpenAI audio signal detected",
+      operationId: "323e4567-e89b-42d3-a456-426614174000",
+    });
   });
 
   it("shows the segment check as complete once its verdict is saved", async () => {
@@ -292,5 +325,18 @@ describe("audio check authorization", () => {
     );
     expect(mocks.runIntegratedAudioFileAction).not.toHaveBeenCalled();
     expect(mocks.verifyAudioFile).not.toHaveBeenCalled();
+    expect(mocks.startActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Verify a video's audio",
+        kind: "verify",
+        pageUrl: "https://video.example/watch?v=fixture",
+      }),
+      20,
+    );
+    expect(mocks.updateActivity).toHaveBeenCalledWith(expect.any(String), {
+      state: "done",
+      message: "OpenAI audio signal detected",
+      operationId: "423e4567-e89b-42d3-a456-426614174000",
+    });
   });
 });

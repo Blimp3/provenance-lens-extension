@@ -206,14 +206,33 @@ test("loads the unpacked extension settings page", async () => {
       manualFallbackAvailable: false,
       screenshotFallbackAvailable: false,
     };
-    await settingsPage.evaluate(async (savedRecord) => {
-      await chrome.storage.local.set({
-        "provenanceLens.history": [savedRecord],
-      });
-      await chrome.storage.session.set({
-        "provenanceLens.latest": savedRecord,
-      });
-    }, record);
+    // Recent lists the action that saved it.
+    const started = {
+      id: "523e4567-e89b-42d3-a456-426614174000",
+      title: "Pick an image to verify",
+      kind: "verify",
+      tabId: 7,
+      pageTitle: null,
+      pageUrl: "https://page.example/",
+      linkUrl: null,
+      startedAt: "2026-09-02T14:46:49.000Z",
+      state: "done",
+      message: "OpenAI provenance detected",
+      operationId: null,
+      recordId: resultId,
+    };
+    await settingsPage.evaluate(
+      async ({ savedRecord, entry }) => {
+        await chrome.storage.local.set({
+          "provenanceLens.history": [savedRecord],
+          "provenanceLens.activity": [entry],
+        });
+        await chrome.storage.session.set({
+          "provenanceLens.latest": savedRecord,
+        });
+      },
+      { savedRecord: record, entry: started },
+    );
 
     // The palette in a tab opens a saved result from its Recent view.
     const palette = await openPaletteTab(context, extensionId);
@@ -261,6 +280,199 @@ test("loads the unpacked extension settings page", async () => {
       ),
     ).toBe(true);
     await historyPage.close();
+  } finally {
+    await context.close();
+  }
+});
+
+test("Recent lists the newest eight actions and opens what each left", async () => {
+  const extensionPath = resolve(process.cwd(), "dist");
+  const context = await chromium.launchPersistentContext(
+    test.info().outputPath("profile"),
+    {
+      channel: "chromium",
+      headless: true,
+      args: [
+        `--disable-extensions-except=${extensionPath}`,
+        `--load-extension=${extensionPath}`,
+      ],
+    },
+  );
+  // The page a page link sent; nothing leaves the test.
+  await context.route(/^https?:\/\//u, (route) =>
+    route.request().url().startsWith("https://page.example/")
+      ? route.fulfill({
+          contentType: "text/html",
+          body: "<title>Sent page</title>",
+        })
+      : route.abort(),
+  );
+  try {
+    const serviceWorker =
+      context.serviceWorkers()[0] ??
+      (await context.waitForEvent("serviceworker"));
+    const extensionId = new URL(serviceWorker.url()).hostname;
+    const recordId = "623e4567-e89b-42d3-a456-426614174000";
+    const record = {
+      id: recordId,
+      actionId: "verify-openai-provenance",
+      createdAt: "2026-10-14T20:00:00.000Z",
+      sourceHostname: "page.example",
+      pageTitle: null,
+      inputKind: "original_file",
+      imageSha256: "0".repeat(64),
+      result: {
+        verdict: "no_supported_openai_signal",
+        summary: "No supported signal.",
+        signals: [],
+        warnings: [],
+        checkedAt: "2026-10-14T20:00:00.000Z",
+        requestId: recordId,
+      },
+      cache: null,
+      errorCode: null,
+      manualFallbackAvailable: false,
+      screenshotFallbackAvailable: false,
+    };
+    const entry = (
+      index: number,
+      fields: Record<string, unknown>,
+    ): Record<string, unknown> => ({
+      id: `7${String(index)}3e4567-e89b-42d3-a456-426614174000`,
+      tabId: 7,
+      pageTitle: null,
+      pageUrl: "https://page.example/watch",
+      linkUrl: null,
+      startedAt: new Date(Date.now() - index * 60_000).toISOString(),
+      message: null,
+      operationId: null,
+      recordId: null,
+      ...fields,
+    });
+    const operationId = "823e4567-e89b-42d3-a456-426614174000";
+    const entries = [
+      entry(0, {
+        title: "Send video",
+        kind: "page-link",
+        linkUrl: "https://page.example/sent?x=1",
+        state: "sent",
+        operationId,
+      }),
+      entry(1, {
+        title: "Send this image to Telegram",
+        kind: "image",
+        pageTitle: "Image page",
+        state: "refused",
+        message: "Connect Provenance Lens to DigiBot in Settings first.",
+      }),
+      entry(2, {
+        title: "Pick an image to verify",
+        kind: "verify",
+        state: "done",
+        message: "No supported OpenAI signal detected",
+        recordId,
+      }),
+      entry(3, { title: "Send voice note", kind: "voice", state: "sent" }),
+      entry(4, {
+        title: "Send audio file",
+        kind: "audio-file",
+        state: "failed",
+        message: "DigiBot could not reach the source.",
+      }),
+      entry(5, {
+        title: "Send clip of this page",
+        kind: "clip",
+        state: "sent",
+      }),
+      entry(6, {
+        title: "Pick to download",
+        kind: "video",
+        linkUrl: "https://x.com/alice/status/1",
+        state: "sent",
+        operationId,
+      }),
+      entry(7, {
+        title: "Check with Google SynthID",
+        kind: "verify",
+        state: "running",
+      }),
+      entry(8, { title: "Oldest action", kind: "verify", state: "done" }),
+    ];
+    const setup = await context.newPage();
+    await setup.goto(`chrome-extension://${extensionId}/settings.html`);
+    await setup.evaluate(
+      async ({ saved, activity }) => {
+        await chrome.storage.local.set({
+          "provenanceLens.history": [saved],
+          "provenanceLens.activity": activity,
+        });
+      },
+      { saved: record, activity: entries },
+    );
+
+    const openRecent = async (): Promise<Page> => {
+      const palette = await openPaletteTab(context, extensionId);
+      await palette.getByRole("option", { name: /^Recent/u }).click();
+      await expect(palette.locator("#chip")).toHaveText("Recent");
+      return palette;
+    };
+    const palette = await openRecent();
+    const rows = palette.getByRole("option");
+    // The eight newest, then Result history under More.
+    await expect(rows).toHaveCount(9);
+    await expect(rows.nth(0)).toContainText("Send video");
+    await expect(rows.nth(0)).toContainText("page.example");
+    await expect(rows.nth(0)).toContainText("Sent");
+    await expect(rows.nth(1)).toContainText(
+      "Connect Provenance Lens to DigiBot in Settings first. · Image page",
+    );
+    await expect(rows.nth(1)).toContainText("Refused");
+    await expect(rows.nth(2)).toContainText(
+      "No supported OpenAI signal detected",
+    );
+    await expect(rows.nth(2)).toContainText("Done");
+    await expect(rows.nth(4)).toContainText("Failed");
+    await expect(rows.nth(7)).toContainText("Check with Google SynthID");
+    await expect(rows.nth(7)).toContainText("Started");
+    await expect(rows.nth(8)).toContainText("Result history");
+    await expect(palette.getByText("Oldest action")).toHaveCount(0);
+    const icons = await palette
+      .locator('[role="option"] .row-icon use')
+      .evaluateAll((uses) => uses.map((use) => use.getAttribute("href")));
+    expect(icons.slice(0, 8)).toEqual([
+      "#i-link",
+      "#i-image",
+      "#i-shield-check",
+      "#i-mic",
+      "#i-music",
+      "#i-scissors",
+      "#i-film",
+      "#i-shield-check",
+    ]);
+
+    // ↵ on a page link opens the address it sent.
+    const sentPromise = context.waitForEvent("page");
+    await rows.nth(0).click();
+    const sentPage = await sentPromise;
+    await expect(sentPage).toHaveURL("https://page.example/sent?x=1");
+    await sentPage.close();
+
+    // On a DigiBot send, Result history.
+    const imageRow = (await openRecent()).getByRole("option").nth(1);
+    const historyPromise = context.waitForEvent("page");
+    await imageRow.click();
+    const historyPage = await historyPromise;
+    await expect(historyPage).toHaveURL(/\/history\.html$/u);
+    await historyPage.close();
+
+    // On a Verify entry, its details.
+    const verifyRow = (await openRecent()).getByRole("option").nth(2);
+    const detailsPromise = context.waitForEvent("page");
+    await verifyRow.click();
+    const detailsPage = await detailsPromise;
+    await expect(detailsPage).toHaveURL(
+      new RegExp(`/details\\.html\\?id=${recordId}$`, "u"),
+    );
   } finally {
     await context.close();
   }

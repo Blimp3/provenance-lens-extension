@@ -76,10 +76,11 @@ export type ActionDefinition = ActionDescription &
     | {
         id: typeof LINK_ACTION_ID;
         inputType: "page-link";
+        // Resolves to the DigiBot operation id it sent.
         handler: (
           page: PageLinkSource,
           options?: LinkDownloadOptions,
-        ) => Promise<void>;
+        ) => Promise<string | void>;
       }
     | {
         id: typeof PICK_VIDEO_ACTION_ID;
@@ -87,7 +88,7 @@ export type ActionDefinition = ActionDescription &
         handler: (
           page: PageLinkSource,
           options?: LinkDownloadOptions,
-        ) => Promise<void>;
+        ) => Promise<string | void>;
       }
   );
 

@@ -1,10 +1,11 @@
-import type { HistoryRecord } from "@provenance-lens/shared";
+import type { ActivityEntry, HistoryRecord } from "@provenance-lens/shared";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   appendHistory,
   clearHistory,
   defaultSettings,
+  getActivity,
   getHistory,
   getLatestRecord,
   getResult,
@@ -13,6 +14,8 @@ import {
   replaceHistoryRecord,
   STORAGE_KEYS,
   saveSettings,
+  startActivity,
+  updateActivity,
 } from "../../src/storage.js";
 
 type MemoryArea = {
@@ -338,5 +341,76 @@ describe("history and transient latest retention", () => {
     await expect(getHistory()).resolves.toEqual([]);
     await expect(getLatestRecord()).resolves.toBeNull();
     await expect(replaceHistoryRecord(replacement)).resolves.toBe(false);
+  });
+});
+
+describe("Recent's activity list", () => {
+  beforeEach(() => {
+    installStorageMocks();
+  });
+
+  function started(index: number): ActivityEntry {
+    return {
+      id: `423e4567-e89b-42d3-a456-4266141740${String(index).padStart(2, "0")}`,
+      title: "Send video",
+      kind: "page-link",
+      tabId: 7,
+      pageTitle: null,
+      pageUrl: "https://page.example/",
+      linkUrl: null,
+      startedAt: "2026-10-14T20:00:00.000Z",
+      state: "running",
+      message: null,
+      operationId: null,
+      recordId: null,
+    };
+  }
+
+  it("keeps as many entries as history keeps records, newest first", async () => {
+    for (let index = 0; index < 12; index += 1)
+      await startActivity(started(index), 10);
+    const kept = await getActivity();
+    expect(kept.map(({ id }) => id)).toEqual(
+      Array.from({ length: 10 }, (_, offset) => started(11 - offset).id),
+    );
+  });
+
+  it("keeps nothing with history off", async () => {
+    await startActivity(started(0), 20);
+    await startActivity(started(1), 0);
+    await expect(getActivity()).resolves.toEqual([]);
+    expect(currentLocal.values[STORAGE_KEYS.activity]).toBeUndefined();
+  });
+
+  it("changes an entry only while it runs", async () => {
+    await startActivity(started(0), 20);
+    await updateActivity(started(0).id, {
+      kind: "video",
+      linkUrl: "https://x.com/alice/status/1",
+    });
+    await updateActivity(started(0).id, {
+      state: "failed",
+      message: `  Line one\nline two ${"x".repeat(300)}`,
+    });
+    // An ended entry keeps its state; an unknown one changes nothing.
+    await updateActivity(started(0).id, { state: "sent" });
+    await updateActivity(started(1).id, { state: "sent" });
+    const [only, ...rest] = await getActivity();
+    expect(rest).toEqual([]);
+    expect(only).toMatchObject({
+      kind: "video",
+      linkUrl: "https://x.com/alice/status/1",
+      state: "failed",
+    });
+    expect(only?.message).toMatch(/^Line one line two x+$/u);
+    expect(only?.message).toHaveLength(180);
+  });
+
+  it("is cleared with history", async () => {
+    await startActivity(started(0), 20);
+    await appendHistory(record, 20);
+    await clearHistory();
+    await expect(getActivity()).resolves.toEqual([]);
+    await expect(getHistory()).resolves.toEqual([]);
   });
 });

@@ -1283,12 +1283,14 @@ describe("connected page link action", () => {
       sendPageLink,
     } = await import("../../src/actions/integration-link.js");
 
-    await expect(sendPageLink({ url: pageUrl })).resolves.toBeUndefined();
+    const operationId = await sendPageLink({ url: pageUrl });
 
     expect(routes(calls)).toEqual(["POST /link-downloads"]);
     const body = jsonBody<Record<string, unknown>>(calls[0]);
     expect(Object.keys(body).sort()).toEqual(["operationId", "sourceUrl"]);
     expect(String(body["operationId"])).toMatch(uuidPattern);
+    // Recent keeps the operation id the request carried.
+    expect(operationId).toBe(body["operationId"]);
     expect(body["sourceUrl"]).toBe(pageUrl);
     expect(calls[0]?.headers.get("Authorization")).toBe(
       `Bearer ${session.accessToken}`,

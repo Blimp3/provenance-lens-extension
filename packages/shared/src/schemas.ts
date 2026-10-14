@@ -853,3 +853,50 @@ export const WorkflowStateSchema = z
   })
   .strict();
 export type WorkflowState = z.infer<typeof WorkflowStateSchema>;
+
+/**
+ * What one Recent entry sent or checked: the media, the output of a link
+ * send, or a check.
+ */
+export const ActivityKindSchema = z.enum([
+  "image",
+  "video",
+  "audio-file",
+  "voice",
+  "page-link",
+  "verify",
+  "clip",
+]);
+export type ActivityKind = z.infer<typeof ActivityKindSchema>;
+
+/** "running" until the action ends; then it never changes again. */
+export const ActivityStateSchema = z.enum([
+  "running",
+  "sent",
+  "done",
+  "failed",
+  "refused",
+]);
+export type ActivityState = z.infer<typeof ActivityStateSchema>;
+
+/** One action the user started, as Recent lists it; stored locally only. */
+export const ActivityEntrySchema = z
+  .object({
+    id: z.string().uuid(),
+    title: z.string().trim().min(1).max(80),
+    kind: ActivityKindSchema,
+    tabId: z.number().int().nonnegative().nullable(),
+    pageTitle: z.string().trim().max(256).nullable(),
+    // The http(s) page address without its fragment; null for an extension
+    // page such as the audio check.
+    pageUrl: z.string().max(2_048).nullable(),
+    // The address a link send sent.
+    linkUrl: z.string().max(2_048).nullable(),
+    startedAt: z.iso.datetime({ offset: true }),
+    state: ActivityStateSchema,
+    message: z.string().trim().max(180).nullable(),
+    operationId: z.string().uuid().nullable(),
+    recordId: z.string().uuid().nullable(),
+  })
+  .strict();
+export type ActivityEntry = z.infer<typeof ActivityEntrySchema>;

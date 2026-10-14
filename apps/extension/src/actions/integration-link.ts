@@ -39,12 +39,13 @@ export class PageLinkError extends Error {
  * Sends only the current page's HTTP(S) address, with the audio output or clip
  * range when asked, over the connected session. DigiBot fetches the media
  * itself and posts the result in that account's own Telegram chat, so nothing
- * is stored locally and there is nothing to poll.
+ * is stored locally and there is nothing to poll. Resolves to the operation
+ * id sent, which Recent keeps.
  */
 export async function sendPageLink(
   page: PageLinkSource,
   options: LinkDownloadOptions = {},
-): Promise<void> {
+): Promise<string> {
   try {
     const session = await getIntegrationSession();
     if (!session)
@@ -58,13 +59,15 @@ export async function sendPageLink(
     if (!parsedOptions.success)
       throw new PageLinkError(PAGE_LINK_OPTIONS_MESSAGE);
     await setPageLinkWorkflow("sending", PAGE_LINK_SENDING_MESSAGE);
+    const operationId = crypto.randomUUID();
     await createLinkDownload(
-      crypto.randomUUID(),
+      operationId,
       sourceUrl,
       { accountId: session.accountId, sessionId: session.sessionId },
       parsedOptions.data,
     );
     await setPageLinkWorkflow("idle", PAGE_LINK_QUEUED_MESSAGE);
+    return operationId;
   } catch (error: unknown) {
     await setPageLinkWorkflow("error", pageLinkErrorMessage(error)).catch(
       () => undefined,

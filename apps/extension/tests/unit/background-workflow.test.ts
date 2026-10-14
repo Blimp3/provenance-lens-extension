@@ -7,6 +7,7 @@ import {
   PICK_VIDEO_ACTION_ID,
   SYNTHID_ACTION_ID,
   makeIndeterminateResult,
+  type ActivityEntry,
 } from "@provenance-lens/shared";
 import { Blob as NodeBlob } from "node:buffer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,7 +32,11 @@ const mocks = vi.hoisted(() => ({
   isIntegrationConnected: vi.fn(),
   runIntegratedImageAction: vi.fn(),
   runIntegratedAudioSegmentAction: vi.fn(),
+  startActivity: vi.fn(),
+  updateActivity: vi.fn(),
 }));
+/** Recent's list as the worker wrote it, newest first. */
+const recent = vi.hoisted(() => ({ entries: [] as ActivityEntry[] }));
 
 vi.mock("../../src/actions/registry.js", () => ({
   getActionDefinition: mocks.getActionDefinition,
@@ -67,6 +72,8 @@ vi.mock("../../src/storage.js", () => ({
   getSynthIdDisclosureVersion: mocks.getSynthIdDisclosureVersion,
   setSynthIdDisclosureVersion: mocks.setSynthIdDisclosureVersion,
   setWorkflowState: mocks.setWorkflowState,
+  startActivity: mocks.startActivity,
+  updateActivity: mocks.updateActivity,
   updateSettings: mocks.updateSettings,
 }));
 
@@ -310,6 +317,24 @@ function setupMocks() {
   mocks.getSynthIdDisclosureVersion.mockResolvedValue(null);
   mocks.setSynthIdDisclosureVersion.mockResolvedValue(undefined);
   mocks.isIntegrationConnected.mockResolvedValue(false);
+  // The list's own rules (retention, ended entries) are storage.test.ts's.
+  recent.entries = [];
+  mocks.startActivity.mockImplementation(
+    (entry: ActivityEntry, retention: number) => {
+      recent.entries = retention === 0 ? [] : [entry, ...recent.entries];
+      return Promise.resolve();
+    },
+  );
+  mocks.updateActivity.mockImplementation(
+    (id: string, update: Partial<ActivityEntry>) => {
+      recent.entries = recent.entries.map((entry) =>
+        entry.id === id && entry.state === "running"
+          ? { ...entry, ...update }
+          : entry,
+      );
+      return Promise.resolve();
+    },
+  );
   let recordIndex = 0;
   mocks.createHistoryRecord.mockImplementation(
     (
@@ -1268,12 +1293,14 @@ describe("background verification workflow boundaries", () => {
     connectedVideoPick(firstWorker);
     await loadBackground();
     const sessionToken = await startVideoPick(firstWorker, { output: "mp3" });
+    const activityId = recent.entries[0]?.id;
     expect(store.get(LINK_PICKER_SESSIONS_KEY)).toEqual({
       [sessionToken]: {
         sessionToken,
         tabId: TAB_ID,
         frameId: 0,
         documentId: DOCUMENT_ID,
+        activityId,
         mode: "link",
         options: { output: "mp3" },
       },
@@ -1309,6 +1336,15 @@ describe("background verification workflow boundaries", () => {
     });
     expect(tabMessages(restarted, "picker-stop")).toHaveLength(1);
     expect(store.get(LINK_PICKER_SESSIONS_KEY)).toEqual({});
+    // The restarted worker ends the entry the first one started.
+    expect(recent.entries).toEqual([
+      expect.objectContaining({
+        id: activityId,
+        kind: "audio-file",
+        linkUrl: PICKED_URL,
+        state: "sent",
+      }),
+    ]);
 
     // Consumed: a replay, even after another restart, sends nothing more.
     listener(picked, pickerSender());
@@ -1436,6 +1472,7 @@ describe("background verification workflow boundaries", () => {
       tabId: TAB_ID,
       frameId: 0,
       documentId: DOCUMENT_ID,
+      activityId: recent.entries[0]?.id,
       mode: "link",
       options: {},
     });
@@ -1545,6 +1582,7 @@ describe("background verification workflow boundaries", () => {
         tabId: TAB_ID,
         frameId: 0,
         documentId: DOCUMENT_ID,
+        activityId: recent.entries[0]?.id,
         mode: "link",
         options: {},
       },
@@ -1954,6 +1992,7 @@ describe("background verification workflow boundaries", () => {
         tabId: TAB_ID,
         frameId: 0,
         documentId: DOCUMENT_ID,
+        activityId: recent.entries[0]?.id,
         mode: "media",
         trigger: "popup",
         verificationMode: "api",
@@ -2776,7 +2815,7 @@ describe("the Lens palette in the worker", () => {
       ["lens-media-open", "Lens palette for this video…"],
       ["lens-open", "Open Lens palette"],
       ["lens-act-settings", "Settings…"],
-      ["lens-act-recent", "Recent results…"],
+      ["lens-act-recent", "Recent actions…"],
       ["lens-act-history", "Result history"],
     ]);
     // An image shows three items under one parent.
@@ -3212,4 +3251,359 @@ describe("the Lens palette in the worker", () => {
       actions: ["history"],
     });
   });
+});
+
+describe("Recent's activity list", () => {
+  const OPERATION_ID = "323e4567-e89b-42d3-a456-426614174000";
+  const VIDEO_URL = "https://www.youtube.com/watch?v=abcdefghijk";
+
+  beforeEach(() => {
+    vi.resetModules();
+    setupMocks();
+  });
+
+  function listenerOf(chromeState: ReturnType<typeof setupChrome>) {
+    return chromeState.onMessage.addListener.mock.calls[0]?.[0] as (
+      message: unknown,
+      sender: chrome.runtime.MessageSender,
+    ) => void;
+  }
+
+  function menuClick(
+    chromeState: ReturnType<typeof setupChrome>,
+    info: Partial<chrome.contextMenus.OnClickData>,
+  ): void {
+    const listener = chromeState.onContextMenuClicked.addListener.mock
+      .calls[0]?.[0] as (
+      info: chrome.contextMenus.OnClickData,
+      tab: chrome.tabs.Tab,
+    ) => void;
+    listener(
+      { frameId: 0, ...info } as chrome.contextMenus.OnClickData,
+      {
+        id: TAB_ID,
+        url: PAGE_URL,
+        title: "A page",
+        windowId: WINDOW_ID,
+      } as chrome.tabs.Tab,
+    );
+  }
+
+  function start(
+    chromeState: ReturnType<typeof setupChrome>,
+    actionId: string,
+    options?: Record<string, unknown>,
+  ): void {
+    listenerOf(chromeState)(
+      {
+        type: "start-action",
+        actionId,
+        trigger: "popup",
+        ...(options ? { options } : {}),
+      },
+      extensionPageSender("palette.html"),
+    );
+  }
+
+  const pickerSender = (): chrome.runtime.MessageSender => ({
+    tab: { id: TAB_ID } as chrome.tabs.Tab,
+    frameId: 0,
+    documentId: DOCUMENT_ID,
+    url: PAGE_URL,
+  });
+
+  /** A browser whose page accepts the picker, with every action routed. */
+  function connected(chromeState: ReturnType<typeof setupChrome>) {
+    chromeState.setBadgeText.mockResolvedValue(undefined);
+    chromeState.executeScript.mockResolvedValue([
+      { frameId: 0, documentId: DOCUMENT_ID },
+    ]);
+    mocks.isIntegrationConnected.mockResolvedValue(true);
+    const sent = {
+      page: vi.fn().mockResolvedValue(OPERATION_ID),
+      video: vi.fn().mockResolvedValue(OPERATION_ID),
+    };
+    mocks.getActionDefinition.mockImplementation((actionId: string) =>
+      actionId === LINK_ACTION_ID
+        ? { inputType: "page-link", handler: sent.page }
+        : actionId === PICK_VIDEO_ACTION_ID
+          ? { inputType: "video-pick", handler: sent.video }
+          : { inputType: "image-file", handler: mocks.actionHandler },
+    );
+    return sent;
+  }
+
+  async function armedPick(
+    chromeState: ReturnType<typeof setupChrome>,
+  ): Promise<string> {
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "picker-start")).toHaveLength(1),
+    );
+    return tabMessages(chromeState, "picker-start")[0]?.[
+      "sessionToken"
+    ] as string;
+  }
+
+  async function onlyEntry(match: Partial<ActivityEntry>): Promise<void> {
+    await vi.waitFor(() =>
+      expect(recent.entries).toEqual([expect.objectContaining(match)]),
+    );
+  }
+
+  it.each([
+    { options: undefined, title: "Send video", kind: "page-link" },
+    { options: { output: "voice" }, title: "Send voice note", kind: "voice" },
+    {
+      options: { output: "m4a" },
+      title: "Send audio file",
+      kind: "audio-file",
+    },
+    {
+      options: { startSeconds: 5, endSeconds: 9 },
+      title: "Send clip of this page",
+      kind: "clip",
+    },
+  ])(
+    "writes one $kind entry for $title and ends it as sent",
+    async ({ options, title, kind }) => {
+      const chromeState = setupChrome();
+      const sent = connected(chromeState);
+      await loadBackground();
+
+      start(chromeState, LINK_ACTION_ID, options);
+
+      await waitForCall(sent.page, 1);
+      await onlyEntry({ state: "sent" });
+      const { id, startedAt, ...entry } = recent.entries[0] ?? {};
+      expect(id).toMatch(/^[0-9a-f-]{36}$/u);
+      expect(Date.parse(startedAt ?? "")).not.toBeNaN();
+      expect(entry).toEqual({
+        title,
+        kind,
+        tabId: TAB_ID,
+        pageTitle: null,
+        pageUrl: PAGE_URL,
+        linkUrl: PAGE_URL,
+        state: "sent",
+        message: "Queued in DigiBot. The result arrives in your Telegram chat.",
+        operationId: OPERATION_ID,
+        recordId: null,
+      });
+      expect(mocks.startActivity).toHaveBeenCalledTimes(1);
+      expect(mocks.startActivity).toHaveBeenCalledWith(
+        expect.objectContaining({ state: "running", kind }),
+        20,
+      );
+    },
+  );
+
+  it("names a key's start after its palette row", async () => {
+    const chromeState = setupChrome();
+    connected(chromeState);
+    await loadBackground();
+
+    const onCommand = chromeState.onCommand.addListener.mock.calls[0]?.[0] as (
+      command: string,
+      tab?: chrome.tabs.Tab,
+    ) => void;
+    onCommand("send-page-audio");
+
+    await onlyEntry({ title: "Send voice note", kind: "voice", state: "sent" });
+  });
+
+  it("turns a download pick into a video or a page-link entry at the click", async () => {
+    for (const [picked, kind, linkUrl] of [
+      [{ type: "picker-link-selected", url: VIDEO_URL }, "video", VIDEO_URL],
+      [{ type: "picker-page-selected" }, "page-link", PAGE_URL],
+    ] as const) {
+      vi.resetModules();
+      setupMocks();
+      const chromeState = setupChrome();
+      connected(chromeState);
+      await loadBackground();
+
+      start(chromeState, DOWNLOAD_ACTION_ID);
+      const sessionToken = await armedPick(chromeState);
+      await onlyEntry({
+        title: "Pick to download",
+        kind: "image",
+        state: "running",
+      });
+      listenerOf(chromeState)({ ...picked, sessionToken }, pickerSender());
+
+      await onlyEntry({
+        kind,
+        linkUrl,
+        state: "sent",
+        operationId: OPERATION_ID,
+      });
+    }
+  });
+
+  it("ends a right-clicked image send as an image entry with its operation id", async () => {
+    const chromeState = setupChrome();
+    connected(chromeState);
+    mocks.runIntegratedImageAction.mockResolvedValue({
+      status: {
+        operationId: OPERATION_ID,
+        state: "succeeded",
+        error: null,
+        envelope: null,
+        archive: { deliveryState: "confirmed", integrityState: "verified" },
+      },
+    });
+    await loadBackground();
+
+    menuClick(chromeState, {
+      menuItemId: "lens-send-image",
+      srcUrl: IMAGE_URL,
+    });
+
+    await onlyEntry({
+      title: "Send this image to Telegram",
+      kind: "image",
+      pageTitle: "A page",
+      state: "sent",
+      message: "The image was sent to your DigiBot chat.",
+      operationId: OPERATION_ID,
+    });
+  });
+
+  it("ends a picked verify as done with its saved record", async () => {
+    const chromeState = setupChrome();
+    chromeState.setBadgeText.mockResolvedValue(undefined);
+    chromeState.executeScript.mockResolvedValue([
+      { frameId: 0, documentId: DOCUMENT_ID },
+    ]);
+    mocks.actionHandler.mockResolvedValue({
+      kind: "api",
+      outcome: detectedOutcome(),
+    });
+    await loadBackground();
+
+    start(chromeState, ACTION_ID);
+    const sessionToken = await armedPick(chromeState);
+    await onlyEntry({ title: "Pick an image to verify", kind: "verify" });
+    listenerOf(chromeState)(
+      { type: "picker-selected", sessionToken, selection: selection() },
+      pickerSender(),
+    );
+
+    await onlyEntry({
+      state: "done",
+      message: "OpenAI provenance detected",
+      recordId: FIRST_RESULT_ID,
+    });
+  });
+
+  it("ends a refused start, a cancelled pick and a pick in a closed tab", async () => {
+    const chromeState = setupChrome();
+    connected(chromeState);
+    mocks.isIntegrationConnected.mockResolvedValue(false);
+    await loadBackground();
+
+    // Not connected: the media pick is refused before it arms.
+    start(chromeState, DOWNLOAD_ACTION_ID);
+    await onlyEntry({
+      state: "refused",
+      message:
+        "Connect Provenance Lens to DigiBot in Settings before picking an image or a video.",
+    });
+
+    mocks.isIntegrationConnected.mockResolvedValue(true);
+    start(chromeState, DOWNLOAD_ACTION_ID);
+    const sessionToken = await armedPick(chromeState);
+    listenerOf(chromeState)(
+      { type: "picker-cancelled", sessionToken },
+      pickerSender(),
+    );
+    await vi.waitFor(() =>
+      expect(recent.entries[0]).toMatchObject({
+        state: "failed",
+        message: "Pick cancelled.",
+      }),
+    );
+
+    start(chromeState, ACTION_ID);
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "picker-start")).toHaveLength(2),
+    );
+    const onRemoved = (
+      chrome.tabs.onRemoved.addListener as ReturnType<typeof vi.fn>
+    ).mock.calls[0]?.[0] as (tabId: number) => void;
+    onRemoved(TAB_ID);
+    await vi.waitFor(() =>
+      expect(recent.entries[0]).toMatchObject({
+        title: "Pick an image to verify",
+        state: "failed",
+        message: "The tab was closed before a pick.",
+      }),
+    );
+    expect(recent.entries).toHaveLength(3);
+  });
+
+  it("ends a pick that another action's page binding replaced", async () => {
+    const chromeState = setupChrome();
+    const sent = connected(chromeState);
+    await loadBackground();
+
+    start(chromeState, DOWNLOAD_ACTION_ID);
+    await armedPick(chromeState);
+    // Send video binds the page again, which drops its armed picker.
+    start(chromeState, LINK_ACTION_ID);
+    await waitForCall(sent.page, 1);
+
+    await vi.waitFor(() =>
+      expect(recent.entries).toEqual([
+        expect.objectContaining({ title: "Send video", state: "sent" }),
+        expect.objectContaining({
+          title: "Pick to download",
+          state: "failed",
+          message: "The pick ended when another action used the page.",
+        }),
+      ]),
+    );
+  });
+
+  it("ends a right-clicked link that cannot be sent as refused", async () => {
+    const chromeState = setupChrome();
+    const sent = connected(chromeState);
+    await loadBackground();
+
+    menuClick(chromeState, {
+      menuItemId: "lens-link-audio",
+      linkUrl: "https://x.com/alice",
+    });
+
+    await onlyEntry({
+      title: "Send link to Telegram as voice note",
+      kind: "voice",
+      state: "refused",
+      message:
+        "That link cannot be sent to Telegram. On X, right-click the post's timestamp.",
+    });
+    expect(sent.page).not.toHaveBeenCalled();
+  });
+
+  it("writes nothing while history keeps nothing", async () => {
+    const chromeState = setupChrome();
+    const sent = connected(chromeState);
+    mocks.getSettings.mockResolvedValue({
+      ...apiSettings(),
+      historyRetention: 0,
+    });
+    await loadBackground();
+
+    start(chromeState, LINK_ACTION_ID);
+
+    await waitForCall(sent.page, 1);
+    await flushWorker();
+    expect(mocks.startActivity).toHaveBeenCalledWith(expect.anything(), 0);
+    expect(recent.entries).toEqual([]);
+    expect(mocks.updateActivity).not.toHaveBeenCalled();
+  });
+
+  function flushWorker(): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
 });

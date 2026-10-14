@@ -246,7 +246,7 @@ export const PALETTE_COMMANDS: readonly PaletteCommand[] = Object.freeze([
   command({
     id: "view-recent",
     title: "Recent",
-    subtitle: "Your last results",
+    subtitle: "Your last actions",
     icon: "clock",
     run: { kind: "view", view: "recent" },
     path: "Lens",

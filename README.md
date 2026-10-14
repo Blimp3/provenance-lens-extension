@@ -117,7 +117,7 @@ the browser puts them under one **Provenance Lens** item.
 | A link                                     | **Send link to Telegram as video**, **…as voice note** or **…as audio file** | Sends that link through DigiBot. On X, right-click the post's timestamp                                              |
 | A video or audio player                    | **Send this video to Telegram**                                              | Sends the page link, or starts the post picker on an X or YouTube listing page such as a timeline, channel or search |
 | A video or audio player                    | **Lens palette for this video…**                                             | Opens the Download view for this page                                                                                |
-| The toolbar icon                           | **Settings…**, **Recent results…** or **Result history**                     | Opens Settings, the palette at Recent, or the History page                                                           |
+| The toolbar icon                           | **Settings…**, **Recent actions…** or **Result history**                     | Opens Settings, the palette at Recent, or the History page                                                           |
 
 ### Restricted pages
 
@@ -303,6 +303,25 @@ choose **Send link to Telegram as video**, **…as voice note** or **…as audio
 file**, or right-click a
 video and choose **Send this video to Telegram**.
 
+### Recent
+
+The **Recent** view lists your last actions, not only saved results. Lens adds
+one entry for each action that you start from the palette, a key, a
+right-click item or a toast button, in Website review mode too. The view shows
+the newest eight entries. Each entry shows:
+
+- an icon for its kind: image, video, audio file, voice note, page link,
+  Verify or clip
+- its state as text: **Started**, **Sent**, **Done**, **Failed** or
+  **Refused**
+- for an action that ended, its short message, such as the result's label or
+  the reason that it failed
+
+Enter on a Verify entry opens its details while History keeps the result. The
+entry of a connected check opens the History page. Enter on a DigiBot send
+opens the History page, and Enter on a page-link entry opens the address that
+Lens sent. **Result history** stays under **More**.
+
 ## Requirements
 
 - Node.js 24.20.0
@@ -382,6 +401,16 @@ For local review, load `apps/extension/dist` as an unpacked extension.
 - A palette frame on a page can only start an action or cancel the active one.
   The worker accepts these messages only from the palette frame that it opened,
   in the active tab.
+- Recent's list stays in local extension storage, apart from History. Each
+  entry keeps the command's title, its kind, the page address and the link that
+  a send sent, the start time, the final state with its short message, and the
+  DigiBot operation id or History record id when there is one. Addresses are
+  http(s) only, without the fragment after `#` or a user name and password.
+  Lens keeps the page title only when **Save a sanitized page title with
+  history** is on. The list keeps as many entries as History retention keeps
+  results, and none when retention is **Disabled**. **Clear history** in
+  Settings or **Clear all** on the History page removes the list. Lens never
+  sends the list anywhere.
 - **Verify audio of this page…** and **Clip › Verify this clip's audio** send
   the active tab's full address to DigiBot. DigiBot sends an excerpt of at most
   60 seconds of its audio to OpenAI for the check.

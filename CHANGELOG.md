@@ -51,8 +51,19 @@ and the picker runtime is 0.9.0.
 - Right-click items: **Send this image to Telegram**, **Send link to Telegram
   as video**, **…as voice note** and **…as audio file**, **Send this video to
   Telegram**, **Lens palette for this video…** and **Open Lens palette**, and
-  on the toolbar icon **Settings…**, **Recent results…** and **Result
+  on the toolbar icon **Settings…**, **Recent actions…** and **Result
   history**. One shared menu rebuild serves install, startup and worker start.
+- **Recent** lists your last actions, not only saved Verify results: one entry
+  for each action you start from the palette, a key, a right-click item or a
+  toast button, with its command title, kind (image, video, audio file, voice
+  note, page link, Verify or clip), page title and address, start time, final
+  state (sent, done, failed or refused, with its short message) and the DigiBot
+  operation id when there is one. It shows the newest eight with a kind icon
+  and a state label. ↵ opens a Verify entry's details, a DigiBot entry's Result
+  history or a page link's address, and **Result history** stays under More.
+  The list stays in local storage, keeps as many entries as History retention
+  (none with history off), keeps the page title only when history saves titles,
+  and **Clear history** clears it.
 - Audio sends: **Send voice note** posts an OGG/Opus voice note and **Send
   audio file** an M4A with its title and music player, for this page or, with
   **Pick a post → voice note…** and **Pick a post → audio file…**, for a post

@@ -1,5 +1,6 @@
 import {
   ACTION_ID,
+  ActivityEntrySchema,
   AUDIO_ACTION_ID,
   DISCLOSURE_VERSION,
   DOWNLOAD_ACTION_ID,
@@ -21,6 +22,7 @@ import {
   sanitizeDisplayText,
   sha256Hex,
   type ActionId,
+  type ActivityKind,
   type DisclosureMode,
   type ExtensionMessage,
   type ErrorCode,
@@ -33,6 +35,16 @@ import {
   type VerificationMode,
 } from "@provenance-lens/shared";
 
+import {
+  activityAddress,
+  activityTitle,
+  beginActivity,
+  linkActivityKind,
+  noteActivity,
+  refusalState,
+  startActivityKind,
+  type ActivityId,
+} from "./activity.js";
 import { getActionDefinition } from "./actions/registry.js";
 import {
   PAGE_LINK_QUEUED_MESSAGE,
@@ -146,29 +158,38 @@ type PageTarget = {
 
 type ImageActionId = typeof ACTION_ID | typeof DOWNLOAD_ACTION_ID;
 
-/** Sends one page link: the registry's page-link and video-pick handlers. */
+/**
+ * Sends one page link: the registry's page-link and video-pick handlers. The
+ * page-link action resolves to the DigiBot operation id it sent.
+ */
 type PageLinkSender = (
   page: PageLinkSource,
   options: LinkDownloadOptions,
-) => Promise<void>;
+) => Promise<string | void>;
+
+/** The entry a link send updates, and the kind its video output takes. */
+type LinkActivity = { id: ActivityId; video: "video" | "page-link" };
 
 type ImagePickerSession = {
   mode: "image";
   actionId: ImageActionId;
   trigger: ActionTrigger;
   verificationMode: VerificationMode;
+  activityId: ActivityId;
 };
 /** The Google SynthID handoff: the picked image is saved, never verified. */
 type SynthIdPickerSession = {
   mode: "image";
   actionId: typeof SYNTHID_ACTION_ID;
   trigger: ActionTrigger;
+  activityId: ActivityId;
 };
 /** A video pick: the clicked post's link goes out with the chosen output. */
 type LinkPickerSession = {
   mode: "link";
   options: LinkDownloadOptions;
   send: PageLinkSender;
+  activityId: ActivityId;
 };
 /**
  * The download pick: the click decides the run. An image goes out as the
@@ -179,6 +200,7 @@ type MediaPickerSession = {
   mode: "media";
   trigger: "popup" | "keyboard";
   verificationMode: VerificationMode;
+  activityId: ActivityId;
 };
 type ArmedPicker =
   | ImagePickerSession
@@ -194,6 +216,7 @@ type PendingDisclosure = {
   trigger: ActionTrigger;
   selection: ImageSelection | null;
   pageTarget: PageTarget | null;
+  activityId: ActivityId;
 } & (
   | { actionId: typeof ACTION_ID; verificationMode: VerificationMode }
   // The SynthID handoff's own one-time acknowledgement; it has no selection.
@@ -305,6 +328,7 @@ chrome.runtime.onConnect?.addListener((port) => {
 });
 chrome.tabs?.onRemoved?.addListener((tabId) => {
   void forgetPaletteMount({ tabId });
+  void endArmedPicks((session) => session.tabId === tabId, PICK_TAB_CLOSED);
 });
 
 const contextMenus = getContextMenusApi();
@@ -391,13 +415,13 @@ async function handleExtensionMessage(
   switch (message.type) {
     case "start-action": {
       const action = getActionDefinition(message.actionId);
-      if (action?.inputType === "audio-file") {
-        // A range from the palette checks this page's audio in the worker.
-        const { startSeconds, endSeconds } = message.options ?? {};
-        if (startSeconds !== undefined && endSeconds !== undefined) {
-          await verifyPageAudioSegment(startSeconds, endSeconds);
-          return;
-        }
+      const options = message.options ?? {};
+      const { startSeconds, endSeconds } = options;
+      if (
+        action?.inputType === "audio-file" &&
+        (startSeconds === undefined || endSeconds === undefined)
+      ) {
+        // The audio page opens; Recent lists the check it runs there.
         try {
           await action.handler();
         } catch {
@@ -408,30 +432,20 @@ async function handleExtensionMessage(
         }
         return;
       }
-      if (action?.inputType === "page-link") {
-        await sendPageLinkFromActiveTab(action.handler, message.options ?? {});
-        return;
-      }
-      if (action?.inputType === "video-pick") {
-        await startVideoPickFromActiveTab(
-          action.handler,
-          message.options ?? {},
-        );
-        return;
-      }
-      if (message.actionId === SYNTHID_ACTION_ID) {
-        await startSynthIdPickFromActiveTab(message.trigger);
-        return;
-      }
-      if (message.actionId === DOWNLOAD_ACTION_ID) {
-        await startMediaPickFromActiveTab(message.trigger);
-        return;
-      }
-      if (action?.inputType !== "image-file") return;
-      await startFromActiveTab(
-        message.trigger,
-        message.actionId as ImageActionId,
+      const activityId = await beginActivity(
+        activityTitle(message.actionId, options),
+        startActivityKind(message.actionId, options),
+        await activeTab().catch(() => undefined),
       );
+      try {
+        await startAction(message, action, options, activityId);
+      } catch (error: unknown) {
+        await noteActivity(activityId, {
+          state: "failed",
+          message: START_FAILED_MESSAGE,
+        });
+        throw error;
+      }
       return;
     }
     case "resume-permission":
@@ -469,9 +483,54 @@ async function handleExtensionMessage(
   }
 }
 
+/** A start from the palette or a key, after Recent's entry was written. */
+async function startAction(
+  message: Extract<ExtensionMessage, { type: "start-action" }>,
+  action: ReturnType<typeof getActionDefinition>,
+  options: LinkDownloadOptions,
+  activityId: ActivityId,
+): Promise<void> {
+  const { startSeconds, endSeconds } = options;
+  if (action?.inputType === "audio-file") {
+    // A range from the palette checks this page's audio in the worker.
+    if (startSeconds !== undefined && endSeconds !== undefined)
+      await verifyPageAudioSegment(startSeconds, endSeconds, activityId);
+    return;
+  }
+  if (action?.inputType === "page-link") {
+    await sendPageLinkFromActiveTab(action.handler, options, activityId);
+    return;
+  }
+  if (action?.inputType === "video-pick") {
+    await startVideoPickFromActiveTab(action.handler, options, activityId);
+    return;
+  }
+  if (message.actionId === SYNTHID_ACTION_ID) {
+    await startSynthIdPickFromActiveTab(message.trigger, activityId);
+    return;
+  }
+  if (message.actionId === DOWNLOAD_ACTION_ID) {
+    await startMediaPickFromActiveTab(message.trigger, activityId);
+    return;
+  }
+  if (action?.inputType !== "image-file") {
+    await noteActivity(activityId, {
+      state: "failed",
+      message: START_FAILED_MESSAGE,
+    });
+    return;
+  }
+  await startFromActiveTab(
+    message.trigger,
+    message.actionId as ImageActionId,
+    activityId,
+  );
+}
+
 async function startFromActiveTab(
   trigger: "popup" | "keyboard",
   actionId: ImageActionId = ACTION_ID,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const tabs = await chrome.tabs.query({
     active: true,
@@ -482,10 +541,11 @@ async function startFromActiveTab(
     await notifyStandaloneError(
       "protected_page",
       "No active browser page is available.",
+      { activityId },
     );
     return;
   }
-  await requestActionOnTab(tab.id, 0, trigger, null, actionId);
+  await requestActionOnTab(tab.id, 0, trigger, null, actionId, activityId);
 }
 
 /** Whether a page link is being sent; a repeated click meanwhile is ignored. */
@@ -502,6 +562,12 @@ const OWN_PAGE_MESSAGE = "Open the video's own page, then pick it.";
 /** Why a download pick is refused when the tab's address cannot be read. */
 const TAB_ADDRESS_MESSAGE =
   "Lens cannot read this tab's address. Reload the page, then pick again.";
+const LINK_IN_FLIGHT_MESSAGE = "Another page link is still being sent.";
+/** How Recent's entry ends when its start threw before any report. */
+const START_FAILED_MESSAGE = "The action could not be started.";
+/** How an armed pick's entry ends when no click can come any more. */
+const PICK_TAB_CLOSED = "The tab was closed before a pick.";
+const PICK_REPLACED = "The pick ended when another action used the page.";
 
 /**
  * The page-link action reports through the workflow state and a toast on the
@@ -513,15 +579,22 @@ const TAB_ADDRESS_MESSAGE =
 async function sendPageLinkFromActiveTab(
   send: PageLinkSender,
   options: LinkDownloadOptions = {},
+  activityId: ActivityId = null,
 ): Promise<void> {
-  if (pageLinkInFlight) return;
+  if (pageLinkInFlight) {
+    await noteActivity(activityId, {
+      state: "refused",
+      message: LINK_IN_FLIGHT_MESSAGE,
+    });
+    return;
+  }
   const tabs = await chrome.tabs.query({
     active: true,
     lastFocusedWindow: true,
   });
   const tab = tabs[0];
   if (tab?.id !== undefined && tab.url && needsPostPick(tab.url)) {
-    await startVideoPickOnTab(tab, send, options);
+    await startVideoPickOnTab(tab, send, options, activityId);
     return;
   }
   const pageTarget =
@@ -535,6 +608,7 @@ async function sendPageLinkFromActiveTab(
     tab?.id,
     pageTarget,
     LINK_ACTION_ID,
+    { id: activityId, video: "page-link" },
   );
 }
 
@@ -551,18 +625,27 @@ async function deliverPageLink(
   tabId: number | undefined,
   pageTarget: PageTarget | null,
   actionId: ToastRetry["actionId"],
+  activity: LinkActivity,
 ): Promise<void> {
   if (pageLinkInFlight) {
+    await noteActivity(activity.id, {
+      state: "refused",
+      message: LINK_IN_FLIGHT_MESSAGE,
+    });
     await showPageToast(pageTarget, {
       tone: "error",
       title: PAGE_LINK_FAILED_TITLE,
-      message: "Another page link is still being sent.",
+      message: LINK_IN_FLIGHT_MESSAGE,
       resultId: null,
     });
     return;
   }
   pageLinkInFlight = true;
   try {
+    await noteActivity(activity.id, {
+      kind: linkActivityKind(options, activity.video),
+      linkUrl: activityAddress(page.url),
+    });
     if (tabId !== undefined) await setBadge(tabId, "…").catch(() => undefined);
     await showPageToast(pageTarget, {
       tone: "progress",
@@ -575,13 +658,27 @@ async function deliverPageLink(
     });
     let failure: unknown = null;
     let failed = false;
+    let operationId: string | void = undefined;
     try {
-      await send(page, options);
+      operationId = await send(page, options);
     } catch (error: unknown) {
       // The action already stored this message in the workflow state.
       failure = error;
       failed = true;
     }
+    await noteActivity(
+      activity.id,
+      failed
+        ? {
+            state: failure instanceof PageLinkError ? "refused" : "failed",
+            message: pageLinkErrorMessage(failure),
+          }
+        : {
+            state: "sent",
+            message: PAGE_LINK_QUEUED_MESSAGE,
+            operationId: operationId ?? null,
+          },
+    );
     if (tabId !== undefined)
       await (failed ? setBadge(tabId, "!") : clearBadge(tabId)).catch(
         () => undefined,
@@ -660,6 +757,7 @@ function toastRetry(
 async function startVideoPickFromActiveTab(
   send: PageLinkSender,
   options: LinkDownloadOptions,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const tabs = await chrome.tabs.query({
     active: true,
@@ -670,16 +768,18 @@ async function startVideoPickFromActiveTab(
     await notifyStandaloneError(
       "protected_page",
       "No active browser page is available.",
+      { activityId },
     );
     return;
   }
-  await startVideoPickOnTab(tab, send, options);
+  await startVideoPickOnTab(tab, send, options, activityId);
 }
 
 async function startVideoPickOnTab(
   tab: chrome.tabs.Tab,
   send: PageLinkSender,
   options: LinkDownloadOptions,
+  activityId: ActivityId,
 ): Promise<void> {
   const tabId = tab.id;
   if (tabId === undefined) return;
@@ -687,7 +787,7 @@ async function startVideoPickOnTab(
     await notifyStandaloneError(
       "protected_page",
       "Video picking is not supported on this browser page.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
@@ -695,12 +795,12 @@ async function startVideoPickOnTab(
     await notifyStandaloneError(
       "backend_configuration_missing",
       "Connect Provenance Lens to DigiBot in Settings before picking a video.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
   try {
-    await injectPicker(tabId, 0, { mode: "link", options, send });
+    await injectPicker(tabId, 0, { mode: "link", options, send, activityId });
     await setWorkflow(
       "picking",
       "Click a post with a video to send its link to Telegram.",
@@ -710,7 +810,7 @@ async function startVideoPickOnTab(
     await notifyStandaloneError(
       "permission_denied",
       "The video picker could not access this page.",
-      { tabId },
+      { tabId, activityId },
     );
   }
 }
@@ -722,6 +822,7 @@ async function startVideoPickOnTab(
  */
 async function startMediaPickFromActiveTab(
   trigger: MediaPickerSession["trigger"],
+  activityId: ActivityId = null,
 ): Promise<void> {
   const tabs = await chrome.tabs.query({
     active: true,
@@ -732,6 +833,7 @@ async function startMediaPickFromActiveTab(
     await notifyStandaloneError(
       "protected_page",
       "No active browser page is available.",
+      { activityId },
     );
     return;
   }
@@ -739,7 +841,7 @@ async function startMediaPickFromActiveTab(
     await notifyStandaloneError(
       "protected_page",
       "Picking is not supported on this browser page.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
@@ -747,7 +849,7 @@ async function startMediaPickFromActiveTab(
     await notifyStandaloneError(
       "backend_configuration_missing",
       "Connect Provenance Lens to DigiBot in Settings before picking an image or a video.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
@@ -757,13 +859,14 @@ async function startMediaPickFromActiveTab(
       mode: "media",
       trigger,
       verificationMode: settings.verificationMode,
+      activityId,
     });
     await setWorkflow("picking", MEDIA_PICK_MESSAGE, DOWNLOAD_ACTION_ID);
   } catch {
     await notifyStandaloneError(
       "permission_denied",
       "The picker could not access this page.",
-      { tabId },
+      { tabId, activityId },
     );
   }
 }
@@ -774,13 +877,14 @@ async function requestActionOnTab(
   trigger: ActionTrigger,
   selection: ImageSelection | null = null,
   actionId: ImageActionId = ACTION_ID,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const action = getActionDefinition(actionId);
   if (!action || action.inputType !== "image-file") {
     await notifyStandaloneError(
       "invalid_request",
       "The requested action is unavailable.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
@@ -790,7 +894,7 @@ async function requestActionOnTab(
     await notifyStandaloneError(
       "protected_page",
       "Image picking is not supported on this browser page.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
@@ -799,7 +903,7 @@ async function requestActionOnTab(
     await notifyStandaloneError(
       "backend_configuration_missing",
       "Connect Provenance Lens to DigiBot in Settings before downloading an image.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
@@ -823,6 +927,7 @@ async function requestActionOnTab(
       verificationMode: settings.verificationMode,
       selection,
       pageTarget,
+      activityId,
     });
     return;
   }
@@ -834,6 +939,7 @@ async function requestActionOnTab(
       expectedVerificationMode: settings.verificationMode,
       trigger,
       pageTarget,
+      activityId,
     });
     return;
   }
@@ -843,6 +949,7 @@ async function requestActionOnTab(
       actionId,
       trigger,
       verificationMode: settings.verificationMode,
+      activityId,
     });
     await setWorkflow(
       "picking",
@@ -857,7 +964,7 @@ async function requestActionOnTab(
     await notifyStandaloneError(
       "permission_denied",
       "The image picker could not access this page.",
-      { tabId },
+      { tabId, activityId },
     );
   }
 }
@@ -885,7 +992,12 @@ async function resumeDisclosure(
       return;
     }
     await setSynthIdDisclosureVersion(SYNTHID_DISCLOSURE_VERSION);
-    await startSynthIdPick(pending.tabId, pending.frameId, pending.trigger);
+    await startSynthIdPick(
+      pending.tabId,
+      pending.frameId,
+      pending.trigger,
+      pending.activityId,
+    );
     return;
   }
 
@@ -926,6 +1038,7 @@ async function resumeDisclosure(
         expectedVerificationMode: pending.verificationMode,
         trigger: pending.trigger,
         pageTarget: pending.pageTarget,
+        activityId: pending.activityId,
       });
     } else {
       await injectPicker(pending.tabId, pending.frameId, {
@@ -933,6 +1046,7 @@ async function resumeDisclosure(
         actionId: pending.actionId,
         trigger: pending.trigger,
         verificationMode: pending.verificationMode,
+        activityId: pending.activityId,
       });
       await setWorkflow(
         "picking",
@@ -946,7 +1060,11 @@ async function resumeDisclosure(
     await notifyStandaloneError(
       "permission_denied",
       "The image picker could not access this page.",
-      { pageTarget: pending.pageTarget, tabId: pending.tabId },
+      {
+        pageTarget: pending.pageTarget,
+        tabId: pending.tabId,
+        activityId: pending.activityId,
+      },
     );
   }
 }
@@ -1018,6 +1136,7 @@ async function readPendingDisclosure(
         verificationMode: "synthid",
         pageTarget: null,
         selection: null,
+        activityId: storedActivityId(candidate["activityId"]),
       };
     }
     const parsedMode = VerificationModeSchema.safeParse(
@@ -1049,6 +1168,7 @@ async function readPendingDisclosure(
         candidate["selection"] === null
           ? null
           : (selection as { success: true; data: ImageSelection }).data,
+      activityId: storedActivityId(candidate["activityId"]),
     };
   } catch {
     return null;
@@ -1072,6 +1192,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** A stored entry id, or null for a record written before Recent kept one. */
+function storedActivityId(value: unknown): ActivityId {
+  const parsed = ActivityEntrySchema.shape.id.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 async function persistLinkPickerSession(
   session: PageTarget & (LinkPickerSession | MediaPickerSession),
 ): Promise<void> {
@@ -1081,12 +1207,14 @@ async function persistLinkPickerSession(
       ? values[LINK_PICKER_SESSIONS_KEY]
       : {};
     // Only the serialisable coordinates; the handler is rebuilt on restore.
-    const { sessionToken, tabId, frameId, documentId } = session;
+    const { sessionToken, tabId, frameId, documentId, activityId } = session;
     current[sessionToken] = {
       sessionToken,
       tabId,
       frameId,
       documentId,
+      // A pick that Recent does not list stores no entry id.
+      ...(activityId !== null ? { activityId } : {}),
       ...(session.mode === "link"
         ? { mode: session.mode, options: session.options }
         : {
@@ -1130,6 +1258,7 @@ async function restoreLinkPickerSession(
       tabId: stored["tabId"],
       frameId: stored["frameId"],
       documentId: stored["documentId"],
+      activityId: storedActivityId(stored["activityId"]),
     };
     if (stored["mode"] === "media") {
       const trigger = stored["trigger"];
@@ -1163,6 +1292,16 @@ async function restoreLinkPickerSession(
     };
   } catch {
     return null;
+  }
+}
+
+async function storedLinkPickerTokens(): Promise<string[]> {
+  try {
+    const values = await chrome.storage.session.get(LINK_PICKER_SESSIONS_KEY);
+    const current = values[LINK_PICKER_SESSIONS_KEY];
+    return isRecord(current) ? Object.keys(current) : [];
+  } catch {
+    return [];
   }
 }
 
@@ -1229,6 +1368,11 @@ async function bindPageTarget(
         sessionToken,
       } satisfies PickerRuntimeMessage,
       { documentId: target.documentId },
+    );
+    // The page drops its armed picker on a new binding.
+    await endArmedPicks(
+      (session) => session.tabId === tabId && session.frameId === frameId,
+      PICK_REPLACED,
     );
     return target;
   } catch {
@@ -1304,7 +1448,11 @@ async function handlePickerSelected(
     await notifyStandaloneError(
       "image_retrieval_failed",
       "The selected image information is invalid.",
-      { pageTarget: session, tabId: session.tabId },
+      {
+        pageTarget: session,
+        tabId: session.tabId,
+        activityId: session.activityId,
+      },
     );
     return;
   }
@@ -1328,6 +1476,7 @@ async function handlePickerSelected(
     expectedVerificationMode: session.verificationMode,
     trigger: session.trigger,
     pageTarget: session,
+    activityId: session.activityId,
   });
 }
 
@@ -1346,14 +1495,17 @@ async function handlePickerCancelled(
   if (session.mode !== "image" && !spendLinkPick(message.sessionToken)) return;
   pickerSessions.delete(message.sessionToken);
   await stopPicker(session);
-  await setWorkflow(
-    "idle",
+  const cancelled =
     session.mode === "link"
       ? "Video pick cancelled."
       : session.mode === "media"
         ? "Pick cancelled."
-        : "Image selection cancelled.",
-  );
+        : "Image selection cancelled.";
+  await setWorkflow("idle", cancelled);
+  await noteActivity(session.activityId, {
+    state: "failed",
+    message: cancelled,
+  });
   await clearBadge(session.tabId);
 }
 
@@ -1406,6 +1558,7 @@ async function handlePickerLinkSelected(
     session.tabId,
     session,
     PICK_VIDEO_ACTION_ID,
+    { id: session.activityId, video: "video" },
   );
 }
 
@@ -1447,6 +1600,7 @@ async function handlePickerPageSelected(
     session.tabId,
     session,
     LINK_ACTION_ID,
+    { id: session.activityId, video: "page-link" },
   );
 }
 
@@ -1457,6 +1611,7 @@ async function refusePick(
   actionId: ToastRetry["actionId"],
 ): Promise<void> {
   await setWorkflow("error", message, actionId);
+  await noteActivity(session.activityId, { state: "refused", message });
   await setBadge(session.tabId, "!").catch(() => undefined);
   await showPageToast(session, {
     tone: "error",
@@ -1488,6 +1643,7 @@ async function handleContextMenu(
   info: chrome.contextMenus.OnClickData,
   tab: chrome.tabs.Tab,
   actionId: ImageActionId = ACTION_ID,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const tabId = tab.id;
   if (tabId === undefined) return;
@@ -1498,6 +1654,7 @@ async function handleContextMenu(
       "context-menu",
       null,
       actionId,
+      activityId,
     );
     return;
   }
@@ -1506,7 +1663,7 @@ async function handleContextMenu(
     await notifyStandaloneError(
       "image_retrieval_failed",
       "The context-menu image URL is invalid.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
@@ -1516,6 +1673,7 @@ async function handleContextMenu(
     "context-menu",
     selection,
     actionId,
+    activityId,
   );
 }
 
@@ -1562,15 +1720,17 @@ async function executeAction(
     pageTarget: PageTarget | null;
     expectedVerificationMode?: VerificationMode;
     trigger?: ActionTrigger;
+    activityId?: ActivityId;
   } = { page: null, pageTarget: null },
 ): Promise<void> {
   const actionId = options.actionId ?? ACTION_ID;
+  const activityId = options.activityId ?? null;
   const action = getActionDefinition(actionId);
   if (!action || action.inputType !== "image-file") {
     await notifyStandaloneError(
       "invalid_request",
       "The requested action is unavailable.",
-      { pageTarget: options.pageTarget, tabId },
+      { pageTarget: options.pageTarget, tabId, activityId },
     );
     return;
   }
@@ -1579,7 +1739,7 @@ async function executeAction(
     await notifyStandaloneError(
       "concurrency_limit",
       "An image is already being verified in this tab.",
-      { pageTarget: options.pageTarget, tabId },
+      { pageTarget: options.pageTarget, tabId, activityId },
     );
     return;
   }
@@ -1598,6 +1758,7 @@ async function executeAction(
           pageTarget: options.pageTarget,
           tabId,
           actions: ["connect-digibot"],
+          activityId,
         },
       );
       return;
@@ -1622,6 +1783,7 @@ async function executeAction(
         verificationMode: settings.verificationMode,
         selection,
         pageTarget: options.pageTarget,
+        activityId,
       });
       return;
     }
@@ -1675,6 +1837,7 @@ async function executeAction(
         integrated.status,
         options.pageTarget,
         actionId,
+        activityId,
       );
       return;
     }
@@ -1695,10 +1858,15 @@ async function executeAction(
           tabId,
           actions:
             execution.errorCode === "permission_denied" ? ["grant-access"] : [],
+          activityId,
         });
         return;
       }
       await setWorkflow("idle", execution.message);
+      await noteActivity(activityId, {
+        state: "done",
+        message: execution.message,
+      });
       await clearBadge(tabId);
       if (execution.status === "opened") {
         await showPageToast(options.pageTarget, {
@@ -1718,6 +1886,7 @@ async function executeAction(
         execution.outcome.status,
         options.pageTarget,
         actionId,
+        activityId,
       );
       return;
     }
@@ -1757,7 +1926,13 @@ async function executeAction(
       });
       pruneScreenshotFallbacks();
     }
-    await finishVerification(tabId, record, outcome, options.pageTarget);
+    await finishVerification(
+      tabId,
+      record,
+      outcome,
+      options.pageTarget,
+      activityId,
+    );
   } catch (error: unknown) {
     if (integratedAction) {
       if (
@@ -1767,13 +1942,12 @@ async function executeAction(
       ) {
         // A workflow stop comes only from image retrieval, before any DigiBot
         // request. Its own text names Verify, which is wrong for Download.
-        await setWorkflow(
-          "idle",
+        const stopped =
           error instanceof IntegrationClientError
             ? error.message
-            : "Stopped before anything was sent.",
-          actionId,
-        );
+            : "Stopped before anything was sent.";
+        await setWorkflow("idle", stopped, actionId);
+        await noteActivity(activityId, { state: "failed", message: stopped });
         await clearBadge(tabId).catch(() => undefined);
         await hidePageToast(options.pageTarget);
         return;
@@ -1785,6 +1959,7 @@ async function executeAction(
       await notifyStandaloneError("backend_unavailable", message, {
         pageTarget: options.pageTarget,
         tabId,
+        activityId,
       });
       await clearBadge(tabId).catch(() => undefined);
       return;
@@ -1794,6 +1969,7 @@ async function executeAction(
         tabId,
         options.pageTarget,
         historyPersisted,
+        activityId,
       );
       return;
     }
@@ -1803,7 +1979,7 @@ async function executeAction(
       await notifyStandaloneError(
         "invalid_request",
         "The Website verification workflow could not be completed.",
-        { pageTarget: options.pageTarget, tabId },
+        { pageTarget: options.pageTarget, tabId, activityId },
       );
       return;
     }
@@ -1824,7 +2000,13 @@ async function executeAction(
       settings?.includePageTitle ?? false,
     );
     await appendHistory(record, settings?.historyRetention ?? 20);
-    await finishVerification(tabId, record, outcome, options.pageTarget);
+    await finishVerification(
+      tabId,
+      record,
+      outcome,
+      options.pageTarget,
+      activityId,
+    );
   } finally {
     transientApiImage?.bytes.fill(0);
     activeVerifications.release(tabId, active.controller);
@@ -1835,6 +2017,7 @@ async function notifyPostResultFailure(
   tabId: number,
   pageTarget: PageTarget | null,
   historyPersisted: boolean,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const message = historyPersisted
     ? "The verification result was saved, but its display could not be completed."
@@ -1842,6 +2025,7 @@ async function notifyPostResultFailure(
   await notifyStandaloneError("invalid_request", message, {
     pageTarget,
     tabId,
+    activityId,
   }).catch(() => undefined);
   await clearBadge(tabId).catch(() => undefined);
 }
@@ -1851,7 +2035,9 @@ async function finishIntegratedImageAction(
   status: IntegrationOperationStatus,
   pageTarget: PageTarget | null,
   actionId: ImageActionId,
+  activityId: ActivityId = null,
 ): Promise<void> {
+  const { operationId } = status;
   if (actionId === DOWNLOAD_ACTION_ID) {
     const message =
       status.state === "failed"
@@ -1865,6 +2051,11 @@ async function finishIntegratedImageAction(
       status.error?.message ?? message,
       actionId,
     );
+    await noteActivity(activityId, {
+      state: status.state === "failed" ? "failed" : "sent",
+      message: status.error?.message ?? message,
+      operationId,
+    });
     if (status.state === "failed") await setBadge(tabId, "!");
     else await clearBadge(tabId);
     const delivered =
@@ -1903,6 +2094,11 @@ async function finishIntegratedImageAction(
       ),
       actionId,
     );
+    await noteActivity(activityId, {
+      state: "done",
+      message: copy.title,
+      operationId,
+    });
     await setBadge(
       tabId,
       detected ? "✓" : result.verdict === "indeterminate" ? "!" : "?",
@@ -1928,6 +2124,12 @@ async function finishIntegratedImageAction(
       status.error?.message ?? "The connected check could not be completed.",
       actionId,
     );
+    await noteActivity(activityId, {
+      state: "failed",
+      message:
+        status.error?.message ?? "The connected check could not be completed.",
+      operationId,
+    });
     await setBadge(tabId, "!");
     await showPageToast(pageTarget, {
       tone: "error",
@@ -1943,6 +2145,7 @@ async function finishIntegratedImageAction(
   const message =
     "The connected check is still processing. Its result will appear in History.";
   await setWorkflow("idle", message, actionId);
+  await noteActivity(activityId, { state: "sent", message, operationId });
   await clearBadge(tabId);
   await showPageToast(pageTarget, {
     tone: "pending",
@@ -1977,8 +2180,19 @@ async function finishVerification(
   record: Pick<HistoryRecord, "id" | "inputKind">,
   outcome: VerificationOutcome,
   pageTarget: PageTarget | null,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const resultId = record.id;
+  await noteActivity(activityId, {
+    state: outcome.errorCode ? "failed" : "done",
+    message:
+      outcome.errorCode === "user_cancelled"
+        ? "Verification cancelled."
+        : outcome.errorCode
+          ? outcome.result.summary
+          : resultLabel(outcome.result),
+    recordId: resultId,
+  });
   if (outcome.errorCode === "user_cancelled") {
     await setWorkflow("idle", "Verification cancelled.");
     await clearBadge(tabId);
@@ -2803,7 +3017,7 @@ const MENU_ITEMS: readonly chrome.contextMenus.CreateProperties[] = [
 ];
 const ACTION_MENU_ITEMS: readonly chrome.contextMenus.CreateProperties[] = [
   { id: MENU_IDS.settings, title: "Settings…", contexts: ["action"] },
-  { id: MENU_IDS.recent, title: "Recent results…", contexts: ["action"] },
+  { id: MENU_IDS.recent, title: "Recent actions…", contexts: ["action"] },
   { id: MENU_IDS.history, title: "Result history", contexts: ["action"] },
 ];
 /** What each link item sends besides the link. */
@@ -2865,32 +3079,55 @@ async function handleMenuClick(
   const tabId = tab?.id;
   switch (info.menuItemId) {
     case ACTION_ID:
-      if (tab && tabId !== undefined) await handleContextMenu(info, tab);
+      if (tab && tabId !== undefined)
+        await handleContextMenu(
+          info,
+          tab,
+          ACTION_ID,
+          await beginMenuActivity(info.menuItemId, "verify", tab),
+        );
       return;
-    case MENU_IDS.sendImage:
+    case MENU_IDS.sendImage: {
       if (!tab || tabId === undefined) return;
+      const activityId = await beginMenuActivity(info.menuItemId, "image", tab);
       // Until the palette has a Connect view, Settings shows the pairing.
       if (!(await isIntegrationConnected())) {
+        await noteActivity(activityId, {
+          state: "refused",
+          message: "Connect Provenance Lens to DigiBot in Settings first.",
+        });
         await openSettingsAt("integration-heading");
         return;
       }
-      await handleContextMenu(info, tab, DOWNLOAD_ACTION_ID);
+      await handleContextMenu(info, tab, DOWNLOAD_ACTION_ID, activityId);
       return;
+    }
     case MENU_IDS.linkVideo:
     case MENU_IDS.linkAudio:
-    case MENU_IDS.linkAudioFile:
+    case MENU_IDS.linkAudioFile: {
       if (tabId === undefined) return;
+      const options = MENU_LINK_OPTIONS[info.menuItemId] ?? {};
       await sendMenuLink(
         info.linkUrl ?? "",
         tabId,
-        MENU_LINK_OPTIONS[info.menuItemId] ?? {},
+        options,
+        await beginMenuActivity(
+          info.menuItemId,
+          linkActivityKind(options, "video"),
+          tab,
+        ),
       );
       return;
+    }
     case MENU_IDS.mediaVideo: {
       // The page's own address; the blob: source is never sent.
       const action = getActionDefinition(LINK_ACTION_ID);
       if (action?.inputType === "page-link")
-        await sendPageLinkFromActiveTab(action.handler, {});
+        await sendPageLinkFromActiveTab(
+          action.handler,
+          {},
+          await beginMenuActivity(info.menuItemId, "page-link", tab),
+        );
       return;
     }
     case MENU_IDS.mediaOpen:
@@ -2916,6 +3153,7 @@ async function sendMenuLink(
   linkUrl: string,
   tabId: number,
   options: LinkDownloadOptions,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const action = getActionDefinition(LINK_ACTION_ID);
   if (action?.inputType !== "page-link") return;
@@ -2923,6 +3161,10 @@ async function sendMenuLink(
   const url = pickedLinkUrl(linkUrl);
   if (url === null) {
     await setWorkflow("error", MENU_LINK_MESSAGE, LINK_ACTION_ID);
+    await noteActivity(activityId, {
+      state: "refused",
+      message: MENU_LINK_MESSAGE,
+    });
     await setBadge(tabId, "!").catch(() => undefined);
     await showPageToast(pageTarget, {
       tone: "error",
@@ -2939,6 +3181,7 @@ async function sendMenuLink(
     tabId,
     pageTarget,
     LINK_ACTION_ID,
+    { id: activityId, video: "video" },
   );
 }
 
@@ -2957,6 +3200,37 @@ async function ensureTrustedStorageAccess(): Promise<void> {
   } catch {
     // Older Chromium builds may not expose the access-level API.
   }
+}
+
+// Recent ----------------------------------------------------------------------
+
+/** A right-click item's entry, under the item's own title. */
+function beginMenuActivity(
+  menuItemId: string | number,
+  kind: ActivityKind,
+  tab: chrome.tabs.Tab | undefined,
+): Promise<ActivityId> {
+  const item = MENU_ITEMS.find(({ id }) => id === menuItemId);
+  return beginActivity(item?.title ?? "Lens action", kind, tab);
+}
+
+/**
+ * Ends Recent's entries for armed picks no click can reach any more, those
+ * this worker holds and those a stopped worker stored. The sessions stay as
+ * they are: their own guards still decide any message that comes back.
+ */
+async function endArmedPicks(
+  match: (session: PickerSession) => boolean,
+  message: string,
+): Promise<void> {
+  const ended = [...pickerSessions.values()].filter(match);
+  for (const sessionToken of await storedLinkPickerTokens()) {
+    if (pickerSessions.has(sessionToken)) continue;
+    const session = await restoreLinkPickerSession(sessionToken);
+    if (session && match(session)) ended.push(session);
+  }
+  for (const session of ended)
+    await noteActivity(session.activityId, { state: "failed", message });
 }
 
 async function setWorkflow(
@@ -3032,6 +3306,10 @@ async function cancelArmedPicker(tabId: number | undefined): Promise<void> {
   for (const [sessionToken, session] of armed) {
     pickerSessions.delete(sessionToken);
     await stopPicker(session);
+    await noteActivity(session.activityId, {
+      state: "failed",
+      message: "Pick cancelled.",
+    });
   }
   await setWorkflow("idle", "Pick cancelled.");
   await clearBadge(tabId).catch(() => undefined);
@@ -3094,9 +3372,14 @@ async function notifyStandaloneError(
     tabId?: number;
     title?: string;
     actions?: ToastAction[];
+    activityId?: ActivityId;
   } = {},
 ): Promise<void> {
   await setWorkflow("error", reason);
+  await noteActivity(options.activityId ?? null, {
+    state: refusalState(code),
+    message: reason,
+  });
   if (options.tabId !== undefined) {
     await setBadge(options.tabId, "!").catch(() => undefined);
   }
@@ -3355,6 +3638,8 @@ async function handleToastAction(
           action?.inputType !== "video-pick")
       )
         return;
+      const video =
+        retry.actionId === PICK_VIDEO_ACTION_ID ? "video" : "page-link";
       await deliverPageLink(
         action.handler,
         { url: retry.url },
@@ -3362,6 +3647,14 @@ async function handleToastAction(
         binding.tabId,
         pageTarget,
         retry.actionId,
+        {
+          id: await beginActivity(
+            activityTitle(retry.actionId, retry.options),
+            linkActivityKind(retry.options, video),
+            await chrome.tabs.get(binding.tabId).catch(() => undefined),
+          ),
+          video,
+        },
       );
       return;
     }
@@ -3375,7 +3668,16 @@ async function handleToastAction(
       await openSettingsAt("verification-mode-heading");
       return;
     case "check-synthid":
-      await startSynthIdPick(binding.tabId, binding.frameId, "popup");
+      await startSynthIdPick(
+        binding.tabId,
+        binding.frameId,
+        "popup",
+        await beginActivity(
+          activityTitle(SYNTHID_ACTION_ID),
+          "verify",
+          await chrome.tabs.get(binding.tabId).catch(() => undefined),
+        ),
+      );
       return;
   }
 }
@@ -3396,6 +3698,7 @@ async function hasDownloadsPermission(): Promise<boolean> {
 
 async function startSynthIdPickFromActiveTab(
   trigger: ActionTrigger,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const tabs = await chrome.tabs.query({
     active: true,
@@ -3406,10 +3709,11 @@ async function startSynthIdPickFromActiveTab(
     await notifyStandaloneError(
       "protected_page",
       "No active browser page is available.",
+      { activityId },
     );
     return;
   }
-  await startSynthIdPick(tab.id, 0, trigger);
+  await startSynthIdPick(tab.id, 0, trigger, activityId);
 }
 
 /**
@@ -3422,17 +3726,22 @@ async function startSynthIdPick(
   tabId: number,
   frameId: number,
   trigger: ActionTrigger,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   if (!tab || isProtectedPage(tab.url ?? "")) {
     await notifyStandaloneError(
       "protected_page",
       "Image picking is not supported on this browser page.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
   if (!(await hasDownloadsPermission())) {
+    await noteActivity(activityId, {
+      state: "refused",
+      message: "Allow download access in Settings first.",
+    });
     await openSettingsAt("permissions-heading");
     return;
   }
@@ -3446,6 +3755,7 @@ async function startSynthIdPick(
       verificationMode: "synthid",
       selection: null,
       pageTarget: null,
+      activityId,
     });
     return;
   }
@@ -3454,6 +3764,7 @@ async function startSynthIdPick(
       mode: "image",
       actionId: SYNTHID_ACTION_ID,
       trigger,
+      activityId,
     });
     await setWorkflow(
       "picking",
@@ -3464,7 +3775,7 @@ async function startSynthIdPick(
     await notifyStandaloneError(
       "permission_denied",
       "The image picker could not access this page.",
-      { tabId },
+      { tabId, activityId },
     );
   }
 }
@@ -3474,10 +3785,10 @@ async function startSynthIdPick(
  * No history record and no cache entry: Lens never sees Google's result.
  */
 async function runSynthIdHandoff(
-  session: PageTarget,
+  session: PageTarget & { activityId: ActivityId },
   selection: ImageSelection,
 ): Promise<void> {
-  const { tabId } = session;
+  const { tabId, activityId } = session;
   const action = getActionDefinition(SYNTHID_ACTION_ID);
   if (action?.inputType !== "image-file") return;
   const active = activeVerifications.claim(tabId);
@@ -3485,7 +3796,7 @@ async function runSynthIdHandoff(
     await notifyStandaloneError(
       "concurrency_limit",
       "Another image is still being checked in this tab.",
-      { pageTarget: session, tabId, title: SYNTHID_FAILED_TITLE },
+      { pageTarget: session, tabId, title: SYNTHID_FAILED_TITLE, activityId },
     );
     return;
   }
@@ -3513,10 +3824,15 @@ async function runSynthIdHandoff(
         title: SYNTHID_FAILED_TITLE,
         actions:
           execution.errorCode === "permission_denied" ? ["grant-access"] : [],
+        activityId,
       });
       return;
     }
     await setWorkflow("idle", execution.message);
+    await noteActivity(activityId, {
+      state: "done",
+      message: execution.message,
+    });
     await clearBadge(tabId);
     if (execution.status === "opened") {
       await showPageToast(session, {
@@ -3532,7 +3848,7 @@ async function runSynthIdHandoff(
     await notifyStandaloneError(
       "invalid_request",
       "The Google SynthID handoff could not be completed.",
-      { pageTarget: session, tabId, title: SYNTHID_FAILED_TITLE },
+      { pageTarget: session, tabId, title: SYNTHID_FAILED_TITLE, activityId },
     );
   } finally {
     activeVerifications.release(tabId, active.controller);
@@ -3797,6 +4113,7 @@ const AUDIO_CHECK_FAILED_TITLE = "Audio check failed";
 async function verifyPageAudioSegment(
   startSeconds: number,
   endSeconds: number,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const tab = await activeTab();
   const tabId = tab?.id;
@@ -3805,7 +4122,7 @@ async function verifyPageAudioSegment(
     await notifyStandaloneError(
       "protected_page",
       "Open a normal web page to check its audio.",
-      tabId === undefined ? {} : { tabId },
+      tabId === undefined ? { activityId } : { tabId, activityId },
     );
     return;
   }
@@ -3819,6 +4136,7 @@ async function verifyPageAudioSegment(
         tabId,
         title: AUDIO_CHECK_FAILED_TITLE,
         actions: ["connect-digibot"],
+        activityId,
       },
     );
     return;
@@ -3837,14 +4155,14 @@ async function verifyPageAudioSegment(
       startSeconds,
       endSeconds,
     );
-    await finishPageAudioCheck(tabId, outcome.status, pageTarget);
+    await finishPageAudioCheck(tabId, outcome.status, pageTarget, activityId);
   } catch (error: unknown) {
     await notifyStandaloneError(
       "backend_unavailable",
       error instanceof Error
         ? error.message
         : "The audio segment could not be checked.",
-      { pageTarget, tabId, title: AUDIO_CHECK_FAILED_TITLE },
+      { pageTarget, tabId, title: AUDIO_CHECK_FAILED_TITLE, activityId },
     );
   }
 }
@@ -3853,7 +4171,9 @@ async function finishPageAudioCheck(
   tabId: number,
   status: IntegrationOperationStatus,
   pageTarget: PageTarget | null,
+  activityId: ActivityId,
 ): Promise<void> {
+  const { operationId } = status;
   const evidence = status.envelope?.result?.evidence;
   if (evidence) {
     const detected = evidence.verdict === "openai_signal_detected";
@@ -3865,6 +4185,11 @@ async function finishPageAudioCheck(
       sanitizeDisplayText(`${title}. ${evidence.summary}`, 512),
       AUDIO_ACTION_ID,
     );
+    await noteActivity(activityId, {
+      state: "done",
+      message: title,
+      operationId,
+    });
     await setBadge(tabId, detected ? "✓" : indeterminate ? "!" : "?");
     await showPageToast(pageTarget, {
       tone: indeterminate ? "error" : detected ? "detected" : "no-signal",
@@ -3883,6 +4208,7 @@ async function finishPageAudioCheck(
     const message =
       status.error?.message ?? "The audio segment could not be checked.";
     await setWorkflow("error", message, AUDIO_ACTION_ID);
+    await noteActivity(activityId, { state: "failed", message, operationId });
     await setBadge(tabId, "!");
     await showPageToast(pageTarget, {
       tone: "error",
@@ -3896,6 +4222,7 @@ async function finishPageAudioCheck(
   const message =
     "The audio check is still processing. Its result will appear in History.";
   await setWorkflow("idle", message, AUDIO_ACTION_ID);
+  await noteActivity(activityId, { state: "sent", message, operationId });
   await clearBadge(tabId);
   await showPageToast(pageTarget, {
     tone: "pending",

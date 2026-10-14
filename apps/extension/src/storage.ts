@@ -1,9 +1,12 @@
 import {
+  ActivityEntrySchema,
   DEFAULT_BACKEND_URL,
   DEFAULT_LOCAL_CACHE_LIMIT,
   ExtensionSettingsSchema,
   HistoryRecordSchema,
+  sanitizeDisplayText,
   WorkflowStateSchema,
+  type ActivityEntry,
   type ExtensionSettings,
   type HistoryRecord,
   type HistoryRetention,
@@ -20,6 +23,8 @@ export const STORAGE_KEYS = {
   history: "provenanceLens.history",
   workflow: "provenanceLens.workflow",
   latest: "provenanceLens.latest",
+  // Recent's list: one entry per action the user started.
+  activity: "provenanceLens.activity",
   // The acknowledged SynthID disclosure version, apart from the settings.
   synthidDisclosure: "provenanceLens.synthidDisclosure",
 } as const;
@@ -140,9 +145,78 @@ export async function clearHistory(): Promise<void> {
   await withStorageMutationLock(() =>
     Promise.all([
       chrome.storage.local.remove(STORAGE_KEYS.history),
+      chrome.storage.local.remove(STORAGE_KEYS.activity),
       chrome.storage.session.remove(STORAGE_KEYS.latest),
     ]).then(() => undefined),
   );
+}
+
+/** Recent's list, newest first. */
+export async function getActivity(): Promise<ActivityEntry[]> {
+  const values = await chrome.storage.local.get(STORAGE_KEYS.activity);
+  const raw = values[STORAGE_KEYS.activity];
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item: unknown) => {
+    const parsed = ActivityEntrySchema.safeParse(item);
+    return parsed.success ? [parsed.data] : [];
+  });
+}
+
+/**
+ * Adds an action that started. The list keeps as many entries as history
+ * keeps records, so with history off it keeps nothing.
+ */
+export async function startActivity(
+  entry: ActivityEntry,
+  retention: HistoryRetention,
+): Promise<void> {
+  const parsed = ActivityEntrySchema.parse(entry);
+  await withStorageMutationLock(async () => {
+    const existing = await getActivity();
+    const next = [parsed, ...existing.filter(({ id }) => id !== parsed.id)];
+    await (retention === 0
+      ? chrome.storage.local.remove(STORAGE_KEYS.activity)
+      : chrome.storage.local.set({
+          [STORAGE_KEYS.activity]: next.slice(0, retention),
+        }));
+  });
+}
+
+export type ActivityUpdate = Partial<
+  Pick<
+    ActivityEntry,
+    "kind" | "linkUrl" | "state" | "message" | "operationId" | "recordId"
+  >
+>;
+
+/**
+ * Changes an entry while it runs: what the click picked, then how it ended.
+ * An entry that ended, or one the list no longer keeps, stays as it is.
+ */
+export async function updateActivity(
+  id: string,
+  update: ActivityUpdate,
+): Promise<void> {
+  const patch =
+    update.message === undefined || update.message === null
+      ? update
+      : {
+          ...update,
+          message: sanitizeDisplayText(update.message, 180) || null,
+        };
+  await withStorageMutationLock(async () => {
+    const existing = await getActivity();
+    let changed = false;
+    const next = existing.map((entry) => {
+      if (entry.id !== id || entry.state !== "running") return entry;
+      const parsed = ActivityEntrySchema.safeParse({ ...entry, ...patch });
+      if (!parsed.success) return entry;
+      changed = true;
+      return parsed.data;
+    });
+    if (changed)
+      await chrome.storage.local.set({ [STORAGE_KEYS.activity]: next });
+  });
 }
 
 export async function getLatestRecord(): Promise<HistoryRecord | null> {
