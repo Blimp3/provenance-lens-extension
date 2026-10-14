@@ -15,6 +15,10 @@ import {
 import { readBoundedResponseBytes } from "./bounded-response.js";
 import {
   linkCandidateFor,
+  needsPostPick,
+  postVideosAround,
+  videoLinkFor,
+  youtubeLinkAround,
   type LinkCandidate,
 } from "./page-link-candidates.js";
 import { LENS_FONT, LENS_MONO_FONT, lensTokenSet } from "./ui/tokens.js";
@@ -25,9 +29,17 @@ type ImageCandidate = {
   url: string;
   sourceKind: ImageSelection["sourceKind"];
 };
-/** Image mode picks an image's bytes; link mode picks a post or page link. */
-type PickCandidate = ImageCandidate | ({ kind: "link" } & LinkCandidate);
-type PickerMode = "image" | "link";
+/** A video with no post or video link: the tab's own address goes out. */
+type PageCandidate = { kind: "page"; element: Element; host: string };
+/**
+ * Image mode picks an image's bytes; link mode picks a post or page link;
+ * media mode picks either an image or a video's link or page.
+ */
+type PickCandidate =
+  ImageCandidate | ({ kind: "link" } & LinkCandidate) | PageCandidate;
+/** Why a click in media mode sends nothing; the banner says it. */
+type Refusal = { kind: "refused"; message: string };
+type PickerMode = "image" | "link" | "media";
 
 type PickerOverlay = {
   root: HTMLElement;
@@ -109,6 +121,11 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       target: "Click a post with a video",
       icon: "film",
     },
+    "send-media": {
+      name: "",
+      target: "Click an image or a video",
+      icon: "download",
+    },
     synthid: {
       name: "Google SynthID",
       target: "Click an image",
@@ -119,7 +136,13 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     verify: "Click to verify",
     "send-image": "Click to send",
     "send-video": "Click to send",
+    "send-media": "Send",
     synthid: "Click to save",
+  };
+  const NOTHING_HERE: Record<PickerMode, string> = {
+    image: "No supported image here",
+    link: "This post shows no video",
+    media: "Nothing to download here",
   };
   const TOAST_TONE: Record<ToastTone, { color: string; icon: IconName }> = {
     success: { color: "var(--lens-ok)", icon: "check" },
@@ -200,7 +223,12 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
         startPicker(
           parsed.data.sessionToken,
           mode,
-          parsed.data.label ?? (mode === "link" ? "send-video" : "verify"),
+          parsed.data.label ??
+            (mode === "link"
+              ? "send-video"
+              : mode === "media"
+                ? "send-media"
+                : "verify"),
         );
         return;
       }
@@ -254,10 +282,11 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       pendingFrame = null;
       pendingFrameKind = null;
       if (closed || !latestPointer) return;
-      const candidate = candidateAt(latestPointer.x, latestPointer.y, mode);
+      const found = candidateAt(latestPointer.x, latestPointer.y, mode);
+      const candidate = found?.kind === "refused" ? null : found;
       state.candidate = candidate;
       if (candidate) {
-        renderOverlay(overlay, candidate, HOVER_VERB[label]);
+        renderOverlay(overlay, candidate, HOVER_VERB[label], mode);
       } else {
         overlay.root.style.setProperty("display", "none", "important");
       }
@@ -353,15 +382,21 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
-      if (!candidate) {
-        banner.warn(
-          mode === "link"
-            ? "This post shows no video"
-            : "No supported image here",
-        );
+      if (!candidate || candidate.kind === "refused") {
+        banner.warn(candidate?.message ?? NOTHING_HERE[mode]);
         return;
       }
       state.candidate = candidate;
+      if (candidate.kind === "page") {
+        cleanup();
+        activePicker = null;
+        // The background reads the address from the tab itself.
+        void chrome.runtime.sendMessage({
+          type: "picker-page-selected",
+          sessionToken,
+        });
+        return;
+      }
       if (candidate.kind === "link") {
         cleanup();
         activePicker = null;
@@ -782,7 +817,12 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       const line = document.createElement("span");
       line.style.overflow = "hidden";
       line.style.textOverflow = "ellipsis";
-      line.append(name, ` · ${text.target} · `, key, " to cancel");
+      line.append(
+        ...(text.name ? [name, " · "] : []),
+        `${text.target} · `,
+        key,
+        " to cancel",
+      );
       pill.replaceChildren(icon(text.icon, 16), line);
     };
     renderNormal();
@@ -1193,6 +1233,7 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     overlay: PickerOverlay,
     candidate: PickCandidate,
     verb: string,
+    mode: PickerMode,
   ): void {
     const rect = candidate.element.getBoundingClientRect();
     const viewportWidth = Math.max(1, window.innerWidth);
@@ -1234,15 +1275,18 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     const width = Math.max(1, Math.round(rect.width));
     const height = Math.max(1, Math.round(rect.height));
     const labelText =
-      candidate.kind === "link"
-        ? `Post link · ${candidate.host} · ${verb} · Esc to cancel`
-        : `${pickerKindLabel(candidate.sourceKind)} · ${width} × ${height} px · ${verb} · Esc to cancel`;
+      candidate.kind === "image"
+        ? `${pickerKindLabel(candidate.sourceKind)} · ${width} × ${height} px · ${verb} · Esc to cancel`
+        : `${mode === "media" ? "Video" : "Post link"} · ${candidate.host} · ${verb} · Esc to cancel`;
     overlay.label.textContent = labelText;
     overlay.root.setAttribute(
       "aria-label",
-      `${pickerName(candidate.kind)}. ${labelText}`,
+      `${pickerName(mode)}. ${labelText}`,
     );
-    if (candidate.kind === "link") {
+    // A media pick switches between images and videos under the pointer.
+    for (const key of ["linkHost", "imageKind", "imageWidth", "imageHeight"])
+      delete overlay.label.dataset[key];
+    if (candidate.kind !== "image") {
       overlay.label.dataset["linkHost"] = candidate.host;
     } else {
       overlay.label.dataset["imageKind"] = candidate.sourceKind;
@@ -1291,6 +1335,7 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
   }
 
   function pickerName(mode: PickerMode): string {
+    if (mode === "media") return "Provenance Lens download picker";
     return mode === "link"
       ? "Provenance Lens video picker"
       : "Provenance Lens image picker";
@@ -1317,7 +1362,7 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     clientX: number,
     clientY: number,
     mode: PickerMode,
-  ): PickCandidate | null {
+  ): PickCandidate | Refusal | null {
     const seen = new Set<Element>();
     // Each hit-test chain climbs until the page root, the overlay or an
     // ancestor an earlier chain already covered.
@@ -1332,11 +1377,10 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       seen.add(element);
       return true;
     };
-    for (const element of deepestElementsFromPoint(
-      document,
-      clientX,
-      clientY,
-    )) {
+    const hits = deepestElementsFromPoint(document, clientX, clientY);
+    if (mode === "media")
+      return mediaCandidateAt(hits, clientX, clientY, visit);
+    for (const element of hits) {
       // The toast covers what is under it.
       if (activeToast && element === activeToast.root) return null;
       if (mode === "link") {
@@ -1352,6 +1396,98 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       }
     }
     return null;
+  }
+
+  /**
+   * The download pick: the clicked element decides. A rendered video under
+   * the pointer, or anything its player draws on it, is the video, and so is
+   * its poster; then an image in the hit chains, where a YouTube thumbnail
+   * in a video link stands for that video. A click on neither, such as a
+   * post's text or empty area, takes the post's video when the post shows
+   * exactly one.
+   */
+  function mediaCandidateAt(
+    hits: Element[],
+    clientX: number,
+    clientY: number,
+    visit: (element: Element) => boolean,
+  ): PickCandidate | Refusal | null {
+    // The toast covers what is under it.
+    if (activeToast && hits.includes(activeToast.root)) return null;
+    const pageHits = hits.filter((element) => !isPickerOverlayElement(element));
+    // A video's controls and overlays sit on its box; a player can also take
+    // the video itself out of hit testing.
+    const video = [
+      ...pageHits,
+      ...Array.from(document.querySelectorAll("video")).reverse(),
+    ].find((element) => isRenderedVideo(element, clientX, clientY));
+    if (video) return videoCandidate(video);
+    for (const element of pageHits) {
+      let current: Element | null = element;
+      while (current && visit(current)) {
+        // A poster belongs to its video, which is not under the pointer.
+        const image =
+          current instanceof HTMLVideoElement
+            ? null
+            : candidateForElement(current);
+        if (image) {
+          const url = youtubeLinkAround(image.element, document.baseURI);
+          return url
+            ? { kind: "link", element: image.element, url, host: hostname(url) }
+            : image;
+        }
+        current = current.parentElement;
+      }
+    }
+    const top = pageHits[0];
+    const videos = top ? postVideosAround(top, document.baseURI) : null;
+    if (videos === null) return null;
+    const shown = videos.filter((element) => isRenderedVideo(element));
+    const only = shown.length === 1 ? shown[0] : undefined;
+    return only
+      ? videoCandidate(only)
+      : { kind: "refused", message: "Click the image or the video itself" };
+  }
+
+  /** A `<video>` that shows on the page, under the point when one is given. */
+  function isRenderedVideo(
+    element: Element,
+    x?: number,
+    y?: number,
+  ): element is HTMLVideoElement {
+    if (!(element instanceof HTMLVideoElement) || !element.isConnected)
+      return false;
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    if (
+      x !== undefined &&
+      y !== undefined &&
+      (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom)
+    )
+      return false;
+    return typeof element.checkVisibility === "function"
+      ? element.checkVisibility({ visibilityProperty: true })
+      : getComputedStyle(element).visibility !== "hidden";
+  }
+
+  /**
+   * A picked video's link, or the page itself when the video has no post or
+   * video link. A listing page's video is picked on its own page.
+   */
+  function videoCandidate(video: Element): PickCandidate | Refusal {
+    const url = videoLinkFor(video, document.baseURI);
+    if (url !== null)
+      return { kind: "link", element: video, url, host: hostname(url) };
+    if (needsPostPick(location.href))
+      return {
+        kind: "refused",
+        message: "Open the video's own page, then pick it",
+      };
+    return { kind: "page", element: video, host: location.hostname };
+  }
+
+  function hostname(url: string): string {
+    return new URL(url).hostname;
   }
 
   function isPickerOverlayElement(element: Element): boolean {

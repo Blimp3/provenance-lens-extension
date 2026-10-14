@@ -18,8 +18,8 @@ closes it when the page restyles its host), the SynthID pick above a modal
 dialog, first and repeated picker activation, exact image and audio bytes,
 C2PA trust wording, and synthetic connected Check, Download and page-link
 operations. Check and Download remain separate: Download delivers the original
-without invoking verification, and the page-link send carries only the page
-address.
+image without invoking verification, the same pick on a post's video sends
+that video's address, and the page-link send carries only the page address.
 
 For a manual Website-mode walkthrough, serve the fixtures locally:
 

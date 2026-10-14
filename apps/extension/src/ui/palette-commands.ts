@@ -29,10 +29,9 @@ export const DECLARED_COMMAND_IDS = [
   "send-page-video",
   "send-page-audio",
   "send-page-audio-file",
-  "pick-post-video",
+  "pick-media-telegram",
   "pick-post-audio",
   "pick-post-audio-file",
-  "pick-image-telegram",
   "cancel-active",
   "open-clip",
 ] as const;
@@ -66,7 +65,7 @@ export const COMMAND_ROUTES: Readonly<Record<DeclaredCommandId, CommandRoute>> =
       actionId: LINK_ACTION_ID,
       options: { output: "m4a" },
     },
-    "pick-post-video": { kind: "start", actionId: PICK_VIDEO_ACTION_ID },
+    "pick-media-telegram": { kind: "start", actionId: DOWNLOAD_ACTION_ID },
     "pick-post-audio": {
       kind: "start",
       actionId: PICK_VIDEO_ACTION_ID,
@@ -77,7 +76,6 @@ export const COMMAND_ROUTES: Readonly<Record<DeclaredCommandId, CommandRoute>> =
       actionId: PICK_VIDEO_ACTION_ID,
       options: { output: "m4a" },
     },
-    "pick-image-telegram": { kind: "start", actionId: DOWNLOAD_ACTION_ID },
     "cancel-active": { kind: "cancel" },
     "open-clip": { kind: "palette", view: "clip" },
   };
@@ -314,11 +312,13 @@ export const PALETTE_COMMANDS: readonly PaletteCommand[] = Object.freeze([
     verb: "Open",
   }),
   command({
-    id: "pick-post-video",
-    title: "Pick a post → video…",
-    subtitle: "Click a post that shows a video",
-    icon: "link",
-    run: { kind: "start", actionId: PICK_VIDEO_ACTION_ID },
+    // The click decides: an image goes out as the image download, a video as
+    // the video pick.
+    id: "pick-media-telegram",
+    title: "Pick to download…",
+    subtitle: "Click an image or a video",
+    icon: "download",
+    run: { kind: "start", actionId: DOWNLOAD_ACTION_ID },
     alias: "p",
     needs: ["page", "digibot"],
     path: "Download · pick on the page",
@@ -352,18 +352,6 @@ export const PALETTE_COMMANDS: readonly PaletteCommand[] = Object.freeze([
       options: { output: "m4a" },
     },
     alias: "paf",
-    needs: ["page", "digibot"],
-    path: "Download · pick on the page",
-    leaf: true,
-    verb: "Run",
-  }),
-  command({
-    id: "pick-image-telegram",
-    title: "Pick an image → Telegram…",
-    subtitle: "Sends the original file",
-    icon: "image",
-    run: { kind: "start", actionId: DOWNLOAD_ACTION_ID },
-    alias: "i",
     needs: ["page", "digibot"],
     path: "Download · pick on the page",
     leaf: true,
@@ -496,6 +484,11 @@ export type PalettePrefs = {
 };
 
 const MAX_LAST_USED = 3;
+/** Last used entries of the two picks that "Pick to download…" replaced. */
+const RENAMED_COMMANDS: Readonly<Record<string, string>> = {
+  "pick-post-video": "pick-media-telegram",
+  "pick-image-telegram": "pick-media-telegram",
+};
 const ALIAS_PATTERN = /^[a-z0-9-]{1,12}$/u;
 export const ALIAS_RULE = "1 to 12 characters: a–z, 0–9 and -.";
 
@@ -518,10 +511,14 @@ export function parsePalettePrefs(value: unknown): PalettePrefs {
     }
   }
   const lastUsed = Array.isArray(record["lastUsed"])
-    ? record["lastUsed"].filter(
-        (id): id is string =>
-          typeof id === "string" && commandsById.get(id)?.leaf === true,
-      )
+    ? record["lastUsed"]
+        .map((id: unknown) =>
+          typeof id === "string" ? (RENAMED_COMMANDS[id] ?? id) : id,
+        )
+        .filter(
+          (id): id is string =>
+            typeof id === "string" && commandsById.get(id)?.leaf === true,
+        )
     : [];
   return { aliases, lastUsed: [...new Set(lastUsed)].slice(0, MAX_LAST_USED) };
 }

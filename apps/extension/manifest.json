@@ -62,17 +62,14 @@
     "send-page-audio-file": {
       "description": "Send this page's audio to Telegram as an audio file"
     },
-    "pick-post-video": {
-      "description": "Pick a post and send its video to Telegram"
+    "pick-media-telegram": {
+      "description": "Pick an image or a video and send it to Telegram"
     },
     "pick-post-audio": {
       "description": "Pick a post and send its audio to Telegram as a voice note"
     },
     "pick-post-audio-file": {
       "description": "Pick a post and send its audio to Telegram as an audio file"
-    },
-    "pick-image-telegram": {
-      "description": "Pick an image and send the original to Telegram"
     },
     "cancel-active": {
       "description": "Cancel the running verification or pick"

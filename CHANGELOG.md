@@ -24,13 +24,22 @@ and the picker runtime is 0.9.0.
   page restyles or hides its host. The key that closes the palette sends no
   keyup to the page, though a page's own capture listener on window can still
   see that keyup.
-- Eleven browser commands: **Open or close the Lens palette** (suggested
+- Ten browser commands: **Open or close the Lens palette** (suggested
   Alt+Shift+Space), **Pick an image for OpenAI provenance review** (Alt+Shift+V,
   unchanged), and, with no key until you set one, send this page's video, voice
-  note or audio file, pick a post for its video, voice note or audio file, pick
-  an image for Telegram, cancel the running verification or pick, and open the
-  palette at Clip. When the browser leaves the palette key unassigned,
+  note or audio file, pick an image or a video for Telegram, pick a post for its
+  voice note or audio file, cancel the running verification or pick, and open
+  the palette at Clip. When the browser leaves the palette key unassigned,
   **Choose a palette shortcut** opens its shortcuts page.
+- **Pick to download…** (alias p) in the Download view: one pick where the
+  click decides. An image goes to DigiBot as the image download, and a video
+  as its link with the checks and limits of **Send video**. On X a post with
+  more than one photo or video sends the clicked video as
+  `https://x.com/<user>/status/<id>/video/<n>`. It replaces the two picks
+  **Pick a post → video…** and **Pick an image → Telegram…**: a shortcut set
+  for either old command is gone, so set it again for **Pick an image or a
+  video and send it to Telegram**. A Last used entry of either old pick shows
+  the new row, and an alias set for one is dropped.
 - Right-click items: **Send this image to Telegram**, **Send link to Telegram
   as video**, **…as voice note** and **…as audio file**, **Send this video to
   Telegram**, **Lens palette for this video…** and **Open Lens palette**, and
@@ -51,7 +60,7 @@ and the picker runtime is 0.9.0.
 
 - Picker: a banner at the top of the page names the action (**Verify**,
   **Send image**, **Send video** or **Google SynthID**), what to click and Esc
-  to cancel. A click on nothing pickable shows a 2-second warning in the
+  to cancel; for **Pick to download…** it reads "Click an image or a video". A click on nothing pickable shows a 2-second warning in the
   banner, and the hover label names the verb (Click to verify, send or save).
 - Toasts: a progress toast with a spinner while work runs, with **Cancel** for
   an image check (**Stop waiting** for a connected one), then a result toast in
@@ -170,7 +179,7 @@ and the picker runtime is 0.9.0.
 
 ### Documentation
 
-- README: the Lens palette (opening, keys, the eleven commands, the right-click
+- README: the Lens palette (opening, keys, the ten commands, the right-click
   list, restricted pages, why `palette.html` is web-accessible and the Google
   SynthID handoff). The note "There is no right-click menu for videos" is gone.
 - README: the popup actions include **Check with Google SynthID…**, with what

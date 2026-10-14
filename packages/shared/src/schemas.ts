@@ -550,6 +550,7 @@ export const PickerLabelSchema = z.enum([
   "verify",
   "send-image",
   "send-video",
+  "send-media",
   "synthid",
 ]);
 export type PickerLabel = z.infer<typeof PickerLabelSchema>;
@@ -598,9 +599,11 @@ export const PickerRuntimeMessageSchema = z.discriminatedUnion("type", [
       type: z.literal("picker-start"),
       runtimeVersion: z.literal(PICKER_RUNTIME_VERSION),
       sessionToken: z.string().uuid(),
-      // "link" picks a post or page link to send to DigiBot; omitted, an image.
-      mode: z.enum(["image", "link"]).optional(),
-      // Omitted, "verify" for an image and "send-video" for a link.
+      // "link" picks a post or page link to send to DigiBot, "media" an image
+      // or a video to send to Telegram; omitted, an image.
+      mode: z.enum(["image", "link", "media"]).optional(),
+      // Omitted, "verify" for an image, "send-video" for a link and
+      // "send-media" for an image or a video.
       label: PickerLabelSchema.optional(),
     })
     .strict(),
@@ -691,6 +694,14 @@ export const ExtensionMessageSchema = z.discriminatedUnion("type", [
       sessionToken: z.string().uuid(),
       // The background validates the address again before anything is sent.
       url: z.string().trim().min(1).max(2_048),
+    })
+    .strict(),
+  // A download pick on a video with no post or video link: the background
+  // sends the tab's own address, as Send video does.
+  z
+    .object({
+      type: z.literal("picker-page-selected"),
+      sessionToken: z.string().uuid(),
     })
     .strict(),
   z.object({ type: z.literal("cancel-active") }).strict(),

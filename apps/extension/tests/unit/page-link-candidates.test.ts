@@ -4,6 +4,10 @@ import {
   linkCandidateFor,
   needsPostPick,
   pickedLinkUrl,
+  pickedMediaUrl,
+  postVideosAround,
+  videoLinkFor,
+  youtubeLinkAround,
 } from "../../src/page-link-candidates.js";
 
 describe("picked link addresses", () => {
@@ -346,5 +350,150 @@ describe("X posts under the pointer", () => {
       url: "https://page.example/post?id=1",
       host: "page.example",
     });
+  });
+});
+
+describe("download pick addresses", () => {
+  beforeEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it("keeps an X post's /video/<n> only on the download pick's path", () => {
+    expect(pickedMediaUrl("https://twitter.com/alice/status/123/video/3")).toBe(
+      "https://x.com/alice/status/123/video/3",
+    );
+    expect(pickedMediaUrl("https://x.com/alice/status/123/video/4?s=20")).toBe(
+      "https://x.com/alice/status/123/video/4",
+    );
+    expect(pickedLinkUrl("https://x.com/alice/status/123/video/3")).toBe(
+      "https://x.com/alice/status/123",
+    );
+    // Anything else goes out as a picked link does.
+    for (const href of [
+      "https://x.com/alice/status/123/video/5",
+      "https://x.com/alice/status/123/photo/1",
+      "https://youtu.be/abcdefghijk",
+      "https://page.example/post#top",
+    ])
+      expect(pickedMediaUrl(href)).toBe(pickedLinkUrl(href));
+    expect(pickedMediaUrl("https://t.co/abc/video/1")).toBeNull();
+    expect(pickedMediaUrl("https://x.com/home")).toBeNull();
+  });
+
+  /** An X post with its permalink and the given media in grid order. */
+  function xPostWith(...media: Element[]): HTMLElement {
+    const post = element("article");
+    post.append(link("/alice/status/1", true), element("div", "A post"));
+    for (const item of media) post.append(item);
+    document.body.append(post);
+    return post;
+  }
+
+  function photo(index: number, status = "/alice/status/1"): HTMLElement {
+    const anchor = link(`${status}/photo/${index}`);
+    anchor.append(element("img"));
+    return anchor;
+  }
+
+  it("names a video by its place among an X post's media", () => {
+    const video = element("video");
+    xPostWith(photo(1), photo(2), video);
+    expect(videoLinkFor(video, X_PAGE)).toBe(
+      "https://x.com/alice/status/1/video/3",
+    );
+    document.body.replaceChildren();
+
+    const first = element("video");
+    const second = element("video");
+    xPostWith(first, photo(2), second);
+    expect(videoLinkFor(first, X_PAGE)).toBe(
+      "https://x.com/alice/status/1/video/1",
+    );
+    expect(videoLinkFor(second, X_PAGE)).toBe(
+      "https://x.com/alice/status/1/video/3",
+    );
+  });
+
+  it("keeps the plain status for a post's only media item", () => {
+    const video = element("video");
+    xPostWith(video);
+    expect(videoLinkFor(video, X_PAGE)).toBe("https://x.com/alice/status/1");
+  });
+
+  it("counts only a post's own media, not a quoted post's or another status's", () => {
+    const quote = quoteCard();
+    const quotedVideo = element("video");
+    quote.append(link("https://x.com/carol/status/9", true), quotedVideo);
+    const video = element("video");
+    // A photo link of another status, such as a quoted post without a card.
+    xPostWith(photo(1, "/carol/status/9"), quote, video);
+    expect(videoLinkFor(video, X_PAGE)).toBe("https://x.com/alice/status/1");
+    expect(videoLinkFor(quotedVideo, X_PAGE)).toBe(
+      "https://x.com/carol/status/9",
+    );
+  });
+
+  it("sends a video's own link elsewhere, and the page for none", () => {
+    const anchor = link("https://page.example/watch/1#top");
+    const linked = element("video");
+    anchor.append(linked);
+    const lone = element("video");
+    const channel = link("https://www.youtube.com/@channel");
+    const inChannel = element("video");
+    channel.append(inChannel);
+    document.body.append(anchor, lone, channel);
+    const base = "https://page.example/";
+    expect(videoLinkFor(linked, base)).toBe("https://page.example/watch/1");
+    expect(videoLinkFor(lone, base)).toBeNull();
+    expect(videoLinkFor(inChannel, base)).toBeNull();
+    // On X a video outside a post is never sent by its link.
+    expect(videoLinkFor(linked, X_PAGE)).toBeNull();
+  });
+
+  it("finds the videos of the post around a click on its text", () => {
+    const video = element("video");
+    const post = xPostWith(photo(1), video);
+    const text = post.querySelector("div");
+    if (!text) throw new Error("Missing text");
+    expect(postVideosAround(text, X_PAGE)).toEqual([video]);
+
+    const other = element("div", "Sidebar");
+    document.body.append(other);
+    expect(postVideosAround(other, X_PAGE)).toBeNull();
+
+    const article = element("article");
+    const story = element("p", "A story");
+    const clip = element("video");
+    article.append(story, clip);
+    document.body.append(article);
+    const base = "https://news.example/story";
+    expect(postVideosAround(story, base)).toEqual([clip]);
+    expect(postVideosAround(other, base)).toBeNull();
+  });
+
+  it("reads a YouTube thumbnail's video from its link", () => {
+    const thumbnails = [
+      "/watch?v=abcdefghijk&pp=feed",
+      "https://www.youtube.com/shorts/abcdefghijk",
+      "https://youtu.be/abcdefghijk",
+      "https://www.youtube.com/@channel",
+      "https://page.example/watch?v=abcdefghijk",
+    ].map((href) => {
+      const anchor = link(href);
+      const image = element("img");
+      anchor.append(image);
+      document.body.append(anchor);
+      return youtubeLinkAround(image, "https://www.youtube.com/");
+    });
+    expect(thumbnails).toEqual([
+      "https://www.youtube.com/watch?v=abcdefghijk",
+      "https://www.youtube.com/shorts/abcdefghijk",
+      "https://www.youtube.com/watch?v=abcdefghijk",
+      null,
+      null,
+    ]);
+    expect(youtubeLinkAround(element("img"), "https://www.youtube.com/")).toBe(
+      null,
+    );
   });
 });

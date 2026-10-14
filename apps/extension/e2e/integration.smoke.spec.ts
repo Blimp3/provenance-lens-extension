@@ -178,7 +178,9 @@ test("pairs DigiBot, separates image Check and Download operations, sends a page
       await route.fulfill({
         status: 200,
         contentType: "text/html",
-        body: '<!doctype html><html lang="en"><head><title>Integration fixture</title></head><body><img id="target-image" src="/image.png" alt="Fixture" width="320" height="180"></body></html>',
+        // An X-style post with two photos and then a video: the download
+        // pick sends a photo as an image and the video as /video/3.
+        body: '<!doctype html><html lang="en"><head><title>Integration fixture</title></head><body><article><a href="https://x.com/alice/status/123"><time>2h</time></a><p>A post</p><a href="https://x.com/alice/status/123/photo/1"><img id="target-image" src="/image.png" alt="Fixture" width="320" height="180"></a><a href="https://x.com/alice/status/123/photo/2"><img src="/image.png" alt="Second photo" width="320" height="180"></a><video id="target-video" width="320" height="180"></video></article></body></html>',
       });
       return;
     }
@@ -396,16 +398,16 @@ test("pairs DigiBot, separates image Check and Download operations, sends a page
       );
     };
 
-    const startAction = async (actionId: string): Promise<void> => {
+    const startAction = async (
+      actionId: string,
+      box = imageBox,
+    ): Promise<void> => {
       await sendStartAction(actionId);
       const overlay = targetPage.locator(
         '[data-provenance-lens-picker="overlay"]',
       );
       await expect(overlay).toBeAttached();
-      await targetPage.mouse.click(
-        (imageBox?.x ?? 0) + 80,
-        (imageBox?.y ?? 0) + 80,
-      );
+      await targetPage.mouse.click((box?.x ?? 0) + 80, (box?.y ?? 0) + 80);
       await expect(overlay).toHaveCount(0);
     };
 
@@ -463,6 +465,17 @@ test("pairs DigiBot, separates image Check and Download operations, sends a page
         targetPage.locator('[data-provenance-lens-toast="true"]').count(),
       )
       .toBeGreaterThan(0);
+    expect(operationInputs).toHaveLength(2);
+
+    // The same download pick on the post's video sends its link.
+    await startAction(
+      DOWNLOAD_ACTION_ID,
+      await targetPage.locator("#target-video").boundingBox(),
+    );
+    await expect.poll(() => linkDownloads.length).toBe(2);
+    expect(linkDownloads[1]?.sourceUrl).toBe(
+      "https://x.com/alice/status/123/video/3",
+    );
     expect(operationInputs).toHaveLength(2);
 
     const history = await context.newPage();

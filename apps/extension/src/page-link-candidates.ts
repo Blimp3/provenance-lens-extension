@@ -16,6 +16,10 @@
  *   `/watch?v=` or `/shorts/` video; a container holding two gives nothing.
  * - Anywhere else, the nearest HTTP(S) link is sent without its fragment.
  *
+ * The download pick reuses these rules for a clicked video: on X its post,
+ * with `/video/<n>` when the post holds more than one media item, elsewhere
+ * the link around the video, else the page's own address.
+ *
  * Hosts match by suffix once trailing dots are stripped. The functions take
  * the base address explicitly, so the background can re-validate a picked
  * address without a document.
@@ -28,6 +32,11 @@ const MAX_LINK_LENGTH = 2_048;
 const X_HOST = /(^|\.)(x|twitter)\.com$/u;
 const YOUTUBE_HOST = /(^|\.)youtube\.com$/u;
 const X_STATUS_PATH = /^\/([A-Za-z0-9_]{1,15})\/status\/(\d{1,25})(?:\/|$)/u;
+/** A photo of an X post; X posts hold at most four media items. */
+const X_PHOTO_PATH =
+  /^\/[A-Za-z0-9_]{1,15}\/status\/\d{1,25}\/photo\/[1-4]\/?$/u;
+const X_VIDEO_PATH =
+  /^\/[A-Za-z0-9_]{1,15}\/status\/\d{1,25}\/video\/([1-4])\/?$/u;
 /** An X post, or the quote card inside one. */
 const X_CARD_SELECTOR = 'article, div[role="link"]';
 const YOUTUBE_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/u;
@@ -54,6 +63,21 @@ export function pickedLinkUrl(href: string, base?: string): string | null {
   if (isXHost(host)) return xStatusUrl(url);
   if (isYouTubeHost(host)) return youtubeVideoUrl(url);
   return url.toString();
+}
+
+/**
+ * The address a download pick sends for a picked video: as pickedLinkUrl,
+ * but an X post's `/video/<n>` suffix stays, so DigiBot sends that video of
+ * a post with several media items.
+ */
+export function pickedMediaUrl(href: string, base?: string): string | null {
+  const url = resolveHttpUrl(href, base);
+  if (!url) return null;
+  const status = isXHost(hostOf(url)) ? xStatusUrl(url) : null;
+  const index = X_VIDEO_PATH.exec(url.pathname)?.[1];
+  return status !== null && index !== undefined
+    ? `${status}/video/${index}`
+    : pickedLinkUrl(href, base);
 }
 
 /**
@@ -96,6 +120,58 @@ export function linkCandidateFor(
     current = current.parentElement;
   }
   return null;
+}
+
+/**
+ * The address a download pick sends for a rendered video, or null for the
+ * page's own address. On X that is the video's post, and a post with more
+ * than one media item names the video as `/video/<n>`: n is its place among
+ * the post's own videos and photo links in document order, the order of X's
+ * media grid. Elsewhere it is the link around the video.
+ */
+export function videoLinkFor(video: Element, base: string): string | null {
+  const post = xPostAround(video, base);
+  if (post) {
+    const media = xPostMedia(post, base);
+    const index = media.indexOf(video);
+    return media.length > 1 && index >= 0 && index < 4
+      ? `${post.status}/video/${index + 1}`
+      : post.status;
+  }
+  if (isXPage(base)) return null;
+  const link = video.closest("a[href]");
+  return link ? pickedLinkUrl(link.getAttribute("href") ?? "", base) : null;
+}
+
+/**
+ * The videos of the post around an element, for a download pick on a post's
+ * text or empty area: on X the post with its own permalink, elsewhere the
+ * nearest `article`. null outside a post.
+ */
+export function postVideosAround(
+  element: Element,
+  base: string,
+): Element[] | null {
+  const post = xPostAround(element, base);
+  if (post)
+    return xPostMedia(post, base).filter(
+      (media) => media.localName === "video",
+    );
+  if (isXPage(base)) return null;
+  const article = element.closest('article, [role="article"]');
+  return article ? Array.from(article.querySelectorAll("video")) : null;
+}
+
+/** The YouTube video a thumbnail's link names, or null. */
+export function youtubeLinkAround(
+  element: Element,
+  base: string,
+): string | null {
+  const link = element.closest("a[href]");
+  const url = link
+    ? resolveHttpUrl(link.getAttribute("href") ?? "", base)
+    : null;
+  return url && isYouTubeHost(hostOf(url)) ? youtubeVideoUrl(url) : null;
 }
 
 /** undefined: keep climbing; null: stop with nothing; otherwise the candidate. */
@@ -155,6 +231,23 @@ function xPostAround(element: Element, base: string): XPost | null {
     if (status !== null) return { card, status };
   }
   return null;
+}
+
+/** The post's own videos and photos of its own status, in document order. */
+function xPostMedia(post: XPost, base: string): Element[] {
+  return Array.from(
+    post.card.querySelectorAll('video, a[href*="/photo/"]'),
+  ).filter((element) => {
+    if (xPostAround(element, base)?.card !== post.card) return false;
+    if (element.localName === "video") return true;
+    const url = resolveHttpUrl(element.getAttribute("href") ?? "", base);
+    return (
+      url !== null &&
+      isXHost(hostOf(url)) &&
+      X_PHOTO_PATH.test(url.pathname) &&
+      xStatusUrl(url)?.toLowerCase() === post.status.toLowerCase()
+    );
+  });
 }
 
 function cardOf(element: Element | null): Element | null {

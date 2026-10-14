@@ -1237,13 +1237,18 @@ describe("background verification workflow boundaries", () => {
     expect(tabMessages(chromeState, "picker-stop")).toHaveLength(1);
   });
 
-  /** chrome.storage.session backed by one map, shared across worker restarts. */
+  /**
+   * chrome.storage.session backed by one map, shared across worker restarts.
+   * Like Chrome, a read returns a copy.
+   */
   function sessionStorageOf(
     chromeState: ReturnType<typeof setupChrome>,
     store = new Map<string, unknown>(),
   ): Map<string, unknown> {
     chromeState.sessionGet.mockImplementation((key: string) =>
-      Promise.resolve(store.has(key) ? { [key]: store.get(key) } : {}),
+      Promise.resolve(
+        store.has(key) ? { [key]: structuredClone(store.get(key)) } : {},
+      ),
     );
     chromeState.sessionSet.mockImplementation(
       (values: Record<string, unknown>) => {
@@ -1749,6 +1754,271 @@ describe("background verification workflow boundaries", () => {
     );
     expect(chromeState.executeScript).not.toHaveBeenCalled();
     expect(mocks.isIntegrationConnected).not.toHaveBeenCalled();
+  });
+
+  /** Starts the download pick from the palette and returns its token. */
+  async function startMediaPick(
+    chromeState: ReturnType<typeof setupChrome>,
+    nth = 1,
+  ): Promise<string> {
+    messageListenerOf(chromeState)(
+      { type: "start-action", actionId: DOWNLOAD_ACTION_ID, trigger: "popup" },
+      extensionPageSender("palette.html"),
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "picker-start")).toHaveLength(nth),
+    );
+    const start = tabMessages(chromeState, "picker-start")[nth - 1];
+    expect(start).toMatchObject({ mode: "media", label: "send-media" });
+    await vi.waitFor(() =>
+      expect(mocks.setWorkflowState).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          status: "picking",
+          actionId: DOWNLOAD_ACTION_ID,
+          message: "Click an image or a video to send it to Telegram.",
+        }),
+      ),
+    );
+    return start?.["sessionToken"] as string;
+  }
+
+  /** The two link handlers a download pick can become, by action. */
+  function mediaPickActions(): {
+    video: ReturnType<typeof vi.fn>;
+    page: ReturnType<typeof vi.fn>;
+  } {
+    const sent = {
+      video: vi.fn().mockResolvedValue(undefined),
+      page: vi.fn().mockResolvedValue(undefined),
+    };
+    mocks.getActionDefinition.mockImplementation((actionId: string) =>
+      actionId === PICK_VIDEO_ACTION_ID
+        ? { inputType: "video-pick", handler: sent.video }
+        : actionId === LINK_ACTION_ID
+          ? { inputType: "page-link", handler: sent.page }
+          : { inputType: "image-file", handler: mocks.actionHandler },
+    );
+    return sent;
+  }
+
+  it("runs a download pick's image as the image download", async () => {
+    const chromeState = setupChrome();
+    sessionStorageOf(chromeState);
+    connectedVideoPick(chromeState);
+    const sent = mediaPickActions();
+    const { ExtensionWorkflowError } =
+      await import("../../src/actions/verify-openai-provenance.js");
+    mocks.runIntegratedImageAction.mockRejectedValue(
+      new ExtensionWorkflowError("user_cancelled", "Stopped."),
+    );
+    await loadBackground();
+
+    const sessionToken = await startMediaPick(chromeState);
+    const listener = messageListenerOf(chromeState);
+    // Three answers in the same tick: the first one is taken, once.
+    const picked = {
+      type: "picker-selected",
+      sessionToken,
+      selection: selection(),
+    };
+    listener(picked, pickerSender());
+    listener(picked, pickerSender());
+    listener(
+      { type: "picker-link-selected", sessionToken, url: PICKED_URL },
+      pickerSender(),
+    );
+    await waitForCall(mocks.runIntegratedImageAction, 1);
+    await flush();
+    await flush();
+    expect(mocks.runIntegratedImageAction).toHaveBeenCalledTimes(1);
+    expect(mocks.runIntegratedImageAction.mock.calls[0]?.[0]).toBe("download");
+    expect(mocks.runIntegratedImageAction.mock.calls[0]?.[1]).toMatchObject({
+      url: IMAGE_URL,
+    });
+    expect(tabMessages(chromeState, "picker-stop")).toHaveLength(1);
+    expect(sent.video).not.toHaveBeenCalled();
+    expect(sent.page).not.toHaveBeenCalled();
+  });
+
+  it("sends a download pick's X video as the video pick, keeping /video/3", async () => {
+    const chromeState = setupChrome();
+    connectedVideoPick(chromeState);
+    const sent = mediaPickActions();
+    await loadBackground();
+
+    const sessionToken = await startMediaPick(chromeState);
+    messageListenerOf(chromeState)(
+      {
+        type: "picker-link-selected",
+        sessionToken,
+        url: "https://x.com/alice/status/123/video/3",
+      },
+      pickerSender(),
+    );
+    await waitForCall(sent.video, 1);
+    expect(sent.video).toHaveBeenCalledWith(
+      { url: "https://x.com/alice/status/123/video/3" },
+      {},
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "show-toast")).toHaveLength(2),
+    );
+    expect(tabMessages(chromeState, "show-toast")[0]).toMatchObject({
+      sessionToken,
+      tone: "progress",
+      message: "x.com · Video",
+    });
+    expect(mocks.runIntegratedImageAction).not.toHaveBeenCalled();
+    expect(sent.page).not.toHaveBeenCalled();
+  });
+
+  it("sends the tab's own address for a video with no link, and refuses a listing page", async () => {
+    const chromeState = setupChrome();
+    connectedVideoPick(chromeState);
+    const sent = mediaPickActions();
+    const getTab = chromeState.api.tabs.get as ReturnType<typeof vi.fn>;
+    getTab.mockResolvedValue({ id: TAB_ID, url: "https://news.example/story" });
+    await loadBackground();
+    const listener = messageListenerOf(chromeState);
+
+    const first = await startMediaPick(chromeState);
+    // Only the bound picker document may answer.
+    listener(
+      { type: "picker-page-selected", sessionToken: first },
+      pickerSender({ documentId: "document-2" }),
+    );
+    listener(
+      { type: "picker-page-selected", sessionToken: first },
+      pickerSender(),
+    );
+    await waitForCall(sent.page, 1);
+    expect(sent.page).toHaveBeenCalledWith(
+      { url: "https://news.example/story" },
+      {},
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "show-toast")).toHaveLength(2),
+    );
+
+    getTab.mockResolvedValue({ id: TAB_ID, url: "https://x.com/home" });
+    const second = await startMediaPick(chromeState, 2);
+    listener(
+      { type: "picker-page-selected", sessionToken: second },
+      pickerSender(),
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "show-toast")).toHaveLength(3),
+    );
+    expect(tabMessages(chromeState, "show-toast")[2]).toMatchObject({
+      sessionToken: second,
+      tone: "error",
+      title: "Page link not sent",
+      message: "Open the video's own page, then pick it.",
+    });
+    expect(sent.page).toHaveBeenCalledTimes(1);
+    expect(sent.video).not.toHaveBeenCalled();
+    expect(chromeState.setBadgeText).toHaveBeenLastCalledWith({
+      tabId: TAB_ID,
+      text: "!",
+    });
+  });
+
+  it("takes a stored download pick once after the worker restarted", async () => {
+    const firstWorker = setupChrome();
+    const store = sessionStorageOf(firstWorker);
+    connectedVideoPick(firstWorker);
+    mediaPickActions();
+    await loadBackground();
+    const sessionToken = await startMediaPick(firstWorker);
+    expect(store.get(LINK_PICKER_SESSIONS_KEY)).toEqual({
+      [sessionToken]: {
+        sessionToken,
+        tabId: TAB_ID,
+        frameId: 0,
+        documentId: DOCUMENT_ID,
+        mode: "media",
+        trigger: "popup",
+        verificationMode: "api",
+      },
+    });
+
+    vi.resetModules();
+    const restarted = setupChrome();
+    sessionStorageOf(restarted, store);
+    connectedVideoPick(restarted);
+    const sent = mediaPickActions();
+    await loadBackground();
+    const picked = {
+      type: "picker-link-selected",
+      sessionToken,
+      url: "https://www.youtube.com/watch?v=abcdefghijk",
+    };
+    messageListenerOf(restarted)(picked, pickerSender());
+    await waitForCall(sent.video, 1);
+    expect(sent.video).toHaveBeenCalledWith(
+      { url: "https://www.youtube.com/watch?v=abcdefghijk" },
+      {},
+    );
+    expect(store.get(LINK_PICKER_SESSIONS_KEY)).toEqual({});
+    messageListenerOf(restarted)(picked, pickerSender());
+    messageListenerOf(restarted)(
+      { type: "picker-selected", sessionToken, selection: selection() },
+      pickerSender(),
+    );
+    await flush();
+    await flush();
+    expect(sent.video).toHaveBeenCalledTimes(1);
+    expect(mocks.runIntegratedImageAction).not.toHaveBeenCalled();
+  });
+
+  it("cancels a download pick and spends it", async () => {
+    const chromeState = setupChrome();
+    connectedVideoPick(chromeState);
+    const sent = mediaPickActions();
+    await loadBackground();
+
+    const sessionToken = await startMediaPick(chromeState);
+    const listener = messageListenerOf(chromeState);
+    listener({ type: "picker-cancelled", sessionToken }, pickerSender());
+    await vi.waitFor(() =>
+      expect(mocks.setWorkflowState).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: "idle", message: "Pick cancelled." }),
+      ),
+    );
+    for (const message of [
+      { type: "picker-selected", sessionToken, selection: selection() },
+      { type: "picker-link-selected", sessionToken, url: PICKED_URL },
+      { type: "picker-page-selected", sessionToken },
+    ])
+      listener(message, pickerSender());
+    await flush();
+    await flush();
+    expect(mocks.runIntegratedImageAction).not.toHaveBeenCalled();
+    expect(sent.video).not.toHaveBeenCalled();
+    expect(sent.page).not.toHaveBeenCalled();
+  });
+
+  it("does not open the download pick until DigiBot is connected", async () => {
+    const chromeState = setupChrome();
+    connectedVideoPick(chromeState);
+    mediaPickActions();
+    mocks.isIntegrationConnected.mockResolvedValue(false);
+    await loadBackground();
+
+    messageListenerOf(chromeState)(
+      { type: "start-action", actionId: DOWNLOAD_ACTION_ID, trigger: "popup" },
+      extensionPageSender("palette.html"),
+    );
+    await vi.waitFor(() =>
+      expect(mocks.setWorkflowState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: "error",
+          message:
+            "Connect Provenance Lens to DigiBot in Settings before picking an image or a video.",
+        }),
+      ),
+    );
+    expect(chromeState.executeScript).not.toHaveBeenCalled();
   });
 
   it("accepts verification control messages only from the extension's own pages", async () => {

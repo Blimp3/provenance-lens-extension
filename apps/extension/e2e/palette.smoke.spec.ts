@@ -1016,9 +1016,11 @@ test("a page cover lifted 15 ms in every 100 ms lets no key through", async () =
     expect(await startActions(lens)).toEqual([]);
     expect(await hostCount(page)).toBe(1);
 
-    // The keys did reach the frame: with the cover gone, Enter runs.
-    await page.evaluate(() => {
+    // The keys did reach the frame: with the cover gone, Enter runs. The
+    // last lift's show is still pending for up to 15 ms.
+    await page.evaluate(async () => {
       clearInterval((window as Window & { __flicker?: number }).__flicker);
+      await new Promise((resolve) => setTimeout(resolve, 50));
       document.querySelector<HTMLElement>("#cover")?.hidePopover();
     });
     await takesClicks(page, frame);

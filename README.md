@@ -90,10 +90,9 @@ themselves, so **Set hotkey…** opens that page.
 | Send this page's video to Telegram                          | None            | Sends the page link through DigiBot                    |
 | Send this page's audio to Telegram as a voice note          | None            | The same, as a voice note                              |
 | Send this page's audio to Telegram as an audio file         | None            | The same, as an audio file                             |
-| Pick a post and send its video to Telegram                  | None            | Starts the post picker                                 |
-| Pick a post and send its audio to Telegram as a voice note  | None            | The same, as a voice note                              |
+| Pick an image or a video and send it to Telegram            | None            | Starts the download picker                             |
+| Pick a post and send its audio to Telegram as a voice note  | None            | Starts the post picker for a voice note                |
 | Pick a post and send its audio to Telegram as an audio file | None            | The same, as an audio file                             |
-| Pick an image and send the original to Telegram             | None            | Starts the picker for a DigiBot download               |
 | Cancel the running verification or pick                     | None            | Stops a running check, or a picker waiting for a click |
 | Open the Lens palette at Clip                               | None            | Opens the Clip view                                    |
 
@@ -193,8 +192,8 @@ Settings:
 
 - **Download › Send video**, **Send voice note**, **Send audio file** and
   **Send clip…**
-- **Download › Pick a post → video…**, **Pick a post → voice note…**, **Pick a
-  post → audio file…** and **Pick an image → Telegram…**
+- **Download › Pick to download…**, **Pick a post → voice note…** and **Pick a
+  post → audio file…**
 - **Verify › Verify audio of this page…**
 - the rows of the **Clip** view
 
@@ -241,12 +240,39 @@ DigiBot 5.0.0 accepts only MP3 and refuses them.
 to 60 seconds of the page's video through DigiBot. The check runs in the
 background, and the page shows its progress and result as a notice.
 
+### Pick to download
+
+**Pick to download…** closes the palette and shows the download picker on the
+page: "Click an image or a video · Esc to cancel". What you click decides what
+Lens sends:
+
+- **An image** (an `img`, a `picture` or a background image): the label reads
+  **Image · W × H px · Send · Esc to cancel**, and Lens sends the original
+  image file to DigiBot without verification.
+- **A video**: the label reads **Video · host · Send · Esc to cancel**, and
+  Lens sends the video's link with the same checks and limits as **Send
+  video**. A rendered video counts with its player's controls and its poster.
+  A YouTube thumbnail in a `/watch?v=`, `/shorts/` or `youtu.be` link counts as
+  that video.
+- **X**: Lens sends a video as its post's status link. In a post with more than
+  one photo or video, Lens sends the clicked video as
+  `https://x.com/<user>/status/<id>/video/<n>`, where n is its place among the
+  post's photos and videos in the media grid. A photo there goes as an image.
+- **A video with no post or video link**, such as a news site's player or
+  YouTube's player on a watch page: Lens sends the page's own address. On an X
+  or YouTube listing page, the picker says "Open the video's own page, then
+  pick it".
+- **A post's text or empty area**: Lens sends the post's video when the post
+  shows exactly one. Otherwise the picker says "Click the image or the video
+  itself". A click on nothing pickable says "Nothing to download here".
+
+After a refusal, the picker stays on the page. To cancel, press Escape.
+
 ### Pick a post
 
-**Pick a post → video…**, **Pick a post → voice note…** or **Pick a post →
-audio file…** closes the palette and
-shows the video picker on the page. The video picker sends only the link of the
-post or video that you click. The rules for each site are:
+**Pick a post → voice note…** or **Pick a post → audio file…** closes the
+palette and shows the video picker on the page. The video picker sends only the
+link of the post or video that you click. The rules for each site are:
 
 - **X**: Lens sends a post as its status link. It does this only while the post
   shows a rendered video of its own. On X, Lens never sends anything but a post.

@@ -1,5 +1,6 @@
 import {
   AUDIO_ACTION_ID,
+  DOWNLOAD_ACTION_ID,
   PICK_VIDEO_ACTION_ID,
   resultLabel,
   type ExtensionMessage,
@@ -551,7 +552,9 @@ function nowRows(): Row[] {
         title:
           workflow.actionId === PICK_VIDEO_ACTION_ID
             ? "Picking a post…"
-            : "Picking an image…",
+            : workflow.actionId === DOWNLOAD_ACTION_ID
+              ? "Picking an image or a video…"
+              : "Picking an image…",
         subtitle: elapsed,
         icon: "x",
         value: "Cancel pick",
@@ -642,10 +645,9 @@ function downloadRows(): Row[] {
     );
   }
   for (const id of [
-    "pick-post-video",
+    "pick-media-telegram",
     "pick-post-audio",
     "pick-post-audio-file",
-    "pick-image-telegram",
   ]) {
     const entry = paletteCommand(id);
     if (entry) built.push(commandRow(entry, "Pick on the page"));

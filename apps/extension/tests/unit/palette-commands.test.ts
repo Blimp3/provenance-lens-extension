@@ -68,7 +68,7 @@ function entry(id: string) {
 }
 
 describe("the palette's browser commands", () => {
-  it("routes the manifest's 11 commands in its order", () => {
+  it("routes the manifest's 10 commands in its order", () => {
     const manifest = JSON.parse(
       readFileSync(resolve(import.meta.dirname, "../../manifest.json"), "utf8"),
     ) as { commands: Record<string, unknown> };
@@ -103,9 +103,9 @@ describe("the palette's browser commands", () => {
       actionId: LINK_ACTION_ID,
       options: { output: "m4a" },
     });
-    expect(commandRoute("pick-post-video")).toEqual({
+    expect(commandRoute("pick-media-telegram")).toEqual({
       kind: "start",
-      actionId: PICK_VIDEO_ACTION_ID,
+      actionId: DOWNLOAD_ACTION_ID,
     });
     expect(commandRoute("pick-post-audio")).toEqual({
       kind: "start",
@@ -117,10 +117,9 @@ describe("the palette's browser commands", () => {
       actionId: PICK_VIDEO_ACTION_ID,
       options: { output: "m4a" },
     });
-    expect(commandRoute("pick-image-telegram")).toEqual({
-      kind: "start",
-      actionId: DOWNLOAD_ACTION_ID,
-    });
+    // The two picks it replaced are no longer browser commands.
+    expect(commandRoute("pick-post-video")).toBeNull();
+    expect(commandRoute("pick-image-telegram")).toBeNull();
     expect(commandRoute("cancel-active")).toEqual({ kind: "cancel" });
     expect(commandRoute("_execute_action")).toBeNull();
     expect(commandRoute("toString")).toBeNull();
@@ -329,6 +328,26 @@ describe("palette aliases and Last used", () => {
     });
     expect(parsePalettePrefs(undefined)).toEqual(NO_PREFS);
   });
+
+  it("shows a Last used entry of either replaced pick as Pick to download", () => {
+    expect(
+      parsePalettePrefs({
+        aliases: { "pick-post-video": "pv", "pick-image-telegram": "ti" },
+        lastUsed: ["pick-image-telegram", "pick-image", "pick-post-video"],
+      }),
+    ).toEqual({
+      aliases: {},
+      lastUsed: ["pick-media-telegram", "pick-image"],
+    });
+    expect(entry("pick-media-telegram")).toMatchObject({
+      title: "Pick to download…",
+      subtitle: "Click an image or a video",
+      alias: "p",
+      needs: ["page", "digibot"],
+      path: "Download · pick on the page",
+      verb: "Run",
+    });
+  });
 });
 
 describe("palette gating", () => {
@@ -353,7 +372,7 @@ describe("palette gating", () => {
   it("checks the page before DigiBot, DigiBot before download access, and the range last", () => {
     expect(
       commandGate(
-        entry("pick-post-video"),
+        entry("pick-media-telegram"),
         context({ page: "none", connected: false }),
       )?.reason,
     ).toBe("Not on browser pages");
