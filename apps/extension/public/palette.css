@@ -521,9 +521,10 @@ kbd,
   }
 }
 
+/* No fade: IntersectionObserver v2 counts a panel below full opacity as
+   hidden, and keys run only once it reports the panel visible. */
 @keyframes lens-rise {
   from {
-    opacity: 0;
     transform: translate(-50%, -6px);
   }
 }

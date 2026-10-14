@@ -205,6 +205,9 @@ export function mountPaletteHost(
       return flattened;
     }
 
+    // True while mountOnTop hides and shows the host to stack it on top.
+    let restacking = false;
+
     /**
      * Mounts the host by the mount rule. Moving an attached host goes through
      * moveBefore, which keeps the frame alive; append would reload it, and its
@@ -221,11 +224,14 @@ export function mountPaletteHost(
       }
       watchMountParent(root, parent);
       if (typeof root.showPopover !== "function") return;
+      restacking = true;
       try {
         if (root.matches(":popover-open")) root.hidePopover();
         root.showPopover();
       } catch {
         // No popover support.
+      } finally {
+        restacking = false;
       }
     }
 
@@ -282,7 +288,8 @@ export function mountPaletteHost(
      * Closing moves the focus to the page while the key that closed the
      * palette is still down, so that key's keyup would reach the page. One
      * capture listener on window stops it; a new press of the key ends the
-     * wait, since its keyup then went elsewhere.
+     * wait, since its keyup then went elsewhere. A page's own capture
+     * listener on window, added before this one, can still see that keyup.
      */
     const stopKeyUps = (held: unknown): void => {
       if (!Array.isArray(held)) return;
@@ -338,10 +345,54 @@ export function mountPaletteHost(
       if (document.hidden) close("closed");
     };
 
+    // The host's own inline declarations, taken once they are set.
+    let hostStyle = new Map<string, string>();
+    const inlineStyle = (): Map<string, string> => {
+      const declarations = new Map<string, string>();
+      for (let index = 0; index < root.style.length; index += 1) {
+        const name = root.style.item(index);
+        if (name.startsWith("--")) continue;
+        declarations.set(
+          name,
+          `${root.style.getPropertyValue(name)} ${root.style.getPropertyPriority(name)}`,
+        );
+      }
+      return declarations;
+    };
+
+    /**
+     * IntersectionObserver v2 in the frame does not see a CSS mask and lets a
+     * 2D translation through, so the palette closes when the page changes the
+     * host's inline style or popover attribute. Custom properties are left
+     * out: a dark-mode extension may add some, and the host uses none.
+     */
+    const styleWatch = new MutationObserver((records) => {
+      const now = inlineStyle();
+      if (
+        records.some((record) => record.attributeName === "popover") ||
+        now.size !== hostStyle.size ||
+        [...now].some(([name, value]) => hostStyle.get(name) !== value)
+      )
+        close("closed");
+    });
+
+    /**
+     * A host the page hides leaves the top layer, where the page's own styles
+     * reach it through a parent, so any hide but mountOnTop's own closes the
+     * palette. beforetoggle fires inside hidePopover, before the page script
+     * can move the host; the close waits for that call to return.
+     */
+    const onBeforeToggle = (event: Event): void => {
+      if (restacking || (event as ToggleEvent).newState !== "closed") return;
+      queueMicrotask(() => close("closed"));
+    };
+
     const close = (status: PaletteHostStatus): void => {
       if (closed) return;
       closed = true;
       clearTimeout(timer);
+      styleWatch.disconnect();
+      root.removeEventListener("beforetoggle", onBeforeToggle);
       if (scope[HOST_KEY] === host) delete scope[HOST_KEY];
       window.removeEventListener("message", onMessage, true);
       document.removeEventListener("focusin", onFocusIn, true);
@@ -382,9 +433,8 @@ export function mountPaletteHost(
       root.setAttribute("popover", "manual");
       root.dataset["provenanceLensPalette"] = "host";
       // Inline !important, so a page stylesheet cannot hide, move or shrink
-      // the host. A page script can still restyle it or cover it, so the
-      // frame runs input only while IntersectionObserver v2 reports its panel
-      // visible.
+      // the host. A page script that restyles it closes the palette, and one
+      // that covers it is caught by IntersectionObserver v2 in the frame.
       setImportant(root, {
         all: "initial",
         position: "fixed",
@@ -406,6 +456,12 @@ export function mountPaletteHost(
         "pointer-events": "auto",
         "color-scheme": "light dark",
       });
+      hostStyle = inlineStyle();
+      styleWatch.observe(root, {
+        attributes: true,
+        attributeFilter: ["style", "popover"],
+      });
+      root.addEventListener("beforetoggle", onBeforeToggle);
       const shadow = root.attachShadow({ mode: "closed" });
       iframe.src = frameUrl;
       iframe.title = "Provenance Lens";

@@ -123,6 +123,10 @@ function stubPopovers(): {
   Object.defineProperty(HTMLElement.prototype, "hidePopover", {
     configurable: true,
     value(this: HTMLElement) {
+      // As in a browser, beforetoggle fires inside the call.
+      const event = new Event("beforetoggle");
+      Object.defineProperty(event, "newState", { value: "closed" });
+      this.dispatchEvent(event);
       open.delete(this);
       calls.push("hide");
     },
@@ -260,6 +264,27 @@ describe("the palette host", () => {
 
     post({ lens: "close" });
     expect(document.activeElement).toBe(field);
+  });
+
+  it("closes when the page restyles the host, but not for a custom property", async () => {
+    const opened = mountPaletteHost(FRAME_URL, TOKEN, 1_500);
+    post({ lens: "ready" });
+    await opened;
+    const root = hostRoot();
+    root?.style.setProperty("--page-theme", "dark");
+    await Promise.resolve();
+    expect(hostRoot()).toBe(root);
+
+    root?.style.setProperty("opacity", "0.5", "important");
+    await vi.waitFor(() => expect(hostRoot()).toBeNull());
+  });
+
+  it("closes when the page removes the host's popover attribute", async () => {
+    const opened = mountPaletteHost(FRAME_URL, TOKEN, 1_500);
+    post({ lens: "ready" });
+    await opened;
+    hostRoot()?.removeAttribute("popover");
+    await vi.waitFor(() => expect(hostRoot()).toBeNull());
   });
 
   it("closes when the tab is hidden", async () => {
@@ -535,6 +560,21 @@ describe("the palette host's mount rule", () => {
     document.dispatchEvent(new Event("fullscreenchange"));
     expect(hostRoot()?.parentElement).toBe(document.documentElement);
     expect(calls).toEqual(["show", "hide", "show"]);
+  });
+
+  it("closes when the page hides the host, but not when it shows it again on top", async () => {
+    stubPopovers();
+    const opened = mountPaletteHost(FRAME_URL, TOKEN, 1_500);
+    post({ lens: "ready" });
+    await opened;
+    fullscreen(document.documentElement);
+    document.dispatchEvent(new Event("fullscreenchange"));
+    await Promise.resolve();
+    expect(hostRoot()).not.toBeNull();
+
+    hostRoot()?.hidePopover();
+    await Promise.resolve();
+    expect(hostRoot()).toBeNull();
   });
 
   it("does not mount again once the palette has closed", async () => {

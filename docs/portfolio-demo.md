@@ -11,12 +11,15 @@ npm run test:e2e
 npm run package:public
 ```
 
-The ten browser flows cover the settings page, the Lens palette (its token
-gate, keys and mount above modal dialogs and fullscreen elements), first and
-repeated picker activation, exact image and audio bytes, C2PA trust wording,
-and synthetic connected Check, Download and page-link operations. Check and
-Download remain separate: Download delivers the original without invoking
-verification, and the page-link send carries only the page address.
+The sixteen browser flows cover the settings page, the Lens palette (its token
+gate, keys, mount above modal dialogs and fullscreen elements, and the
+covered-panel gate, which refuses input while a page covers the palette and
+closes it when the page restyles its host), the SynthID pick above a modal
+dialog, first and repeated picker activation, exact image and audio bytes,
+C2PA trust wording, and synthetic connected Check, Download and page-link
+operations. Check and Download remain separate: Download delivers the original
+without invoking verification, and the page-link send carries only the page
+address.
 
 For a manual Website-mode walkthrough, serve the fixtures locally:
 

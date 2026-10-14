@@ -38,6 +38,22 @@ const PAGE_HTML = `<!doctype html>
   </body>
 </html>`;
 
+// The owner's check page: a modal dialog that holds an image.
+const DIALOG_HTML = `<!doctype html>
+<html lang="en">
+  <body style="margin: 0; min-height: 100vh;">
+    <button id="open" type="button">Open dialog</button>
+    <dialog id="modal" style="width: 420px; height: 300px;">
+      <img id="image" src="/image.png" alt="Fixture" width="320" height="180">
+    </dialog>
+    <script>
+      document.querySelector("#open").addEventListener("click", () =>
+        document.querySelector("#modal").showModal(),
+      );
+    </script>
+  </body>
+</html>`;
+
 const EMBED_HTML = `<!doctype html>
 <html lang="en">
   <body>
@@ -92,10 +108,26 @@ type ObservedMessage = {
   tabId: number | null;
 };
 
-async function launchLens(): Promise<Lens> {
+async function launchLens(
+  options: { downloads?: boolean } = {},
+): Promise<Lens> {
+  const image = await readFile(
+    resolve(process.cwd(), "tests/fixtures/image-fixture.png"),
+  );
   const server = createServer((request, response) => {
+    if (request.url === "/image.png") {
+      response.writeHead(200, { "content-type": "image/png" });
+      response.end(image);
+      return;
+    }
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(request.url?.startsWith("/embed") ? EMBED_HTML : PAGE_HTML);
+    response.end(
+      request.url?.startsWith("/embed")
+        ? EMBED_HTML
+        : request.url?.startsWith("/dialog")
+          ? DIALOG_HTML
+          : PAGE_HTML,
+    );
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -117,9 +149,12 @@ async function launchLens(): Promise<Lens> {
   const manifestPath = resolve(extensionPath, "manifest.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
     host_permissions: string[];
+    permissions: string[];
     background: { service_worker: string };
   };
   manifest.host_permissions.push("http://127.0.0.1/*");
+  // Stands in for the optional downloads grant.
+  if (options.downloads) manifest.permissions.push("downloads");
   manifest.background.service_worker = "lens-test-worker.js";
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
@@ -280,6 +315,38 @@ function observed(lens: Lens): Promise<ObservedMessage[]> {
     () =>
       (globalThis as unknown as { __lensMessages: ObservedMessage[] })
         .__lensMessages,
+  );
+}
+
+async function startActions(lens: Lens): Promise<Record<string, unknown>[]> {
+  return (await observed(lens))
+    .filter(({ message }) => message["type"] === "start-action")
+    .map(({ message }) => message);
+}
+
+/**
+ * Lays a page popover over the palette: it lets clicks through to the frame,
+ * and IntersectionObserver v2 reports the panel covered.
+ */
+async function coverPalette(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    let cover = document.querySelector<HTMLElement>("#cover");
+    if (!cover) {
+      cover = document.createElement("div");
+      cover.id = "cover";
+      cover.setAttribute("popover", "manual");
+      cover.style.cssText =
+        "inset: 0; width: 100vw; height: 100vh; margin: 0; border: 0; " +
+        "padding: 0; background: rgb(255 255 255 / 0.9); pointer-events: none;";
+      document.body.append(cover);
+    }
+    cover.showPopover();
+  });
+}
+
+function uncoverPalette(page: Page): Promise<void> {
+  return page.evaluate(() =>
+    document.querySelector<HTMLElement>("#cover")?.hidePopover(),
   );
 }
 
@@ -693,53 +760,47 @@ test("a click lands in the palette above a modal dialog and a fullscreen element
   }
 });
 
-test("ignores a click on a row while the page hides the palette", async () => {
+test("ignores a click, a key and an action while a page element covers the palette", async () => {
   const lens = await launchLens();
   try {
     const page = await lens.context.newPage();
     await page.goto(`${lens.origin}/page.html`);
     const frame = await openPalette(lens, page);
-    await frame.getByRole("option", { name: /^Verify/u }).click();
-    await expect(frame.locator("#chip")).toHaveText("Verify");
+    await frame.locator("#query").fill("v");
+    const pickRow = frame.getByRole("option").first();
+    await expect(pickRow).toHaveAccessibleName(/^Pick an image to verify/u);
 
-    // The page makes the host transparent: the click still lands on the
-    // row, but the row does not run.
-    await page.evaluate(() =>
-      document
-        .querySelector<HTMLElement>("[data-provenance-lens-palette]")
-        ?.style.setProperty("opacity", "0", "important"),
-    );
+    // The click still lands on the row, but the row does not run.
+    await coverPalette(page);
     await expect(frame.locator("#palette")).toHaveAttribute(
       "data-visible",
       "false",
     );
-    const pickRow = frame.getByRole("option", {
-      name: /^Pick an image to verify/u,
-    });
     await pickRow.click();
     await expect(frame.locator("#status-text")).toHaveText(
       "The page is covering Lens. Press Esc and open it again.",
     );
     await page.keyboard.press("Enter");
+    // Nor does Run in the ⌘K panel.
+    await page.keyboard.press("Control+KeyK");
+    await expect(frame.locator("#actions")).toBeVisible();
+    await page.keyboard.press("Enter");
     await page.waitForTimeout(500);
-    const starts = async () =>
-      (await observed(lens)).filter(
-        ({ message }) => message["type"] === "start-action",
-      );
-    expect(await starts()).toEqual([]);
+    expect(await startActions(lens)).toEqual([]);
     expect(await hostCount(page)).toBe(1);
 
-    // Visible again, the same click runs the row.
-    await page.evaluate(() =>
-      document
-        .querySelector<HTMLElement>("[data-provenance-lens-palette]")
-        ?.style.setProperty("opacity", "1", "important"),
-    );
+    // Uncovered, the message goes and the same click runs the row.
+    await uncoverPalette(page);
     await takesClicks(page, frame);
+    await expect(frame.locator("#status-text")).not.toHaveText(
+      "The page is covering Lens. Press Esc and open it again.",
+    );
+    await page.keyboard.press("Escape");
+    await expect(frame.locator("#actions")).toBeHidden();
     await pickRow.click();
     await expect.poll(() => hostCount(page)).toBe(0);
     await expect
-      .poll(async () => (await starts()).map(({ message }) => message))
+      .poll(() => startActions(lens))
       .toEqual([
         {
           type: "start-action",
@@ -747,6 +808,304 @@ test("ignores a click on a row while the page hides the palette", async () => {
           trigger: "popup",
         },
       ]);
+  } finally {
+    await lens.close();
+  }
+});
+
+test("closes the palette when the page masks, hides or moves its host", async () => {
+  const lens = await launchLens();
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/page.html`);
+
+    /** Opens the Verify view and returns the centre of its pick row. */
+    const openAtPickRow = async (): Promise<{
+      x: number;
+      y: number;
+      height: number;
+    }> => {
+      const frame = await openPalette(lens, page);
+      await frame.getByRole("option", { name: /^Verify/u }).click();
+      const pickRow = frame.getByRole("option", {
+        name: /^Pick an image to verify/u,
+      });
+      await expect(pickRow).toBeVisible();
+      await takesClicks(page, frame);
+      const box = await pickRow.boundingBox();
+      if (!box) throw new Error("The pick row has no box.");
+      return {
+        x: box.x + box.width / 2,
+        y: box.y + box.height / 2,
+        height: box.height,
+      };
+    };
+    /** The user clicks where the row was and presses Enter. */
+    const userTries = async (spot: { x: number; y: number }): Promise<void> => {
+      await page.mouse.click(spot.x, spot.y);
+      await page.keyboard.press("Enter");
+    };
+
+    // A mask the frame's IntersectionObserver v2 does not see.
+    for (const property of [
+      "mask-image",
+      "-webkit-mask-image",
+      "mask",
+      "mask-border-source",
+      "-webkit-mask-box-image-source",
+    ]) {
+      const spot = await openAtPickRow();
+      const applied = await page.evaluate((name) => {
+        const host = document.querySelector<HTMLElement>(
+          "[data-provenance-lens-palette]",
+        );
+        host?.style.setProperty(
+          name,
+          "linear-gradient(transparent, transparent)",
+          "important",
+        );
+        return host?.style.getPropertyValue(name) !== "";
+      }, property);
+      // Chromium without mask-border ignores that property: nothing changes.
+      if (!applied) {
+        expect(property).toBe("mask-border-source");
+        await page.keyboard.press("Escape");
+        await pressClosing(page, "Escape");
+        await expect.poll(() => hostCount(page)).toBe(0);
+        continue;
+      }
+      await expect.poll(() => hostCount(page)).toBe(0);
+      await userTries(spot);
+    }
+
+    // Hidden, the host leaves the top layer, and a masked parent would hide
+    // it from the user but not from the frame.
+    let spot = await openAtPickRow();
+    await page.evaluate(() => {
+      const host = document.querySelector<HTMLElement>(
+        "[data-provenance-lens-palette]",
+      );
+      const masked = document.createElement("div");
+      masked.style.cssText =
+        "position: fixed; inset: 0; " +
+        "mask-image: linear-gradient(transparent, transparent);";
+      document.body.append(masked);
+      if (!host) return;
+      host.hidePopover();
+      masked.moveBefore(host, null);
+    });
+    await expect.poll(() => hostCount(page)).toBe(0);
+    await userTries(spot);
+
+    // A 2D translation moves another row under the user's click.
+    spot = await openAtPickRow();
+    await page.evaluate((shift) => {
+      document
+        .querySelector<HTMLElement>("[data-provenance-lens-palette]")
+        ?.style.setProperty("transform", `translateY(${shift}px)`, "important");
+    }, spot.height);
+    await page.waitForTimeout(100);
+    await userTries(spot);
+    await expect.poll(() => hostCount(page)).toBe(0);
+
+    await page.waitForTimeout(500);
+    expect(await startActions(lens)).toEqual([]);
+    expect(paletteFrame(page)).toBeUndefined();
+  } finally {
+    await lens.close();
+  }
+});
+
+test("a click runs a row only once the panel has been visible for 500 ms", async () => {
+  const lens = await launchLens();
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/page.html`);
+    await clickToolbar(lens, page);
+    await expect.poll(() => paletteFrame(page) !== undefined).toBe(true);
+    const frame = paletteFrame(page) as Frame;
+    const verifyRow = frame.getByRole("option", { name: /^Verify/u });
+    await expect(frame.locator("#palette")).toHaveAttribute(
+      "data-visible",
+      "true",
+    );
+    const visibleAt = Date.now();
+    const box = await verifyRow.boundingBox();
+    if (!box) throw new Error("The Verify row has no box.");
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    expect(Date.now() - visibleAt).toBeLessThan(500);
+    await expect(frame.locator("#status-text")).toHaveText(
+      "The page is covering Lens. Press Esc and open it again.",
+    );
+    await expect(frame.locator("#chip")).toBeHidden();
+
+    // Later, the same click runs the row, and the message goes.
+    await page.waitForTimeout(600);
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(frame.locator("#chip")).toHaveText("Verify");
+    await expect(frame.locator("#status-text")).not.toHaveText(
+      "The page is covering Lens. Press Esc and open it again.",
+    );
+  } finally {
+    await lens.close();
+  }
+});
+
+test("an alias and Enter typed as the palette opens run the row", async () => {
+  const lens = await launchLens();
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/page.html`);
+    await clickToolbar(lens, page);
+    await expect.poll(() => paletteFrame(page) !== undefined).toBe(true);
+    const frame = paletteFrame(page) as Frame;
+    // As soon as the input takes keys, before the panel has been visible
+    // for 250 ms.
+    await expect(frame.locator("#query")).toBeFocused();
+    await expect
+      .poll(() => frame.evaluate(() => document.hasFocus()))
+      .toBe(true);
+    await page.keyboard.type("v");
+    await page.keyboard.press("Enter");
+
+    await expect.poll(() => hostCount(page)).toBe(0);
+    await expect
+      .poll(() => startActions(lens))
+      .toEqual([
+        {
+          type: "start-action",
+          actionId: "verify-openai-provenance",
+          trigger: "popup",
+        },
+      ]);
+  } finally {
+    await lens.close();
+  }
+});
+
+test("a page cover lifted 15 ms in every 100 ms lets no key through", async () => {
+  const lens = await launchLens();
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/page.html`);
+    const frame = await openPalette(lens, page);
+    await frame.locator("#query").fill("v");
+    await expect(frame.getByRole("option").first()).toHaveAccessibleName(
+      /^Pick an image to verify/u,
+    );
+
+    await coverPalette(page);
+    await page.evaluate(() => {
+      const cover = document.querySelector<HTMLElement>("#cover");
+      (window as Window & { __flicker?: number }).__flicker =
+        window.setInterval(() => {
+          cover?.hidePopover();
+          setTimeout(() => cover?.showPopover(), 15);
+        }, 100);
+    });
+    // IntersectionObserver v2 reports a new cover a frame or so late.
+    await expect(frame.locator("#palette")).toHaveAttribute(
+      "data-visible",
+      "false",
+    );
+    for (let press = 0; press < 10; press += 1) {
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(70);
+    }
+    await page.waitForTimeout(500);
+    expect(await startActions(lens)).toEqual([]);
+    expect(await hostCount(page)).toBe(1);
+
+    // The keys did reach the frame: with the cover gone, Enter runs.
+    await page.evaluate(() => {
+      clearInterval((window as Window & { __flicker?: number }).__flicker);
+      document.querySelector<HTMLElement>("#cover")?.hidePopover();
+    });
+    await takesClicks(page, frame);
+    await page.keyboard.press("Enter");
+    await expect.poll(() => hostCount(page)).toBe(0);
+    await expect
+      .poll(() => startActions(lens))
+      .toEqual([
+        {
+          type: "start-action",
+          actionId: "verify-openai-provenance",
+          trigger: "popup",
+        },
+      ]);
+  } finally {
+    await lens.close();
+  }
+});
+
+test("the SynthID pick and its toast stay above a modal dialog", async () => {
+  const lens = await launchLens({ downloads: true });
+  try {
+    await lens.worker.evaluate(() =>
+      chrome.storage.local.set({ "provenanceLens.synthidDisclosure": 1 }),
+    );
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/dialog.html`);
+    await page.click("#open");
+    const frame = await openPalette(lens, page);
+    expect(await hostParentName(page)).toBe("dialog");
+    await page.keyboard.type("g");
+    await expect(frame.getByRole("option").first()).toHaveAccessibleName(
+      /^Check with Google SynthID/u,
+    );
+    await page.keyboard.press("Enter");
+    await expect.poll(() => hostCount(page)).toBe(0);
+
+    /** Whether a hit test at the toast's centre finds the toast. */
+    const toastOnTop = (): Promise<boolean> =>
+      page.evaluate(() => {
+        const toast = document.querySelector<HTMLElement>(
+          "[data-provenance-lens-toast]",
+        );
+        if (!toast?.matches(":popover-open")) return false;
+        const box = toast.getBoundingClientRect();
+        return (
+          document.elementFromPoint(
+            box.x + box.width / 2,
+            box.y + box.height / 2,
+          ) === toast
+        );
+      });
+    // The banner and the label take no pointer events, so no hit test finds
+    // them: each is a popover shown in the dialog after it opened, above it.
+    for (const surface of ["banner", "overlay"]) {
+      const root = page.locator(`[data-provenance-lens-picker="${surface}"]`);
+      await expect(root).toHaveCount(1);
+      expect(
+        await root.evaluate((element) => ({
+          parent: element.parentElement?.localName,
+          open: element.matches(":popover-open"),
+        })),
+      ).toEqual({ parent: "dialog", open: true });
+    }
+
+    const image = await page.locator("#image").boundingBox();
+    if (!image) throw new Error("The image has no box.");
+    await page.mouse.move(
+      image.x + image.width / 2,
+      image.y + image.height / 2,
+    );
+    await page.mouse.click(
+      image.x + image.width / 2,
+      image.y + image.height / 2,
+    );
+    await page.bringToFront();
+    const toast = page.locator("[data-provenance-lens-toast]");
+    await expect(toast).toHaveCount(1, { timeout: 15_000 });
+    await expect.poll(toastOnTop).toBe(true);
+    await expect
+      .poll(() => toast.evaluate((element) => element.parentElement?.localName))
+      .toBe("dialog");
+    expect(
+      await page
+        .locator("dialog")
+        .evaluate((d) => (d as HTMLDialogElement).open),
+    ).toBe(true);
   } finally {
     await lens.close();
   }

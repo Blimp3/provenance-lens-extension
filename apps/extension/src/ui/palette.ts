@@ -123,8 +123,12 @@ const LENS_ROWS = [
 const AUDIO_RANGE_MESSAGE = "An audio check covers 1 to 60 seconds.";
 const COVERED_MESSAGE =
   "The page is covering Lens. Press Esc and open it again.";
+/** How long the panel must have been visible before a key runs a row. */
+const KEY_VISIBLE_MS = 250;
 /** How long the panel must have been visible before a click runs a row. */
 const POINTER_VISIBLE_MS = 500;
+/** A key pressed this soon after the frame is ready may wait for the panel. */
+const EARLY_KEY_MS = 1_000;
 
 const paletteRoot = required<HTMLElement>("palette");
 const scrim = required<HTMLElement>("scrim");
@@ -171,6 +175,13 @@ let footerError: string | null = null;
 /** The panel's latest IntersectionObserver v2 visibility; none yet is hidden. */
 let panelVisible = false;
 let panelVisibleSince = 0;
+/** When the frame told its host it was ready; 0 until then. */
+let readyAt = 0;
+/** Whether the panel was reported hidden since the frame was ready. */
+let hiddenSinceReady = false;
+/** The latest early key, waiting until the panel has been visible long enough. */
+let heldRun: (() => Promise<void>) | null = null;
+let heldTimer: ReturnType<typeof setTimeout> | undefined;
 /** Keys down in this frame, by code; the host stops their keyups on close. */
 const heldKeys = new Set<string>();
 
@@ -200,7 +211,11 @@ async function start(): Promise<void> {
   if (embedded) watchPanelVisibility();
   render();
   input.focus();
-  if (embedded) window.parent.postMessage({ lens: "ready" }, parentOrigin());
+  if (embedded) {
+    readyAt = performance.now();
+    window.parent.postMessage({ lens: "ready" }, parentOrigin());
+    setTimeout(dropHeld, EARLY_KEY_MS);
+  }
 }
 
 async function takeOpenRecord(): Promise<PaletteOpenRecord | null> {
@@ -282,13 +297,16 @@ function wireEvents(): void {
     if (focused === null || focused === document.body)
       (actionsOpen ? actionsInput : input).focus();
   });
+  // A key still waiting was for the query as it was.
   input.addEventListener("input", () => {
     active = 0;
     footerError = null;
+    clearHeld();
     render();
   });
   actionsInput.addEventListener("input", () => {
     actionActive = 0;
+    clearHeld();
     renderActions();
   });
   scrim.addEventListener("click", () => close());
@@ -305,11 +323,13 @@ function wireEvents(): void {
 }
 
 /**
- * A page can make the host transparent or lay its own top-layer element over
- * it while clicks and keys still reach the frame. IntersectionObserver v2
- * reports the panel visible only when nothing covers it and no opacity,
- * filter or transform other than a 2D translation applies to it, the frame
- * or the host, so input runs only while it is.
+ * A page can lay its own top-layer element over the host while clicks and
+ * keys still reach the frame. IntersectionObserver v2 reports the panel
+ * visible only when nothing covers it and no opacity, filter or transform
+ * other than a 2D translation applies to it, the frame or the host, so input
+ * runs only once it has been visible for a moment. The host closes the
+ * palette when the page restyles it, which IntersectionObserver v2 would
+ * not always see.
  */
 function watchPanelVisibility(): void {
   const panel = required<HTMLElement>("panel");
@@ -323,6 +343,13 @@ function watchPanelVisibility(): void {
       if (visible && !panelVisible) panelVisibleSince = performance.now();
       panelVisible = visible;
       paletteRoot.dataset["visible"] = String(visible);
+      if (visible) {
+        clearCovered();
+        runHeldWhenAllowed();
+      } else {
+        if (readyAt > 0) hiddenSinceReady = true;
+        dropHeld();
+      }
       // Chromium may keep reporting a frame hidden after the host hid and
       // showed it again (a fullscreen change, a closed dialog) until it is
       // observed afresh, so a hidden panel is observed again shortly.
@@ -340,21 +367,86 @@ function watchPanelVisibility(): void {
 }
 
 /**
- * Whether input may run a row: in a page, a key while the panel is visible
- * and a click once it has been visible for a moment; ignored input says why.
- * The popup and the tab are extension pages no website can cover.
+ * Whether input may run now: in a page, a key once the panel has been
+ * visible for 250 ms and a click once it has been visible for 500 ms, with
+ * no hidden report in between. The popup and the tab are extension pages no
+ * website can cover.
  */
 function inputAllowed(source: InputSource): boolean {
-  const allowed =
-    !embedded ||
-    (panelVisible &&
-      (source === "key" ||
-        performance.now() - panelVisibleSince >= POINTER_VISIBLE_MS));
-  if (!allowed) {
-    footerError = COVERED_MESSAGE;
-    renderFooter();
+  if (!embedded) return true;
+  const visibleFor = source === "key" ? KEY_VISIBLE_MS : POINTER_VISIBLE_MS;
+  return panelVisible && performance.now() - panelVisibleSince >= visibleFor;
+}
+
+/**
+ * Runs a row or an action for a key or a click that inputAllowed lets
+ * through. A key pressed in the frame's first second, while the panel has
+ * not been reported hidden, waits until the panel has been visible long
+ * enough; only the latest such key waits. Any other refused input is
+ * dropped, and the footer says why.
+ */
+function gated(source: InputSource, run: () => Promise<void>): void {
+  if (inputAllowed(source)) {
+    clearHeld();
+    clearCovered();
+    void run();
+    return;
   }
-  return allowed;
+  if (
+    source === "key" &&
+    readyAt > 0 &&
+    !hiddenSinceReady &&
+    performance.now() - readyAt < EARLY_KEY_MS
+  ) {
+    heldRun = run;
+    runHeldWhenAllowed();
+    return;
+  }
+  showCovered();
+}
+
+function runHeldWhenAllowed(): void {
+  clearTimeout(heldTimer);
+  if (!heldRun || !panelVisible) return;
+  const wait = panelVisibleSince + KEY_VISIBLE_MS - performance.now();
+  heldTimer = setTimeout(
+    () => {
+      const run = heldRun;
+      if (!run) return;
+      // A timer may fire a fraction of a millisecond early.
+      if (!inputAllowed("key")) {
+        runHeldWhenAllowed();
+        return;
+      }
+      heldRun = null;
+      clearCovered();
+      void run();
+    },
+    Math.max(0, Math.ceil(wait)),
+  );
+}
+
+/** A waiting key the panel hid from, or that waited a second, is dropped. */
+function dropHeld(): void {
+  if (!heldRun) return;
+  clearHeld();
+  showCovered();
+}
+
+function clearHeld(): void {
+  clearTimeout(heldTimer);
+  heldRun = null;
+}
+
+function showCovered(): void {
+  footerError = COVERED_MESSAGE;
+  renderFooter();
+}
+
+function clearCovered(): void {
+  if (footerError !== COVERED_MESSAGE) return;
+  footerError = null;
+  renderFooter();
 }
 
 // Views ----------------------------------------------------------------------
@@ -933,11 +1025,13 @@ function onKeyDown(event: KeyboardEvent): void {
   if (key.type === "none") return;
   event.preventDefault();
   event.stopPropagation();
+  // Only the latest key may wait for the panel.
+  clearHeld();
   switch (key.type) {
     case "digit":
-      if (actionsOpen) void runAction(key.index, "key");
+      if (actionsOpen) runAction(key.index, "key");
       else
-        void runRow(
+        runRow(
           rows.findIndex((row) => row.digit === key.index + 1),
           "key",
         );
@@ -952,8 +1046,8 @@ function onKeyDown(event: KeyboardEvent): void {
       else setActive(key.edge === "first" ? 0 : rows.length - 1);
       return;
     case "run":
-      if (actionsOpen) void runAction(actionActive, "key");
-      else void runRow(active, "key");
+      if (actionsOpen) runAction(actionActive, "key");
+      else runRow(active, "key");
       return;
     case "actions":
       toggleActions();
@@ -980,11 +1074,15 @@ function onKeyDown(event: KeyboardEvent): void {
   }
 }
 
-async function runRow(index: number, source: InputSource): Promise<void> {
+function runRow(index: number, source: InputSource): void {
   const row = rows[index];
-  if (!row || !inputAllowed(source)) return;
-  setActive(index);
-  await row.run?.();
+  if (!row) return;
+  gated(source, async () => {
+    // A key that waited runs the row it was pressed on.
+    const shown = rows.indexOf(row);
+    if (shown >= 0) setActive(shown);
+    await row.run?.();
+  });
 }
 
 function wrap(index: number, count: number): number {
@@ -1054,11 +1152,13 @@ function actionsFor(row: Row): ActionItem[] {
   return items;
 }
 
-async function runAction(index: number, source: InputSource): Promise<void> {
+function runAction(index: number, source: InputSource): void {
   const item = shownActions[index];
-  if (!item || !inputAllowed(source)) return;
-  closeActions();
-  await item.run();
+  if (!item) return;
+  gated(source, async () => {
+    closeActions();
+    await item.run();
+  });
 }
 
 function setActionActive(index: number): void {
@@ -1089,7 +1189,7 @@ function renderActions(): void {
       option.addEventListener("mousemove", () => {
         if (actionActive !== index) setActionActive(index);
       });
-      option.addEventListener("click", () => void runAction(index, "pointer"));
+      option.addEventListener("click", () => runAction(index, "pointer"));
       return option;
     }),
   );
@@ -1257,7 +1357,7 @@ function rowElements(row: Row, index: number): HTMLElement[] {
   option.addEventListener("mousemove", () => {
     if (active !== index) setActive(index);
   });
-  option.addEventListener("click", () => void runRow(index, "pointer"));
+  option.addEventListener("click", () => runRow(index, "pointer"));
   option.addEventListener("contextmenu", (event) => {
     event.preventDefault();
     setActive(index);

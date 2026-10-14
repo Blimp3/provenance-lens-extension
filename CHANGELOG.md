@@ -16,9 +16,14 @@ and the picker runtime is 0.9.0.
   **Last used** keeps the last three commands, ⌥1 to ⌥9 run rows by position,
   Esc steps back one level at a time and Tab never leaves the palette. Opening
   it reads only local storage: it starts no check and sends no request. Over a
-  page, it runs a row only while the browser reports it visible, and a click
-  only after 500 ms of that; otherwise it shows "The page is covering Lens.
-  Press Esc and open it again."
+  page, it runs a row only once the browser has reported it visible for 250 ms
+  (a key) or 500 ms (a click), with no hidden report in between. A key pressed
+  in its first second waits for that unless the palette is reported hidden
+  first; other refused input is dropped, and the palette shows "The page is
+  covering Lens. Press Esc and open it again." The palette closes when the
+  page restyles or hides its host. The key that closes the palette sends no
+  keyup to the page, though a page's own capture listener on window can still
+  see that keyup.
 - Eleven browser commands: **Open or close the Lens palette** (suggested
   Alt+Shift+Space), **Pick an image for OpenAI provenance review** (Alt+Shift+V,
   unchanged), and, with no key until you set one, send this page's video, voice
