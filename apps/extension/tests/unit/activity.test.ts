@@ -16,13 +16,13 @@ import {
   activityTitle,
   linkActivityKind,
   operationUpdate,
-  pageAddress,
   recentRow,
   refusalState,
   STALE_ACTIVITY_MS,
   startActivityKind,
   STOPPED_MESSAGE,
 } from "../../src/activity.js";
+import { pageAddress } from "../../src/page-address.js";
 
 const RECORD_ID = "123e4567-e89b-42d3-a456-426614174000";
 const OPERATION_ID = "223e4567-e89b-42d3-a456-426614174000";

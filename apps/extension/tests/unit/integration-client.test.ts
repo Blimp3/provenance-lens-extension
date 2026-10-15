@@ -1036,6 +1036,7 @@ describe("connected integration request contract", () => {
           operationId,
           createdAt: "2026-09-16T10:01:02.000Z",
           activityId: entryId,
+          mediaKind: "audio",
         },
         // Another device session's operation is discarded.
         {
@@ -1044,6 +1045,7 @@ describe("connected integration request contract", () => {
           operationId: otherId,
           createdAt: "2026-09-16T10:01:02.000Z",
           activityId: otherId,
+          mediaKind: "video",
         },
       ],
     });
@@ -1061,7 +1063,7 @@ describe("connected integration request contract", () => {
       entryId,
       otherId,
     ]);
-    const ended: [string | undefined, string | null, boolean][] = [];
+    const ended: [string | undefined, string | null, boolean, unknown][] = [];
     await client.resumePendingIntegrationOperations(
       async (operation, status) => {
         // The record is still there when Recent hears of it.
@@ -1070,13 +1072,15 @@ describe("connected integration request contract", () => {
           operation.activityId,
           status?.state ?? null,
           pending.includes(operation.activityId ?? ""),
+          operation.mediaKind,
         ]);
       },
     );
 
+    // A kind Lens never stores is dropped.
     expect(ended).toEqual([
-      [entryId, "failed", true],
-      [otherId, null, true],
+      [entryId, "failed", true, "audio"],
+      [otherId, null, true, undefined],
     ]);
     expect(local.values[pendingOperationsKey]).toEqual([]);
   });

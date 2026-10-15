@@ -267,6 +267,14 @@ function pendingIds(local: MemoryArea): string[] {
   return pending.map(({ operationId }) => operationId);
 }
 
+/** What each pending operation checks, for Recent after a restart. */
+function pendingKinds(local: MemoryArea): unknown[] {
+  const pending = (local.values[pendingOperationsKey] ?? []) as {
+    mediaKind?: unknown;
+  }[];
+  return pending.map(({ mediaKind }) => mediaKind);
+}
+
 describe("connected image actions", () => {
   beforeEach(() => {
     resetIntegrationGlobals();
@@ -301,6 +309,7 @@ describe("connected image actions", () => {
         operationId = input.operationId;
         seen["outboxAtCreate"] = await rawOutboxKeys();
         seen["pendingAtCreate"] = pendingIds(local);
+        seen["kindsAtCreate"] = pendingKinds(local);
         return response(pendingStatus(input, "awaiting_upload"));
       }
       const input = jsonBody<IntegrationOperationInputV1>(calls[0]);
@@ -348,6 +357,7 @@ describe("connected image actions", () => {
       `${session.accountId}:${operationId}`,
     ]);
     expect(seen["pendingAtCreate"]).toEqual([operationId]);
+    expect(seen["kindsAtCreate"]).toEqual(["image"]);
     expect(calls[1]?.headers.get("Content-Type")).toBe("image/png");
     expect(await uploadedBytes(calls[1])).toEqual([...png]);
     expect(seen["outboxBytesAtWait"]).toBeNull();
@@ -787,6 +797,7 @@ describe("connected audio file action", () => {
       if (call.method === "POST") {
         seen["outboxAtCreate"] = await rawOutboxKeys();
         seen["pendingAtCreate"] = pendingIds(local);
+        seen["kindsAtCreate"] = pendingKinds(local);
         return response(pendingStatus(input, "awaiting_upload"));
       }
       if (call.method === "PUT")
@@ -825,6 +836,7 @@ describe("connected audio file action", () => {
       `${session.accountId}:${operationId}`,
     ]);
     expect(seen["pendingAtCreate"]).toEqual([operationId]);
+    expect(seen["kindsAtCreate"]).toEqual(["audio"]);
     expect(await uploadedBytes(calls[1])).toEqual([...bytes]);
     expect(seen["outboxBytesAtWait"]).toBeNull();
     expect(outcome.status).toMatchObject({ operationId, state: "completed" });
@@ -1121,6 +1133,7 @@ describe("connected audio segment action", () => {
           )
         )?.sourceUrl;
         seen["pendingAtCreate"] = pendingIds(local);
+        seen["kindsAtCreate"] = pendingKinds(local);
         return response(queuedSegment(operationId));
       }
       seen["outboxAtWait"] = await rawOutboxKeys();
@@ -1148,6 +1161,7 @@ describe("connected audio segment action", () => {
     ]);
     expect(seen["outboxSourceUrl"]).toBe(sentSourceUrl);
     expect(seen["pendingAtCreate"]).toEqual([operationId]);
+    expect(seen["kindsAtCreate"]).toEqual(["audio"]);
     expect(seen["outboxAtWait"]).toEqual([]);
     expect(outcome.status).toMatchObject({ operationId, state: "completed" });
     expect(outcome).toEqual({

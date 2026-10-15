@@ -46,6 +46,7 @@ import {
   refusalState,
   STOPPED_MESSAGE,
   startActivityKind,
+  startedSinceLoad,
   type ActivityId,
 } from "./activity.js";
 import { getActionDefinition } from "./actions/registry.js";
@@ -299,8 +300,6 @@ let resultToastBindingMutation = Promise.resolve();
 // One shared menu rebuild, so install, startup and load cannot race.
 let menusReady: Promise<void> | null = null;
 let paletteMountMutation: Promise<void> = Promise.resolve();
-/** Recent's entries started before this are a stopped worker's. */
-const WORKER_STARTED_AT = Date.now();
 /** How long a closed disclosure tab's acknowledgement may still take. */
 const DISCLOSURE_CLOSE_GRACE_MS = 1_000;
 
@@ -3300,22 +3299,29 @@ function beginMenuActivity(
   return beginActivity(item?.title ?? "Lens action", kind, tab);
 }
 
+/** The armed picks that match: those this worker holds and those a stopped worker stored. */
+async function armedPicks(
+  match: (session: PickerSession) => boolean,
+): Promise<PickerSession[]> {
+  const armed = [...pickerSessions.values()].filter(match);
+  for (const sessionToken of await storedLinkPickerTokens()) {
+    if (pickerSessions.has(sessionToken)) continue;
+    const session = await restoreLinkPickerSession(sessionToken);
+    if (session && match(session)) armed.push(session);
+  }
+  return armed;
+}
+
 /**
- * Ends Recent's entries for armed picks no click can reach any more, those
- * this worker holds and those a stopped worker stored. The sessions stay as
- * they are: their own guards still decide any message that comes back.
+ * Ends Recent's entries for armed picks no click can reach any more. The
+ * sessions stay as they are: their own guards still decide any message that
+ * comes back.
  */
 async function endArmedPicks(
   match: (session: PickerSession) => boolean,
   message: string,
 ): Promise<void> {
-  const ended = [...pickerSessions.values()].filter(match);
-  for (const sessionToken of await storedLinkPickerTokens()) {
-    if (pickerSessions.has(sessionToken)) continue;
-    const session = await restoreLinkPickerSession(sessionToken);
-    if (session && match(session)) ended.push(session);
-  }
-  for (const session of ended)
+  for (const session of await armedPicks(match))
     await noteActivity(session.activityId, { state: "cancelled", message });
 }
 
@@ -3323,7 +3329,7 @@ async function endArmedPicks(
  * Ends Recent's entries a stopped worker left running: those no stored pick,
  * pending disclosure, pending DigiBot operation or extension page still
  * holds. Image picks live only in the worker, so theirs end here too. An
- * action this worker started is newer than its start.
+ * action this worker started, even while this runs, stays running.
  */
 async function endStoppedActivity(): Promise<void> {
   try {
@@ -3337,7 +3343,7 @@ async function endStoppedActivity(): Promise<void> {
       if (
         entry.state === "running" &&
         !kept.has(entry.id) &&
-        Date.parse(entry.startedAt) < WORKER_STARTED_AT
+        !startedSinceLoad(entry.id)
       )
         await noteActivity(entry.id, {
           state: "failed",
@@ -3360,15 +3366,21 @@ async function storedActivityIds(key: string): Promise<string[]> {
   });
 }
 
-/** Ends the entry of a DigiBot operation a restarted worker resumed. */
+/**
+ * Ends the entry of a DigiBot operation a restarted worker resumed, worded
+ * for what the operation stored that it checks; an operation an earlier
+ * version stored is read from its status.
+ */
 async function endResumedActivity(
   operation: IntegrationPendingOperation,
   status: IntegrationOperationStatus | null,
 ): Promise<void> {
   const audio =
-    status !== null &&
-    (status.segment !== null ||
-      status.envelope?.media.mimeType.startsWith("audio/") === true);
+    operation.mediaKind === "audio" ||
+    (operation.mediaKind === undefined &&
+      status !== null &&
+      (status.segment !== null ||
+        status.envelope?.media.mimeType.startsWith("audio/") === true));
   await noteActivity(
     operation.activityId ?? null,
     status === null
@@ -3441,14 +3453,13 @@ async function cancelActiveVerification(
   await cancelArmedPicker(senderTabId ?? focusedTabId);
 }
 
+/** Stops the tab's armed picks, also one a stopped worker stored. */
 async function cancelArmedPicker(tabId: number | undefined): Promise<void> {
   if (tabId === undefined) return;
-  const armed = [...pickerSessions].filter(
-    ([, session]) => session.tabId === tabId,
-  );
+  const armed = await armedPicks((session) => session.tabId === tabId);
   if (armed.length === 0) return;
-  for (const [sessionToken, session] of armed) {
-    pickerSessions.delete(sessionToken);
+  for (const session of armed) {
+    pickerSessions.delete(session.sessionToken);
     await stopPicker(session);
     await noteActivity(session.activityId, {
       state: "cancelled",

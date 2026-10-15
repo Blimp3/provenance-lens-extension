@@ -1387,6 +1387,158 @@ test("a page that stops the host's closing beforetoggle and hides it gets no run
   }
 });
 
+test("a page that clears the content script's timers and then hides the host closes the palette before any key", async () => {
+  const lens = await launchLens();
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/page.html`);
+    for (const move of [true, false]) {
+      await openPalette(lens, page);
+      // The page shares the content script's timer and animation-frame ids.
+      await page.evaluate((moveHost) => {
+        for (let id = 0; id <= 20_000; id += 1) {
+          clearInterval(id);
+          clearTimeout(id);
+          cancelAnimationFrame(id);
+        }
+        window.addEventListener(
+          "beforetoggle",
+          (event) => {
+            const target = event.target as HTMLElement | null;
+            if (target?.dataset["provenanceLensPalette"])
+              event.stopImmediatePropagation();
+          },
+          true,
+        );
+        const host = document.querySelector<HTMLElement>(
+          "[data-provenance-lens-palette]",
+        );
+        if (!host) return;
+        host.hidePopover();
+        if (!moveHost) return;
+        const masked = document.createElement("div");
+        masked.style.cssText =
+          "position: fixed; inset: 0; " +
+          "mask-image: linear-gradient(transparent, transparent);";
+        document.body.append(masked);
+        masked.moveBefore(host, null);
+      }, move);
+      // A move closes it in the host's observer, a hide alone on the frame's
+      // own timer.
+      await expect.poll(() => hostCount(page), { timeout: 2_000 }).toBe(0);
+    }
+    expect(await startActions(lens)).toEqual([]);
+  } finally {
+    await lens.close();
+  }
+});
+
+/**
+ * Hides the host from a ResizeObserver callback, after the animation-frame
+ * callbacks and before the paint, and shows it again in a user-blocking task
+ * before the next frame, timer tick or port message, so no paint shows it.
+ * With `move`, the host also goes into a masked parent while hidden; without,
+ * the root element is masked. The page counts its hides.
+ */
+async function hideWhilePainting(page: Page, move: boolean): Promise<void> {
+  await page.evaluate((moveHost) => {
+    window.addEventListener(
+      "beforetoggle",
+      (event) => {
+        const target = event.target as HTMLElement | null;
+        if (target?.dataset["provenanceLensPalette"])
+          event.stopImmediatePropagation();
+      },
+      true,
+    );
+    const host = document.querySelector<HTMLElement>(
+      "[data-provenance-lens-palette]",
+    );
+    const home = host?.parentElement;
+    if (!host || !home) return;
+    const masked = document.createElement("div");
+    masked.style.cssText =
+      "position: fixed; inset: 0; " +
+      "mask-image: linear-gradient(transparent, transparent);";
+    document.body.append(masked);
+    if (!moveHost)
+      document.documentElement.style.setProperty(
+        "mask-image",
+        "linear-gradient(transparent, transparent)",
+      );
+    const scheduler = (
+      globalThis as unknown as {
+        scheduler: {
+          postTask: (task: () => void, options: { priority: string }) => void;
+        };
+      }
+    ).scheduler;
+    const state = globalThis as unknown as { __lensHides: number };
+    state.__lensHides = 0;
+    const target = document.createElement("div");
+    target.style.cssText = "position: fixed; height: 1px; width: 10px;";
+    document.body.append(target);
+    let wide = false;
+    const resize = (): void => {
+      wide = !wide;
+      target.style.width = wide ? "11px" : "10px";
+      requestAnimationFrame(resize);
+    };
+    requestAnimationFrame(resize);
+    new ResizeObserver(() => {
+      if (!host.isConnected || !host.matches(":popover-open")) return;
+      host.hidePopover();
+      if (moveHost) masked.moveBefore(host, null);
+      state.__lensHides += 1;
+      scheduler.postTask(
+        () => {
+          if (!host.isConnected) return;
+          if (moveHost) home.moveBefore(host, null);
+          host.showPopover();
+        },
+        { priority: "user-blocking" },
+      );
+    }).observe(target);
+  }, move);
+}
+
+function pageHides(page: Page): Promise<number> {
+  return page.evaluate(
+    () => (globalThis as unknown as { __lensHides?: number }).__lensHides ?? 0,
+  );
+}
+
+test("a page that hides the host only while it paints gets no run", async () => {
+  const lens = await launchLens();
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/page.html`);
+    // A move closes the palette in the host's observer at the first hide.
+    await openPalette(lens, page);
+    await hideWhilePainting(page, true);
+    await expect.poll(() => hostCount(page), { timeout: 2_000 }).toBe(0);
+
+    // A hide alone, under a masked root element, changes nothing the host's
+    // observer or the frame's questions see between frames.
+    // IntersectionObserver v2 then reports the panel hidden: it is this
+    // case's only gate, and this test fails if Chromium stops reporting it.
+    await page.reload();
+    const frame = await openPalette(lens, page);
+    await hideWhilePainting(page, false);
+    await expect.poll(() => pageHides(page)).toBeGreaterThan(20);
+    const query = frame.locator("#query");
+    await query
+      .press("v", { timeout: 2_000 })
+      .then(() => query.press("Enter", { timeout: 2_000 }))
+      .catch(() => undefined);
+    await page.waitForTimeout(500);
+    expect(await pageHides(page)).toBeGreaterThan(40);
+    expect(await startActions(lens)).toEqual([]);
+  } finally {
+    await lens.close();
+  }
+});
+
 test("the palette mounts on a page whose player's open shadow root is at the top-left corner", async () => {
   const lens = await launchLens();
   try {

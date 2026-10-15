@@ -92,6 +92,7 @@ export async function runIntegratedImageAction(
       operationId,
       createdAt,
       ...(activityId !== null ? { activityId } : {}),
+      mediaKind: "image",
     });
 
     let status = await createIntegrationOperation(

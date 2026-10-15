@@ -76,10 +76,13 @@ Until a later release, these rows and buttons open the Settings page in a tab:
 These keys reach only the palette. The page under it does not get them. When
 the palette closes, focus goes back to the page element that had it.
 
-Over a fullscreen video or element, Lens holds Esc with the browser's Keyboard
-Lock while the palette is open. Esc then goes back in the palette, and the
-browser asks you to press and hold Esc to leave fullscreen. Known limits:
+Over a fullscreen element, Lens holds Esc with the browser's Keyboard Lock
+while the palette is open. Esc then goes back in the palette, and the browser
+asks you to press and hold Esc to leave fullscreen. Known limits:
 
+- When a video element itself is fullscreen (not a player around it), the
+  palette shows and its keys work, but clicks and Esc do not: a click on a row
+  does nothing, and Esc does not close the palette.
 - While the palette is open, its Esc lock replaces a wider keyboard lock that
   the page itself held, and when the palette closes, that lock ends.
 - Keyboard Lock exists only on secure (https) pages. On an http page, Esc
@@ -425,8 +428,9 @@ For local review, load `apps/extension/dist` as an unpacked extension.
 - Recent's list stays in local extension storage, apart from History. Each
   entry keeps the command's title, its kind, the page address as its origin
   and path only (no query or fragment), the full link that a link send sent,
-  the start time, the final state with its short message, and the DigiBot
-  operation id or History record id when there is one. Addresses are http(s)
+  the start time, the final state with its short message (any address in it
+  cut at its query or fragment), and the DigiBot operation id or History
+  record id when there is one. Addresses are http(s)
   only, without the fragment after `#` or a user name and password. A sent
   link keeps its query, because Lens sent it and opens it. Lens keeps the page
   title only when **Save a sanitized page title with history** is on. The list

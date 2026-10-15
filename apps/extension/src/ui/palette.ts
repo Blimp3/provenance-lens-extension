@@ -15,6 +15,7 @@ import {
   isOwnPalettePort,
   type PaletteHostAnswer,
   type PaletteHostCheck,
+  type PaletteHostClose,
 } from "../palette-host.js";
 import {
   getActivity,
@@ -143,6 +144,12 @@ const POINTER_VISIBLE_MS = 500;
 const EARLY_KEY_MS = 1_000;
 /** How long the host has to answer before a run; no answer runs nothing. */
 const HOST_CHECK_MS = 500;
+/** How often the frame asks its host on its own timer, between answers. */
+const HOST_WATCH_MS = 100;
+/** How long that question may wait before the frame closes the palette. */
+const HOST_WATCH_LIMIT_MS = 2_000;
+/** The panel is observed afresh after this long, plus up to as long again. */
+const RESAMPLE_MS = 40;
 
 const paletteRoot = required<HTMLElement>("palette");
 const scrim = required<HTMLElement>("scrim");
@@ -214,6 +221,7 @@ async function start(): Promise<void> {
       port.onDisconnect.addListener(() => {
         if (ownPort === port) ownPort = null;
       });
+      watchHost(port);
     });
   }
   document.documentElement.classList.add(`host-${hostKind}`);
@@ -295,8 +303,7 @@ async function loadData(): Promise<FrameData> {
     shortcuts,
     workflow,
     history,
-    // History retention as it is now, also before the next start trims.
-    activity: activity.slice(0, settings?.historyRetention ?? 0),
+    activity,
   };
 }
 
@@ -346,8 +353,12 @@ function wireEvents(): void {
  * visible only when nothing covers it and no opacity, filter or transform
  * other than a 2D translation applies to it, the frame or the host, so input
  * runs only once it has been visible for a moment. The host closes the
- * palette when the page restyles it, which IntersectionObserver v2 would
- * not always see.
+ * palette when the page moves or restyles it, which IntersectionObserver v2
+ * would not always see. A page that only hides the host while it paints and
+ * shows it again before any timer or port message changes no attribute, so
+ * neither the host's mutation observer nor its answers see it; this gate is
+ * the only one for that case, and the hide-while-painting e2e fails if a
+ * Chromium change stops it from reporting the panel hidden.
  */
 function watchPanelVisibility(): void {
   const panel = required<HTMLElement>("panel");
@@ -358,25 +369,34 @@ function watchPanelVisibility(): void {
         (IntersectionObserverEntry & { isVisible?: boolean }) | undefined;
       if (!entry) return;
       const visible = entry.isVisible === true;
-      if (visible && !panelVisible) panelVisibleSince = performance.now();
+      const shown = visible && !panelVisible;
+      if (shown) panelVisibleSince = performance.now();
       panelVisible = visible;
       paletteRoot.dataset["visible"] = String(visible);
       if (visible) {
-        clearCovered();
+        // Only a panel that was hidden clears the footer: a fresh sample of
+        // a panel still visible must not drop the reason an early click
+        // gave.
+        if (shown) clearCovered();
         runHeldWhenAllowed();
       } else {
         if (readyAt > 0) hiddenSinceReady = true;
         dropHeld();
       }
-      // Chromium may keep reporting a frame hidden after the host hid and
-      // showed it again (a fullscreen change, a closed dialog) until it is
-      // observed afresh, so a hidden panel is observed again shortly.
+      // The observer samples at most every 100 ms, so a page that lifts a
+      // cover for a moment every 100 ms can keep each sample in a lifted
+      // moment, and Chromium may keep reporting a frame hidden after the
+      // host hid and showed it again (a fullscreen change, a closed dialog).
+      // The panel is therefore observed afresh at random moments, visible
+      // or not, which no page can keep in step with.
       clearTimeout(recheck);
-      if (!visible)
-        recheck = setTimeout(() => {
+      recheck = setTimeout(
+        () => {
           observer.unobserve(panel);
           observer.observe(panel);
-        }, 250);
+        },
+        RESAMPLE_MS + Math.random() * RESAMPLE_MS,
+      );
     },
     // trackVisibility and delay are IntersectionObserver v2 (Chromium).
     { trackVisibility: true, delay: 100 } as IntersectionObserverInit,
@@ -469,7 +489,28 @@ function runChecked(run: () => Promise<void>): void {
   });
 }
 
-function hostIntact(): Promise<boolean> {
+/**
+ * Asks the host on the frame's own timer, which the page cannot clear,
+ * whether it still stands as it mounted. A host that says no closes itself;
+ * one that does not answer in time is asked to close.
+ */
+function watchHost(port: chrome.runtime.Port): void {
+  const ask = (): void => {
+    if (ownPort !== port) return;
+    void hostIntact(HOST_WATCH_LIMIT_MS).then((intact) => {
+      if (ownPort !== port) return;
+      if (intact) {
+        setTimeout(ask, HOST_WATCH_MS);
+        return;
+      }
+      showCovered();
+      close();
+    });
+  };
+  setTimeout(ask, HOST_WATCH_MS);
+}
+
+function hostIntact(limitMs = HOST_CHECK_MS): Promise<boolean> {
   const port = ownPort;
   if (!port) return Promise.resolve(false);
   const nonce = crypto.randomUUID();
@@ -486,7 +527,7 @@ function hostIntact(): Promise<boolean> {
         done(answer.intact === true);
     };
     const onGone = (): void => done(false);
-    const timer = setTimeout(() => done(false), HOST_CHECK_MS);
+    const timer = setTimeout(() => done(false), limitMs);
     port.onMessage.addListener(onAnswer);
     port.onDisconnect.addListener(onGone);
     try {
@@ -1083,13 +1124,25 @@ function back(): void {
   render();
 }
 
+/**
+ * In a page, the close goes over the frame's port, which no page listener can
+ * stop, and as a message to the host's window.
+ */
 function close(): void {
-  if (embedded)
-    window.parent.postMessage(
-      { lens: "close", held: [...heldKeys] },
-      parentOrigin(),
-    );
-  else window.close();
+  if (!embedded) {
+    window.close();
+    return;
+  }
+  const request = {
+    lens: "close",
+    held: [...heldKeys],
+  } satisfies PaletteHostClose;
+  try {
+    ownPort?.postMessage(request);
+  } catch {
+    // The port is gone; the window message still reaches the host.
+  }
+  window.parent.postMessage(request, parentOrigin());
 }
 
 function parentOrigin(): string {

@@ -630,25 +630,55 @@ describe("the palette host's mount rule", () => {
     expect(hostRoot()).toBeNull();
   });
 
-  it("closes on its watchdog's next check when the page stops the closing beforetoggle and hides or moves the host", async () => {
+  it("closes in its observer's callback, with no timer, when the page stops the closing beforetoggle and moves or restyles the host", async () => {
     stubPopovers();
+    // A page can clear the content script's timers; the host needs none.
+    vi.useFakeTimers();
     const stopToggle = (event: Event): void => event.stopImmediatePropagation();
     window.addEventListener("beforetoggle", stopToggle, true);
     try {
-      for (const change of ["hide", "move"] as const) {
+      for (const change of ["move", "restyle"] as const) {
         const opened = mountPaletteHost(FRAME_URL, TOKEN, 1_500);
         post({ lens: "ready" });
         await opened;
         const root = hostRoot();
-        if (change === "hide") root?.hidePopover();
-        else if (root) document.body.append(root);
-        await Promise.resolve();
-        // The host's own listener never heard of it.
+        root?.hidePopover();
+        if (change === "move" && root) {
+          const masked = document.createElement("div");
+          document.body.append(masked);
+          masked.append(root);
+        } else root?.style.setProperty("mask-image", "none", "important");
+        // The host's own listener never heard of the hide; its observer runs
+        // before the page's next task.
         expect(hostRoot()).not.toBeNull();
-        await vi.waitFor(() => expect(hostRoot()).toBeNull());
+        await Promise.resolve();
+        expect(hostRoot()).toBeNull();
       }
     } finally {
       window.removeEventListener("beforetoggle", stopToggle, true);
+    }
+  });
+
+  it("closes when the frame asks over its port, which the page cannot stop", async () => {
+    // A page listener added before the host's stops the frame's close.
+    const stopMessages = (event: MessageEvent): void => {
+      if ((event.data as { lens?: unknown }).lens === "close")
+        event.stopImmediatePropagation();
+    };
+    window.addEventListener("message", stopMessages, true);
+    try {
+      const opened = mountPaletteHost(FRAME_URL, TOKEN, 1_500);
+      post({ lens: "ready" });
+      await opened;
+      post({ lens: "close" });
+      expect(hostRoot()).not.toBeNull();
+      const ask = ports.at(-1)?.onMessage.addListener.mock.calls[0]?.[0] as (
+        message: unknown,
+      ) => void;
+      ask({ lens: "close", held: ["KeyV"] });
+      expect(hostRoot()).toBeNull();
+    } finally {
+      window.removeEventListener("message", stopMessages, true);
     }
   });
 
@@ -668,7 +698,8 @@ describe("the palette host's mount rule", () => {
       intact: true,
     });
     // Only the frame's question gets an answer.
-    ask({ lens: "close" });
+    ask({ lens: "status" });
+    ask({ lens: "check", nonce: 7 });
     ask("check");
     expect(port?.postMessage).toHaveBeenCalledTimes(1);
 

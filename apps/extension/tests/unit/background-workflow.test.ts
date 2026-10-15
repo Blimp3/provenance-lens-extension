@@ -1444,6 +1444,41 @@ describe("background verification workflow boundaries", () => {
     expect(store.get(LINK_PICKER_SESSIONS_KEY)).toEqual({});
   });
 
+  it("stops a stored pick on the palette's Cancel pick after the worker restarted", async () => {
+    const firstWorker = setupChrome();
+    const store = sessionStorageOf(firstWorker);
+    connectedVideoPick(firstWorker);
+    await loadBackground();
+    const sessionToken = await startVideoPick(firstWorker);
+    const activityId = recent.entries[0]?.id;
+
+    vi.resetModules();
+    const restarted = setupChrome();
+    sessionStorageOf(restarted, store);
+    connectedVideoPick(restarted);
+    await loadBackground();
+    messageListenerOf(restarted)(
+      { type: "cancel-active" },
+      extensionPageSender("palette.html"),
+    );
+    await vi.waitFor(() =>
+      expect(mocks.setWorkflowState).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: "idle", message: "Pick cancelled." }),
+      ),
+    );
+    expect(tabMessages(restarted, "picker-stop")).toEqual([
+      expect.objectContaining({ sessionToken }),
+    ]);
+    expect(store.get(LINK_PICKER_SESSIONS_KEY)).toEqual({});
+    expect(recent.entries).toEqual([
+      expect.objectContaining({
+        id: activityId,
+        state: "cancelled",
+        message: "Pick cancelled.",
+      }),
+    ]);
+  });
+
   /** Starts more link picks one after another; returns their session tokens. */
   async function startVideoPicks(
     chromeState: ReturnType<typeof setupChrome>,
@@ -3731,7 +3766,7 @@ describe("Recent's activity list", () => {
       leftRunning(disclosed, "Check with Google SynthID"),
       leftRunning(pending, "Send this image to Telegram"),
       { ...leftRunning(ended, "Send video"), state: "sent" },
-      // Started by this worker, after its start.
+      // A start time after the worker's own does not keep an entry.
       {
         ...leftRunning(newer, "Send video"),
         startedAt: new Date(Date.now() + 60_000).toISOString(),
@@ -3768,19 +3803,48 @@ describe("Recent's activity list", () => {
     await loadBackground();
 
     await vi.waitFor(() =>
-      expect(recent.entries[0]).toMatchObject({
+      expect(recent.entries[5]).toMatchObject({
         state: "failed",
         message: STOPPED,
       }),
     );
-    expect(recent.entries.slice(1).map(({ state }) => state)).toEqual([
+    expect(recent.entries.map(({ state }) => state)).toEqual([
+      "failed",
       "running",
       "running",
       "running",
       "sent",
-      "running",
+      "failed",
       "running",
     ]);
+    expect(recent.entries[0]).toMatchObject({ message: STOPPED });
+  });
+
+  it("keeps running an action this worker starts while its start-up sweep runs, whatever the clock says", async () => {
+    let release: (ids: string[]) => void = () => undefined;
+    mocks.pendingIntegrationActivityIds.mockReturnValue(
+      new Promise<string[]>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const chromeState = setupChrome();
+    chromeState.setBadgeText.mockResolvedValue(undefined);
+    chromeState.executeScript.mockResolvedValue([
+      { frameId: 0, documentId: DOCUMENT_ID },
+    ]);
+    await loadBackground();
+    // The system clock steps back a minute after the worker started.
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() - 60_000 });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    start(chromeState, ACTION_ID);
+    await armedPick(chromeState);
+    await onlyEntry({ title: "Pick an image to verify", state: "running" });
+
+    release([]);
+    await flushWorker();
+    await onlyEntry({ title: "Pick an image to verify", state: "running" });
   });
 
   it("ends an armed image pick's entry once a restarted worker no longer holds the pick", async () => {
@@ -3810,12 +3874,17 @@ describe("Recent's activity list", () => {
   });
 
   it("ends a stored DigiBot operation's entry when the restarted worker resumes it", async () => {
-    const [settled, discarded] = ENTRY_IDS;
+    const [settled, discarded, audioFile] = ENTRY_IDS;
     recent.entries = [
       leftRunning(settled, "Send this image to Telegram"),
       leftRunning(discarded, "Verify an audio file"),
+      leftRunning(audioFile, "Verify an audio file"),
     ];
-    mocks.pendingIntegrationActivityIds.mockResolvedValue([settled, discarded]);
+    mocks.pendingIntegrationActivityIds.mockResolvedValue([
+      settled,
+      discarded,
+      audioFile,
+    ]);
     let onEnded:
       ((operation: unknown, status: unknown) => Promise<void>) | undefined;
     mocks.resumePendingIntegrationOperations.mockImplementation(
@@ -3827,8 +3896,9 @@ describe("Recent's activity list", () => {
     setupChrome();
     await loadBackground();
     await flushWorker();
-    // The sweep leaves both to the resume.
+    // The sweep leaves them to the resume.
     expect(recent.entries.map(({ state }) => state)).toEqual([
+      "running",
       "running",
       "running",
     ]);
@@ -3853,6 +3923,24 @@ describe("Recent's activity list", () => {
       { ...operation, operationId: OPERATION_ID, activityId: discarded },
       null,
     );
+    // An audio file check that failed before DigiBot read the file has no
+    // segment or envelope; its stored kind still gives the audio wording.
+    await onEnded?.(
+      {
+        ...operation,
+        operationId: OPERATION_ID,
+        activityId: audioFile,
+        mediaKind: "audio",
+      },
+      {
+        operationId: OPERATION_ID,
+        action: "check",
+        state: "failed",
+        segment: null,
+        envelope: null,
+        error: null,
+      },
+    );
     expect(recent.entries).toEqual([
       expect.objectContaining({
         state: "failed",
@@ -3860,6 +3948,10 @@ describe("Recent's activity list", () => {
         operationId: OPERATION_ID,
       }),
       expect.objectContaining({ state: "failed", message: STOPPED }),
+      expect.objectContaining({
+        state: "failed",
+        message: "The audio could not be checked.",
+      }),
     ]);
   });
 

@@ -81,6 +81,8 @@ export type IntegrationPendingOperation = {
   createdAt: string;
   // Recent's entry for the action, which a resume after a restart ends.
   activityId?: string;
+  // What the action checks or sends, so that resume words Recent's entry.
+  mediaKind?: "image" | "audio";
 };
 
 export type IntegrationOutboxEntry = {
@@ -1311,6 +1313,7 @@ function readPendingOperations(value: unknown): IntegrationPendingOperation[] {
     const activityId = ActivityEntrySchema.shape.id.safeParse(
       candidate["activityId"],
     );
+    const mediaKind = candidate["mediaKind"];
     return typeof candidate["accountId"] === "string" &&
       typeof candidate["operationId"] === "string" &&
       typeof candidate["createdAt"] === "string" &&
@@ -1322,6 +1325,9 @@ function readPendingOperations(value: unknown): IntegrationPendingOperation[] {
             operationId: candidate["operationId"],
             createdAt: candidate["createdAt"],
             ...(activityId.success ? { activityId: activityId.data } : {}),
+            ...(mediaKind === "image" || mediaKind === "audio"
+              ? { mediaKind }
+              : {}),
           },
         ]
       : [];

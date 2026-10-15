@@ -29,9 +29,12 @@ and the picker runtime is 0.9.0.
   leave fullscreen. Known limits: while the palette is open its Esc lock
   replaces a wider keyboard lock the page held, and closing the palette ends
   that lock; Keyboard Lock exists only on secure (https) pages, so on an http
-  page Esc still leaves fullscreen. The palette also closes when the page
-  hides, moves or restyles its host behind a stopped event: the host checks
-  its own state on every frame, and the palette asks the host to confirm it
+  page Esc still leaves fullscreen. When a video element itself is
+  fullscreen, the palette shows and its keys work, but clicks and Esc do not:
+  a click on a row does nothing and Esc does not close the palette. The
+  palette also closes when the page hides, moves or restyles its host behind
+  a stopped event or cleared timers: the host checks itself whenever the page
+  changes it, and the palette asks the host to confirm it every 100 ms and
   before each run.
 - Ten browser commands: **Open or close the Lens palette** (suggested
   Alt+Shift+Space), **Pick an image for OpenAI provenance review** (Alt+Shift+V,
@@ -68,10 +71,11 @@ and the picker runtime is 0.9.0.
   video, audio file, voice note or clip; Verify; a page link only for a
   download pick before its click), page title, the page's origin and path,
   the full link a link send sent, start time, final state (sent, done,
-  failed, refused or cancelled, with its short message) and the DigiBot
-  operation id when there is one. It shows the newest eight with a kind icon
-  and a state label; a download pick's entry becomes **Sent video** or **Sent
-  image** at the click, and a cancel shows **Cancelled** in the neutral tone.
+  failed, refused or cancelled, with its short message, any address in it cut
+  at its query or fragment) and the DigiBot operation id when there is one.
+  It shows the newest eight with a kind icon and a state label; a download
+  pick's entry becomes **Sent video** or **Sent image** at the click, and a
+  cancel shows **Cancelled** in the neutral tone.
   ↵ opens a Verify entry's details, a link send's address or a DigiBot
   entry's Result history, and **Result history** stays under More. An entry
   the browser stopped Lens before finishing ends as failed with "Lens stopped

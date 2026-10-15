@@ -421,6 +421,69 @@ describe("Recent's activity list", () => {
     expect(only?.message).toHaveLength(180);
   });
 
+  it("reads only as many entries as history retention keeps now", async () => {
+    currentLocal.values[STORAGE_KEYS.activity] = Array.from(
+      { length: 25 },
+      (_, index) => started(index),
+    );
+    expect(await getActivity()).toHaveLength(20);
+    currentLocal.values[STORAGE_KEYS.settings] = {
+      ...defaultSettings,
+      historyRetention: 10,
+    };
+    expect((await getActivity()).map(({ id }) => id)).toEqual(
+      Array.from({ length: 10 }, (_, index) => started(index).id),
+    );
+    currentLocal.values[STORAGE_KEYS.settings] = {
+      ...defaultSettings,
+      historyRetention: 0,
+    };
+    await expect(getActivity()).resolves.toEqual([]);
+  });
+
+  it("drops the query and fragment of an older entry's page and of any address in a message", async () => {
+    currentLocal.values[STORAGE_KEYS.activity] = [
+      {
+        ...started(0),
+        pageUrl: "https://page.example/reset?code=1&t=2#token",
+        state: "failed",
+        message:
+          "DigiBot could not fetch https://cdn.example/v.mp4?sig=abc#t=1. See (https://page.example/help?x=1).",
+      },
+    ];
+    expect(await getActivity()).toEqual([
+      expect.objectContaining({
+        pageUrl: "https://page.example/reset",
+        message:
+          "DigiBot could not fetch https://cdn.example/v.mp4. See (https://page.example/help).",
+      }),
+    ]);
+
+    // The next write saves the clean values, and an update's message is
+    // cleaned too.
+    await startActivity(started(1), 20);
+    await updateActivity(started(1).id, {
+      state: "failed",
+      message: "Expired link https://dl.example/d/1?token=secret",
+    });
+    const stored = currentLocal.values[
+      STORAGE_KEYS.activity
+    ] as ActivityEntry[];
+    expect(
+      stored.map(({ pageUrl, message }) => ({ pageUrl, message })),
+    ).toEqual([
+      {
+        pageUrl: "https://page.example/",
+        message: "Expired link https://dl.example/d/1",
+      },
+      {
+        pageUrl: "https://page.example/reset",
+        message:
+          "DigiBot could not fetch https://cdn.example/v.mp4. See (https://page.example/help).",
+      },
+    ]);
+  });
+
   it("is cleared with history", async () => {
     await startActivity(started(0), 20);
     await appendHistory(record, 20);

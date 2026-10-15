@@ -4,6 +4,7 @@ import {
   DEFAULT_LOCAL_CACHE_LIMIT,
   ExtensionSettingsSchema,
   HistoryRecordSchema,
+  HistoryRetentionSchema,
   sanitizeDisplayText,
   WorkflowStateSchema,
   type ActivityEntry,
@@ -17,6 +18,7 @@ import {
   applyBundledClientToken,
   getBundledClientTokenForBackend,
 } from "./bundled-client.js";
+import { pageAddress } from "./page-address.js";
 
 export const STORAGE_KEYS = {
   settings: "provenanceLens.settings",
@@ -153,15 +155,55 @@ export async function clearHistory(): Promise<void> {
   );
 }
 
-/** Recent's list, newest first. */
+/**
+ * Recent's list, newest first, as many entries as history retention keeps
+ * now, also before the next start trims. Entries come back with their page
+ * address and their message free of any query or fragment, so an entry an
+ * earlier version stored is saved clean at the next write.
+ */
 export async function getActivity(): Promise<ActivityEntry[]> {
-  const values = await chrome.storage.local.get(STORAGE_KEYS.activity);
+  const [values, settings] = await Promise.all([
+    chrome.storage.local.get(STORAGE_KEYS.activity),
+    chrome.storage.local.get(STORAGE_KEYS.settings),
+  ]);
   const raw = values[STORAGE_KEYS.activity];
   if (!Array.isArray(raw)) return [];
-  return raw.flatMap((item: unknown) => {
-    const parsed = ActivityEntrySchema.safeParse(item);
-    return parsed.success ? [parsed.data] : [];
-  });
+  const retention = HistoryRetentionSchema.safeParse(
+    (settings[STORAGE_KEYS.settings] as { historyRetention?: unknown } | null)
+      ?.historyRetention,
+  );
+  return raw
+    .flatMap((item: unknown) => {
+      const parsed = ActivityEntrySchema.safeParse(item);
+      return parsed.success ? [cleanActivity(parsed.data)] : [];
+    })
+    .slice(
+      0,
+      retention.success ? retention.data : defaultSettings.historyRetention,
+    );
+}
+
+function cleanActivity(entry: ActivityEntry): ActivityEntry {
+  return {
+    ...entry,
+    pageUrl: entry.pageUrl === null ? null : pageAddress(entry.pageUrl),
+    message:
+      entry.message === null ? null : withoutUrlQueries(entry.message) || null,
+  };
+}
+
+/**
+ * A message with every address in it cut at its query or fragment, keeping
+ * the punctuation after it; a message from DigiBot may quote a signed link.
+ */
+function withoutUrlQueries(message: string): string {
+  return message
+    .replace(/\b[a-z][a-z\d+.-]*:\/\/\S+/giu, (address) => {
+      const [, body = address, tail = ""] =
+        /^(.*?)([.,;:!?)\]'"]*)$/su.exec(address) ?? [];
+      return body.replace(/[?#].*$/su, "") + tail;
+    })
+    .trim();
 }
 
 /** Keeps the newest entries that retention allows; history off keeps none. */
@@ -187,7 +229,7 @@ export async function startActivity(
   entry: ActivityEntry,
   retention: HistoryRetention,
 ): Promise<void> {
-  const parsed = ActivityEntrySchema.parse(entry);
+  const parsed = cleanActivity(ActivityEntrySchema.parse(entry));
   await withStorageMutationLock(async () => {
     const existing = await getActivity();
     const next = [parsed, ...existing.filter(({ id }) => id !== parsed.id)];
@@ -237,7 +279,7 @@ export async function updateActivity(
       const parsed = ActivityEntrySchema.safeParse({ ...entry, ...patch });
       if (!parsed.success) return entry;
       changed = true;
-      return parsed.data;
+      return cleanActivity(parsed.data);
     });
     if (changed)
       await chrome.storage.local.set({ [STORAGE_KEYS.activity]: next });

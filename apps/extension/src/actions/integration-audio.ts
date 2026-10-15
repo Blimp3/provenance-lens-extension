@@ -80,6 +80,7 @@ export async function runIntegratedAudioFileAction(
       operationId,
       createdAt,
       ...(activityId !== null ? { activityId } : {}),
+      mediaKind: "audio",
     });
     let status = await createIntegrationOperation(
       input,
@@ -165,6 +166,7 @@ export async function runIntegratedAudioSegmentAction(
     operationId,
     createdAt,
     ...(activityId !== null ? { activityId } : {}),
+    mediaKind: "audio",
   });
   try {
     let status = await createAudioSegmentOperation(

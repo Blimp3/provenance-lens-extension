@@ -12,13 +12,18 @@ export type PaletteHostResult = { status: PaletteHostStatus };
 export const PALETTE_READY_TIMEOUT_MS = 1_500;
 const PORT_PREFIX = "lens-palette:";
 
-/** The frame's question over its port before a run, and the host's answer. */
+/**
+ * The frame's question over its port, before each run and on the frame's own
+ * timer, and the host's answer. The frame also closes the palette over the
+ * port, which no page listener can stop.
+ */
 export type PaletteHostCheck = { lens: "check"; nonce: string };
 export type PaletteHostAnswer = {
   lens: "intact";
   nonce: string;
   intact: boolean;
 };
+export type PaletteHostClose = { lens: "close"; held: string[] };
 
 /** The port a host opens; the token keeps two palettes apart. */
 export function palettePortName(token: string): string {
@@ -51,8 +56,6 @@ export function mountPaletteHost(
 ): Promise<PaletteHostResult> {
   type LiveHost = { close: () => void; isConnected: () => boolean };
   const HOST_KEY = "__provenanceLensPaletteHost";
-  // A hidden tab throttles animation frames; this timer still checks.
-  const WATCHDOG_INTERVAL_MS = 100;
   const FULLSCREEN_MEDIA_ELEMENTS = new Set([
     "video",
     "img",
@@ -245,6 +248,7 @@ export function mountPaletteHost(
         else parent.append(root);
       }
       mountedParent = parent;
+      watchHost();
       watchMountParent(root, parent);
       if (typeof root.showPopover !== "function") return;
       restacking = true;
@@ -274,8 +278,8 @@ export function mountPaletteHost(
     /**
      * Whether the host stands as mountOnTop left it: in the top layer, in the
      * parent it was mounted in, with its own inline style. A page can stop
-     * any event the host listens for, but not this check, which the
-     * watchdog and each run's question ask.
+     * any event the host listens for, but not this check, which the host's
+     * mutation observer and the frame's questions ask.
      */
     function hostIntact(): boolean {
       if (root.parentNode !== mountedParent) return false;
@@ -288,36 +292,50 @@ export function mountPaletteHost(
       );
     }
 
-    let watchdogFrame = 0;
-    let watchdogTimer: ReturnType<typeof setInterval> | undefined;
+    /**
+     * The host's own check, which no page call can switch off: a page that
+     * moves the host out of its parent, changes its popover attribute or
+     * restyles it inline closes the palette in the observer's callback,
+     * after the page's script and before the next paint. IntersectionObserver
+     * v2 in the frame does not see a CSS mask and lets a 2D translation
+     * through, which is why the host's style counts. The page shares the
+     * content script's timer and animation-frame ids and can clear them, so
+     * the periodic check runs on the frame's timer instead
+     * (PaletteHostCheck). A hide alone changes no attribute: the frame's
+     * check closes a host left hidden, and one hidden only while the page
+     * paints is IntersectionObserver v2's to catch in the frame (palette.ts).
+     */
+    const hostWatch = new MutationObserver((records) => {
+      if (closed || restacking) return;
+      if (
+        records.some((record) => record.attributeName === "popover") ||
+        !hostIntact()
+      )
+        close("closed");
+    });
+
+    function watchHost(): void {
+      hostWatch.disconnect();
+      hostWatch.observe(root, { attributes: true });
+      if (mountedParent) hostWatch.observe(mountedParent, { childList: true });
+    }
 
     /**
-     * Closes the palette on the first frame, or timer tick, that finds the
-     * host moved, hidden or restyled outside mountOnTop.
+     * Answers the frame's question, closing a host that no longer stands as
+     * mounted, and closes the palette when the frame asks.
      */
-    function startWatchdog(): void {
-      const check = (): void => {
-        if (!closed && !restacking && !hostIntact()) close("closed");
-      };
-      const onFrame = (): void => {
-        check();
-        if (!closed) watchdogFrame = requestAnimationFrame(onFrame);
-      };
-      if (typeof requestAnimationFrame === "function")
-        watchdogFrame = requestAnimationFrame(onFrame);
-      watchdogTimer = setInterval(check, WATCHDOG_INTERVAL_MS);
-    }
-
-    function stopWatchdog(): void {
-      clearInterval(watchdogTimer);
-      if (typeof cancelAnimationFrame === "function")
-        cancelAnimationFrame(watchdogFrame);
-    }
-
-    /** Answers the frame's question before a run; a broken host closes. */
     const onPortMessage = (message: unknown): void => {
       if (typeof message !== "object" || message === null) return;
-      const { lens, nonce } = message as { lens?: unknown; nonce?: unknown };
+      const { lens, nonce, held } = message as {
+        lens?: unknown;
+        nonce?: unknown;
+        held?: unknown;
+      };
+      if (lens === "close") {
+        stopKeyUps(held);
+        close("closed");
+        return;
+      }
       if (lens !== "check" || typeof nonce !== "string" || nonce.length > 64)
         return;
       const intact = !closed && hostIntact();
@@ -489,7 +507,9 @@ export function mountPaletteHost(
       if (document.hidden) close("closed");
     };
 
-    // The host's own inline declarations, taken once they are set.
+    // The host's own inline declarations, taken once they are set; custom
+    // properties are left out, since a dark-mode extension may add some and
+    // the host uses none.
     let hostStyle = new Map<string, string>();
     const inlineStyle = (): Map<string, string> => {
       const declarations = new Map<string, string>();
@@ -503,22 +523,6 @@ export function mountPaletteHost(
       }
       return declarations;
     };
-
-    /**
-     * IntersectionObserver v2 in the frame does not see a CSS mask and lets a
-     * 2D translation through, so the palette closes when the page changes the
-     * host's inline style or popover attribute. Custom properties are left
-     * out: a dark-mode extension may add some, and the host uses none.
-     */
-    const styleWatch = new MutationObserver((records) => {
-      const now = inlineStyle();
-      if (
-        records.some((record) => record.attributeName === "popover") ||
-        now.size !== hostStyle.size ||
-        [...now].some(([name, value]) => hostStyle.get(name) !== value)
-      )
-        close("closed");
-    });
 
     /**
      * A host the page hides leaves the top layer, where the page's own styles
@@ -535,8 +539,7 @@ export function mountPaletteHost(
       if (closed) return;
       closed = true;
       clearTimeout(timer);
-      stopWatchdog();
-      styleWatch.disconnect();
+      hostWatch.disconnect();
       root.removeEventListener("beforetoggle", onBeforeToggle);
       if (scope[HOST_KEY] === host) delete scope[HOST_KEY];
       window.removeEventListener("message", onMessage, true);
@@ -603,10 +606,6 @@ export function mountPaletteHost(
         "color-scheme": "light dark",
       });
       hostStyle = inlineStyle();
-      styleWatch.observe(root, {
-        attributes: true,
-        attributeFilter: ["style", "popover"],
-      });
       root.addEventListener("beforetoggle", onBeforeToggle);
       const shadow = root.attachShadow({ mode: "closed" });
       iframe.src = frameUrl;
@@ -630,7 +629,6 @@ export function mountPaletteHost(
       document.addEventListener("visibilitychange", onVisibility, true);
       scope[HOST_KEY] = host;
       mountOnTop(root);
-      if (!closed) startWatchdog();
     } catch {
       close("failed");
     }

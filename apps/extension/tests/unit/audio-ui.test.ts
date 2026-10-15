@@ -135,9 +135,22 @@ function chooseVideoSegment(url: string, start: string, end: string): void {
 }
 
 describe("audio check authorization", () => {
+  // The Web Locks the page asks for, by name.
+  const lockNames: string[] = [];
+
   beforeEach(() => {
     vi.resetModules();
     renderPage();
+    lockNames.length = 0;
+    Object.defineProperty(navigator, "locks", {
+      configurable: true,
+      value: {
+        request: (name: string, callback: () => Promise<void>) => {
+          lockNames.push(name);
+          return Promise.resolve().then(callback);
+        },
+      },
+    });
     mocks.appendHistory.mockReset().mockResolvedValue(undefined);
     mocks.createAudioHistoryRecord.mockReset().mockReturnValue(record);
     mocks.verifyAudioFile.mockReset().mockResolvedValue({
@@ -203,6 +216,8 @@ describe("audio check authorization", () => {
     const entryId = (
       mocks.startActivity.mock.calls[0]?.[0] as { id: string } | undefined
     )?.id;
+    // The page holds the entry, so the worker's start-up sweep keeps it.
+    expect(lockNames).toEqual([`provenance-lens.activity:${String(entryId)}`]);
     await vi.waitFor(() =>
       expect(mocks.updateActivity).toHaveBeenCalledWith(entryId, {
         state: "done",
@@ -275,6 +290,9 @@ describe("audio check authorization", () => {
         startedEntryId(),
       ),
     );
+    expect(lockNames).toEqual([
+      `provenance-lens.activity:${String(startedEntryId())}`,
+    ]);
     const status = document.getElementById("audio-status");
     await vi.waitFor(() =>
       expect(status?.textContent).toBe(
@@ -325,6 +343,9 @@ describe("audio check authorization", () => {
         startedEntryId(),
       ),
     );
+    expect(lockNames).toEqual([
+      `provenance-lens.activity:${String(startedEntryId())}`,
+    ]);
     const status = document.getElementById("audio-status");
     await vi.waitFor(() =>
       expect(status?.textContent).toBe(

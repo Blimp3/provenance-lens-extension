@@ -334,11 +334,13 @@ test("Recent lists the newest eight actions and opens what each left", async () 
       manualFallbackAvailable: false,
       screenshotFallbackAvailable: false,
     };
+    const entryId = (index: number): string =>
+      `7${String(index)}3e4567-e89b-42d3-a456-426614174000`;
     const entry = (
       index: number,
       fields: Record<string, unknown>,
     ): Record<string, unknown> => ({
-      id: `7${String(index)}3e4567-e89b-42d3-a456-426614174000`,
+      id: entryId(index),
       tabId: 7,
       pageTitle: null,
       pageUrl: "https://page.example/watch",
@@ -391,25 +393,36 @@ test("Recent lists the newest eight actions and opens what each left", async () 
         state: "sent",
         operationId,
       }),
-      // Started after the worker, so its start-up sweep keeps it running.
+      // Held by the setup page's lock, so the worker's start-up sweep keeps
+      // it running.
       entry(7, {
         title: "Check with Google SynthID",
         kind: "verify",
         state: "running",
-        startedAt: new Date().toISOString(),
       }),
       entry(8, { title: "Oldest action", kind: "verify", state: "done" }),
     ];
     const setup = await context.newPage();
     await setup.goto(`chrome-extension://${extensionId}/settings.html`);
     await setup.evaluate(
-      async ({ saved, activity }) => {
+      async ({ saved, activity, held }) => {
+        // The lock an extension page holds while its action runs; the page
+        // stays open, so the lock stays held.
+        await new Promise<void>((granted) => {
+          void navigator.locks.request(
+            `provenance-lens.activity:${held}`,
+            () => {
+              granted();
+              return new Promise<never>(() => {});
+            },
+          );
+        });
         await chrome.storage.local.set({
           "provenanceLens.history": [saved],
           "provenanceLens.activity": activity,
         });
       },
-      { saved: record, activity: entries },
+      { saved: record, activity: entries, held: entryId(7) },
     );
 
     const openRecent = async (): Promise<Page> => {

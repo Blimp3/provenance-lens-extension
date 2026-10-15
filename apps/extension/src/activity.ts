@@ -16,6 +16,7 @@ import {
   type LinkDownloadOptions,
 } from "@provenance-lens/shared";
 
+import { httpAddress, pageAddress } from "./page-address.js";
 import {
   getSettings,
   startActivity,
@@ -170,29 +171,6 @@ export function activityAddress(url: string | undefined): string | null {
   return address.length <= 2_048 ? address : null;
 }
 
-/**
- * The page an action ran on, as Recent keeps it: only the origin and the
- * path, since a query can hold a code, a reset token or a signed link.
- */
-export function pageAddress(url: string | undefined): string | null {
-  const parsed = httpAddress(url);
-  if (!parsed) return null;
-  const address = `${parsed.origin}${parsed.pathname}`;
-  return address.length <= 2_048 ? address : null;
-}
-
-function httpAddress(url: string | undefined): URL | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(url ?? "");
-  } catch {
-    return null;
-  }
-  return parsed.protocol === "http:" || parsed.protocol === "https:"
-    ? parsed
-    : null;
-}
-
 /** A new running entry; the page title only when history keeps titles. */
 export function activityEntry(start: {
   title: string;
@@ -227,6 +205,16 @@ export function activityEntry(start: {
 
 /** This page's held entries, each with its lock's release. */
 const heldEntries = new Map<string, () => void>();
+/** The entries this worker or page started since it loaded. */
+const startedHere = new Set<string>();
+
+/**
+ * Whether this worker or page started the entry since it loaded, which a
+ * clock step cannot change.
+ */
+export function startedSinceLoad(id: string): boolean {
+  return startedHere.has(id);
+}
 
 /**
  * Writes Recent's entry for an action that starts; null when none is kept.
@@ -249,6 +237,7 @@ export async function beginActivity(
       includePageTitle: settings.includePageTitle,
     });
     const kept = settings.historyRetention !== 0;
+    startedHere.add(entry.id);
     if (kept && options.held) await holdEntry(entry.id);
     // With history off this clears the list instead.
     await startActivity(entry, settings.historyRetention);
