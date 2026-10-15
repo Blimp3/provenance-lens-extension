@@ -1,9 +1,13 @@
 import {
+  ActivityEntrySchema,
   DEFAULT_BACKEND_URL,
   DEFAULT_LOCAL_CACHE_LIMIT,
   ExtensionSettingsSchema,
   HistoryRecordSchema,
+  HistoryRetentionSchema,
+  sanitizeDisplayText,
   WorkflowStateSchema,
+  type ActivityEntry,
   type ExtensionSettings,
   type HistoryRecord,
   type HistoryRetention,
@@ -14,13 +18,15 @@ import {
   applyBundledClientToken,
   getBundledClientTokenForBackend,
 } from "./bundled-client.js";
+import { pageAddress } from "./page-address.js";
 
 export const STORAGE_KEYS = {
   settings: "provenanceLens.settings",
   history: "provenanceLens.history",
   workflow: "provenanceLens.workflow",
   latest: "provenanceLens.latest",
-  popupLatestByWindow: "provenanceLens.popupLatestByWindow",
+  // Recent's list: one entry per action the user started.
+  activity: "provenanceLens.activity",
   // The acknowledged SynthID disclosure version, apart from the settings.
   synthidDisclosure: "provenanceLens.synthidDisclosure",
 } as const;
@@ -85,6 +91,8 @@ export async function saveSettings(settings: ExtensionSettings): Promise<void> {
     [STORAGE_KEYS.settings]: applyBundledClientToken(parsed),
     [SETTINGS_FORMAT_KEY]: SETTINGS_FORMAT_VERSION,
   });
+  // A lower retention, or history off, applies to Recent's list at once.
+  await trimActivity(parsed.historyRetention).catch(() => undefined);
 }
 
 export async function updateSettings(
@@ -141,10 +149,151 @@ export async function clearHistory(): Promise<void> {
   await withStorageMutationLock(() =>
     Promise.all([
       chrome.storage.local.remove(STORAGE_KEYS.history),
+      chrome.storage.local.remove(STORAGE_KEYS.activity),
       chrome.storage.session.remove(STORAGE_KEYS.latest),
-      chrome.storage.session.remove(STORAGE_KEYS.popupLatestByWindow),
     ]).then(() => undefined),
   );
+}
+
+/**
+ * Recent's list, newest first, as many entries as history retention keeps
+ * now, also before the next start trims. Entries come back with their page
+ * address and their message free of any query, fragment, user name or
+ * password, so an entry an earlier version stored is saved clean at the next
+ * write.
+ */
+export async function getActivity(): Promise<ActivityEntry[]> {
+  const [values, settings] = await Promise.all([
+    chrome.storage.local.get(STORAGE_KEYS.activity),
+    chrome.storage.local.get(STORAGE_KEYS.settings),
+  ]);
+  const raw = values[STORAGE_KEYS.activity];
+  if (!Array.isArray(raw)) return [];
+  const retention = HistoryRetentionSchema.safeParse(
+    (settings[STORAGE_KEYS.settings] as { historyRetention?: unknown } | null)
+      ?.historyRetention,
+  );
+  return raw
+    .flatMap((item: unknown) => {
+      const parsed = ActivityEntrySchema.safeParse(item);
+      return parsed.success ? [cleanActivity(parsed.data)] : [];
+    })
+    .slice(
+      0,
+      retention.success ? retention.data : defaultSettings.historyRetention,
+    );
+}
+
+function cleanActivity(entry: ActivityEntry): ActivityEntry {
+  return {
+    ...entry,
+    pageUrl: entry.pageUrl === null ? null : pageAddress(entry.pageUrl),
+    message:
+      entry.message === null ? null : cleanAddresses(entry.message) || null,
+  };
+}
+
+/**
+ * A message with every address in it, with or without a scheme, cut at its
+ * query or fragment and without a user name and password, keeping the
+ * punctuation after it; a message from DigiBot may quote a signed link.
+ */
+function cleanAddresses(message: string): string {
+  return message
+    .replace(
+      /\b[a-z][a-z\d+.-]*:\/\/\S+|\b(?:[a-z\d-]+\.)+[a-z]{2,}(?::\d+)?[/?#]\S*/giu,
+      (address) => {
+        const [, body = address, tail = ""] =
+          /^(.*?)([.,;:!?)\]'"]*)$/su.exec(address) ?? [];
+        return (
+          body
+            .replace(/^([a-z][a-z\d+.-]*:\/\/)[^/?#]*@/iu, "$1")
+            .replace(/[?#].*$/su, "") + tail
+        );
+      },
+    )
+    .trim();
+}
+
+/** Keeps the newest entries that retention allows; history off keeps none. */
+export async function trimActivity(retention: HistoryRetention): Promise<void> {
+  await withStorageMutationLock(async () => {
+    if (retention === 0) {
+      await chrome.storage.local.remove(STORAGE_KEYS.activity);
+      return;
+    }
+    // Written back whatever its length: getActivity already drops what the
+    // saved retention no longer keeps, so a length compare would miss it.
+    const existing = await getActivity();
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.activity]: existing.slice(0, retention),
+    });
+  });
+}
+
+/**
+ * Adds an action that started. The list keeps as many entries as history
+ * keeps records, so with history off it keeps nothing.
+ */
+export async function startActivity(
+  entry: ActivityEntry,
+  retention: HistoryRetention,
+): Promise<void> {
+  const parsed = ActivityEntrySchema.parse(entry);
+  await withStorageMutationLock(async () => {
+    const existing = await getActivity();
+    const next = [parsed, ...existing.filter(({ id }) => id !== parsed.id)];
+    await (retention === 0
+      ? chrome.storage.local.remove(STORAGE_KEYS.activity)
+      : chrome.storage.local.set({
+          [STORAGE_KEYS.activity]: next.slice(0, retention),
+        }));
+  });
+}
+
+export type ActivityUpdate = Partial<
+  Pick<
+    ActivityEntry,
+    | "title"
+    | "kind"
+    | "linkUrl"
+    | "state"
+    | "message"
+    | "operationId"
+    | "recordId"
+  >
+>;
+
+/**
+ * Changes an entry while it runs: what the click picked, then how it ended.
+ * An entry that ended, or one the list no longer keeps, stays as it is.
+ */
+export async function updateActivity(
+  id: string,
+  update: ActivityUpdate,
+): Promise<void> {
+  const patch = {
+    ...update,
+    ...(update.title !== undefined
+      ? { title: sanitizeDisplayText(update.title, 80) }
+      : {}),
+    ...(typeof update.message === "string"
+      ? { message: sanitizeDisplayText(update.message, 180) || null }
+      : {}),
+  };
+  await withStorageMutationLock(async () => {
+    const existing = await getActivity();
+    let changed = false;
+    const next = existing.map((entry) => {
+      if (entry.id !== id || entry.state !== "running") return entry;
+      const parsed = ActivityEntrySchema.safeParse({ ...entry, ...patch });
+      if (!parsed.success) return entry;
+      changed = true;
+      return cleanActivity(parsed.data);
+    });
+    if (changed)
+      await chrome.storage.local.set({ [STORAGE_KEYS.activity]: next });
+  });
 }
 
 export async function getLatestRecord(): Promise<HistoryRecord | null> {
@@ -161,14 +310,9 @@ export async function replaceHistoryRecord(
   return withStorageMutationLock(async () => {
     const existingHistory = await getHistory();
     const latest = await getLatestRecord();
-    const windowLatest = await getWindowLatestRecords();
-    const matchingWindowKeys = Object.entries(windowLatest)
-      .filter(([, record]) => record.id === id)
-      .map(([key]) => key);
     const historyContains = existingHistory.some((record) => record.id === id);
     const latestContains = latest?.id === id;
-    if (!historyContains && !latestContains && !matchingWindowKeys.length)
-      return false;
+    if (!historyContains && !latestContains) return false;
 
     if (historyContains) {
       await writeHistoryUnlocked(
@@ -178,11 +322,6 @@ export async function replaceHistoryRecord(
       );
     }
     if (latestContains) await setLatestRecordUnlocked(parsedReplacement);
-    if (matchingWindowKeys.length) {
-      for (const key of matchingWindowKeys)
-        windowLatest[key] = parsedReplacement;
-      await writeWindowLatestRecordsUnlocked(windowLatest);
-    }
     return true;
   });
 }
@@ -191,12 +330,7 @@ export async function getResult(id: string): Promise<HistoryRecord | null> {
   const historyRecord = (await getHistory()).find((record) => record.id === id);
   if (historyRecord) return historyRecord;
   const latest = await getLatestRecord();
-  if (latest?.id === id) return latest;
-  return (
-    Object.values(await getWindowLatestRecords()).find(
-      (record) => record.id === id,
-    ) ?? null
-  );
+  return latest?.id === id ? latest : null;
 }
 
 export async function deleteHistoryItem(id: string): Promise<void> {
@@ -212,65 +346,7 @@ export async function deleteHistoryItem(id: string): Promise<void> {
         await chrome.storage.session.remove(STORAGE_KEYS.latest);
       }
     }
-    await removeWindowLatestRecordUnlocked(id);
   });
-}
-
-export async function getWindowLatestRecord(
-  windowId: number,
-): Promise<HistoryRecord | null> {
-  return (await getWindowLatestRecords())[String(windowId)] ?? null;
-}
-
-export function setWindowLatestRecord(
-  windowId: number,
-  record: HistoryRecord,
-): Promise<boolean> {
-  if (!Number.isInteger(windowId) || windowId < 0)
-    return Promise.resolve(false);
-  const parsed = HistoryRecordSchema.parse(record);
-  return withStorageMutationLock(async () => {
-    const records = await getWindowLatestRecords();
-    const key = String(windowId);
-    const existing = records[key];
-    if (
-      existing &&
-      Date.parse(existing.createdAt) > Date.parse(parsed.createdAt)
-    )
-      return false;
-    records[key] = parsed;
-    await writeWindowLatestRecordsUnlocked(records);
-    return true;
-  });
-}
-
-async function getWindowLatestRecords(): Promise<
-  Record<string, HistoryRecord>
-> {
-  const values = await chrome.storage.session.get(
-    STORAGE_KEYS.popupLatestByWindow,
-  );
-  const raw = values[STORAGE_KEYS.popupLatestByWindow];
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  const records: Record<string, HistoryRecord> = {};
-  for (const [key, candidate] of Object.entries(raw)) {
-    if (!/^\d+$/u.test(key)) continue;
-    const parsed = HistoryRecordSchema.safeParse(candidate);
-    if (parsed.success) records[key] = parsed.data;
-  }
-  return records;
-}
-
-async function removeWindowLatestRecordUnlocked(id: string): Promise<void> {
-  const records = await getWindowLatestRecords();
-  let changed = false;
-  for (const [key, record] of Object.entries(records)) {
-    if (record.id !== id) continue;
-    delete records[key];
-    changed = true;
-  }
-  if (!changed) return;
-  await writeWindowLatestRecordsUnlocked(records);
 }
 
 function writeHistoryUnlocked(records: HistoryRecord[]): Promise<void> {
@@ -279,14 +355,6 @@ function writeHistoryUnlocked(records: HistoryRecord[]): Promise<void> {
 
 function setLatestRecordUnlocked(record: HistoryRecord): Promise<void> {
   return chrome.storage.session.set({ [STORAGE_KEYS.latest]: record });
-}
-
-function writeWindowLatestRecordsUnlocked(
-  records: Record<string, HistoryRecord>,
-): Promise<void> {
-  return chrome.storage.session.set({
-    [STORAGE_KEYS.popupLatestByWindow]: records,
-  });
 }
 
 function withStorageMutationLock<T>(work: () => Promise<T>): Promise<T> {

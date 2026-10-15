@@ -623,7 +623,7 @@ describe("connected DigiBot history page", () => {
     },
   );
 
-  it("clears connected history one operation at a time for the selected period", async () => {
+  it("clears connected history one operation at a time for the selected period, and the local history with Recent", async () => {
     await openPage();
     choose("history-period", "30d");
     await vi.waitFor(() =>
@@ -640,10 +640,10 @@ describe("connected DigiBot history page", () => {
       connectedOperations.map(({ operationId }) => [operationId]),
     );
     expect(mocks.getAllIntegrationHistory).toHaveBeenNthCalledWith(1, "30d");
-    expect(mocks.clearHistory).not.toHaveBeenCalled();
+    expect(mocks.clearHistory).toHaveBeenCalledOnce();
   });
 
-  it("reports a connected clear failure", async () => {
+  it("reports a connected clear failure, with the local history and Recent cleared", async () => {
     await openPage();
     mocks.deleteIntegrationHistory.mockRejectedValue(new Error("offline"));
 
@@ -653,6 +653,7 @@ describe("connected DigiBot history page", () => {
       expect(statusText()).toBe("Connected history could not be cleared."),
     );
     expect(mocks.deleteIntegrationHistory).toHaveBeenCalledOnce();
+    expect(mocks.clearHistory).toHaveBeenCalledOnce();
     expect(element("history-status").className).toBe("status error");
   });
 

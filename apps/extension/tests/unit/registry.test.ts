@@ -82,7 +82,7 @@ describe("central action registry", () => {
     ]);
   });
 
-  it("registers the Google SynthID handoff as a website handoff with its row note", async () => {
+  it("registers the Google SynthID handoff as a website handoff", async () => {
     mocks.verifySelectionOnWebsite.mockResolvedValue({
       kind: "website",
       status: "opened",
@@ -94,9 +94,6 @@ describe("central action registry", () => {
     expect(action?.resultType).toBe("website-handoff");
     expect(action?.triggerLabel).toBe("Check with Google SynthID…");
     expect(action?.settings).toEqual([]);
-    expect(action?.rowNote).toBe(
-      "Google has no SynthID API yet, so Lens opens Google's SynthID Detector with your file. Lens will check it directly once Google releases an API.",
-    );
     if (action?.inputType !== "image-file") throw new Error("not an image");
     await expect(
       action.handler({ selection, settings: websiteSettings, retrieval: {} }),

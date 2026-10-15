@@ -41,6 +41,23 @@ describe("credential result labels", () => {
     ).toBe("Content Credentials verified");
   });
 
+  it("gives the three audio titles the page's audio toast shows", () => {
+    const result = makeIndeterminateResult("The audio could not be checked.");
+    expect(
+      (
+        [
+          "openai_signal_detected",
+          "no_supported_openai_signal",
+          "indeterminate",
+        ] as const
+      ).map((verdict) => resultLabel({ ...result, verdict }, "audio")),
+    ).toEqual([
+      "OpenAI audio signal detected",
+      "No supported OpenAI audio signal detected",
+      "The audio could not be verified",
+    ]);
+  });
+
   it("rejects contradictory credential evidence before display or storage", () => {
     expect(
       ContentCredentialsSchema.safeParse({

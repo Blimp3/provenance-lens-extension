@@ -38,6 +38,40 @@ const accessToken = "access-token-e2e";
 const refreshToken = "refresh-token-e2e";
 const operationIdPattern = /^[0-9a-f-]{36}$/u;
 
+// A talk page's player: a custom element whose open shadow root draws the
+// control bar over a slotted video that plays a MediaSource stream.
+const TALK_HTML = `<!doctype html>
+<html lang="en">
+  <head><title>Talk fixture</title></head>
+  <body style="margin: 0;">
+    <main>
+      <media-player style="display: block; width: 640px; height: 360px;">
+        <video id="talk-video" slot="media" muted playsinline></video>
+      </media-player>
+    </main>
+    <script>
+      customElements.define(
+        "media-player",
+        class extends HTMLElement {
+          constructor() {
+            super();
+            const shadow = this.attachShadow({ mode: "open" });
+            shadow.innerHTML =
+              "<style>:host { position: relative; background: #000; }" +
+              " ::slotted(video) { display: block; width: 100%; height: 100%; }" +
+              " .bar { position: absolute; inset: auto 0 0 0; height: 44px;" +
+              " background: rgb(0 0 0 / 0.5); }</style>" +
+              '<slot name="media"></slot>' +
+              '<div class="bar"><button type="button">Play</button></div>';
+          }
+        },
+      );
+      const video = document.querySelector("#talk-video");
+      video.src = URL.createObjectURL(new MediaSource());
+    </script>
+  </body>
+</html>`;
+
 function fixtureTime(offsetMs: number): string {
   return new Date(Date.now() + offsetMs).toISOString();
 }
@@ -178,7 +212,18 @@ test("pairs DigiBot, separates image Check and Download operations, sends a page
       await route.fulfill({
         status: 200,
         contentType: "text/html",
-        body: '<!doctype html><html lang="en"><head><title>Integration fixture</title></head><body><img id="target-image" src="/image.png" alt="Fixture" width="320" height="180"></body></html>',
+        // An X-style post with two photos and then a video: the download
+        // pick sends a photo as an image and the post's one video as the
+        // post.
+        body: '<!doctype html><html lang="en"><head><title>Integration fixture</title></head><body><article><a href="https://x.com/alice/status/123"><time>2h</time></a><p>A post</p><a href="https://x.com/alice/status/123/photo/1"><img id="target-image" src="/image.png" alt="Fixture" width="320" height="180"></a><a href="https://x.com/alice/status/123/photo/2"><img src="/image.png" alt="Second photo" width="320" height="180"></a><video id="target-video" width="320" height="180"></video></article></body></html>',
+      });
+      return;
+    }
+    if (path === "/talk") {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body: TALK_HTML,
       });
       return;
     }
@@ -381,33 +426,44 @@ test("pairs DigiBot, separates image Check and Download operations, sends a page
       expect(targetTab.active).toBe(true);
     };
 
-    const startAction = async (actionId: string): Promise<void> => {
-      const popup = await context.newPage();
-      await popup.goto(`chrome-extension://${extensionId}/popup.html`);
-      const actionButton = popup.locator(
-        `button[data-action-id="${actionId}"]`,
-      );
-      await expect(actionButton).toBeVisible();
-      await expect(actionButton).toBeEnabled();
+    // The message the Lens palette sends, here from an extension page, while
+    // the target tab is the active one.
+    const sendStartAction = async (actionId: string): Promise<void> => {
       await activateTargetTab();
-      await popup.evaluate((id) => {
-        const button = document.querySelector<HTMLButtonElement>(
-          `button[data-action-id="${id}"]`,
-        );
-        if (!button) throw new Error(`Action button ${id} was not found.`);
-        button.click();
-      }, actionId);
-      await popup.close().catch(() => undefined);
+      await settings.evaluate(
+        (id) =>
+          chrome.runtime.sendMessage({
+            type: "start-action",
+            actionId: id,
+            trigger: "popup",
+          }),
+        actionId,
+      );
+    };
+
+    const startAction = async (
+      actionId: string,
+      box = imageBox,
+    ): Promise<void> => {
+      await sendStartAction(actionId);
       const overlay = targetPage.locator(
         '[data-provenance-lens-picker="overlay"]',
       );
       await expect(overlay).toBeAttached();
-      await targetPage.mouse.click(
-        (imageBox?.x ?? 0) + 80,
-        (imageBox?.y ?? 0) + 80,
-      );
+      await targetPage.mouse.click((box?.x ?? 0) + 80, (box?.y ?? 0) + 80);
       await expect(overlay).toHaveCount(0);
     };
+
+    const workflow = (): Promise<{ status?: string; message?: string }> =>
+      worker.evaluate(async () => {
+        const values = await chrome.storage.local.get(
+          "provenanceLens.workflow",
+        );
+        return (
+          (values["provenanceLens.workflow"] as
+            { status?: string; message?: string } | undefined) ?? {}
+        );
+      });
 
     await startAction("verify-openai-provenance");
     await expect.poll(() => operationInputs.length).toBe(1);
@@ -417,6 +473,8 @@ test("pairs DigiBot, separates image Check and Download operations, sends a page
         targetPage.locator('[data-provenance-lens-toast="true"]').count(),
       )
       .toBeGreaterThan(0);
+    // A check holds its tab until it finishes, so the Download waits for it.
+    await expect.poll(async () => (await workflow()).status).toBe("idle");
 
     await startAction(DOWNLOAD_ACTION_ID);
     await expect.poll(() => operationInputs.length).toBe(2);
@@ -428,29 +486,68 @@ test("pairs DigiBot, separates image Check and Download operations, sends a page
     );
     expect(verificationCalls).toBe(0);
 
+    // The Download finishes first, so its message cannot land after the
+    // page link's.
+    await expect
+      .poll(async () => (await workflow()).message)
+      .toBe("The image was sent to your DigiBot chat.");
+
     // The page-link action sends only the active tab's address, creates no
-    // operation, and reports back inside the popup, which stays open.
-    const linkPopup = await context.newPage();
-    await linkPopup.goto(`chrome-extension://${extensionId}/popup.html`);
-    const linkButton = linkPopup.locator(
-      `button[data-action-id="${LINK_ACTION_ID}"]`,
-    );
-    await expect(linkButton).toBeEnabled();
-    await activateTargetTab();
-    await linkButton.evaluate((button) =>
-      (button as HTMLButtonElement).click(),
-    );
+    // operation, and reports back by a toast on the page.
+    await sendStartAction(LINK_ACTION_ID);
     await expect.poll(() => linkDownloads.length).toBe(1);
     expect(linkDownloads[0]?.sourceUrl).toBe(targetPage.url());
     expect(operationIdPattern.test(linkDownloads[0]?.operationId ?? "")).toBe(
       true,
     );
-    await expect(linkPopup.locator("#workflow-status")).toHaveText(
-      "Queued in DigiBot. The result arrives in your Telegram chat.",
-    );
-    expect(linkPopup.isClosed()).toBe(false);
+    await expect
+      .poll(async () => (await workflow()).message)
+      .toBe("Queued in DigiBot. The result arrives in your Telegram chat.");
+    await expect
+      .poll(() =>
+        targetPage.locator('[data-provenance-lens-toast="true"]').count(),
+      )
+      .toBeGreaterThan(0);
     expect(operationInputs).toHaveLength(2);
-    await linkPopup.close();
+
+    // The same download pick on the post's one video sends the post.
+    await startAction(
+      DOWNLOAD_ACTION_ID,
+      await targetPage.locator("#target-video").boundingBox(),
+    );
+    await expect.poll(() => linkDownloads.length).toBe(2);
+    expect(linkDownloads[1]?.sourceUrl).toBe("https://x.com/alice/status/123");
+    expect(operationInputs).toHaveLength(2);
+
+    // A video slotted into a player whose controls live in an open shadow
+    // root, as on a TED talk: the pick sends what Send video sends.
+    await targetPage.goto(`${INTEGRATION_BACKEND_URL}/talk`);
+    await expect
+      .poll(() =>
+        targetPage.evaluate(() =>
+          document.querySelector("video")?.src.startsWith("blob:"),
+        ),
+      )
+      .toBe(true);
+    await sendStartAction(LINK_ACTION_ID);
+    await expect.poll(() => linkDownloads.length).toBe(3);
+    await expect
+      .poll(async () => (await workflow()).message)
+      .toBe("Queued in DigiBot. The result arrives in your Telegram chat.");
+    await startAction(
+      DOWNLOAD_ACTION_ID,
+      await targetPage.locator("#talk-video").boundingBox(),
+    );
+    await expect.poll(() => linkDownloads.length).toBe(4);
+    expect(linkDownloads[2]?.sourceUrl).toBe(targetPage.url());
+    expect({ ...linkDownloads[3], operationId: "" }).toEqual({
+      ...linkDownloads[2],
+      operationId: "",
+    });
+    expect(linkDownloads[3]?.operationId).not.toBe(
+      linkDownloads[2]?.operationId,
+    );
+    expect(operationInputs).toHaveLength(2);
 
     const history = await context.newPage();
     await history.goto(`chrome-extension://${extensionId}/history.html`);

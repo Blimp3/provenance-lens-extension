@@ -93,6 +93,29 @@ function startLinkMessage(sendPickerMessage: (message: unknown) => void): void {
   });
 }
 
+function startMediaMessage(
+  sendPickerMessage: (message: unknown) => void,
+): void {
+  bindMessage(sendPickerMessage);
+  sendPickerMessage({
+    type: "picker-start",
+    runtimeVersion: PICKER_RUNTIME_VERSION,
+    sessionToken: SESSION_TOKEN,
+    mode: "media",
+  });
+}
+
+/** The address jsdom started on; a test may move the page and comes back. */
+const START_URL = location.href;
+
+function setPageUrl(url: string): void {
+  (
+    globalThis as unknown as {
+      jsdom: { reconfigure: (options: { url: string }) => void };
+    }
+  ).jsdom.reconfigure({ url });
+}
+
 type ClickListener = (event: MouseEvent) => void;
 
 /**
@@ -255,6 +278,7 @@ function toneBarColor(shadow: ShadowRoot | null): string | undefined {
 }
 
 function resetPickerEnvironment(): void {
+  setPageUrl(START_URL);
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.resetModules();
@@ -273,6 +297,7 @@ function resetPickerEnvironment(): void {
   Reflect.deleteProperty(window, "matchMedia");
   Reflect.deleteProperty(document, "fullscreenElement");
   Reflect.deleteProperty(HTMLElement.prototype, "showPopover");
+  Reflect.deleteProperty(HTMLElement.prototype, "hidePopover");
   (
     window as Window & { __provenanceLensPickerInstalled?: boolean | string }
   ).__provenanceLensPickerInstalled = false;
@@ -1038,6 +1063,428 @@ describe("video picker (link mode)", () => {
   });
 });
 
+/** Gives an element a layout box, as Chromium would. */
+function placed<T extends Element>(
+  element: T,
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+): T {
+  Object.defineProperty(element, "getBoundingClientRect", {
+    configurable: true,
+    value: () => imageRect(left, top, width, height),
+  });
+  return element;
+}
+
+/** An X post with two photos and then a video in its media grid. */
+function xMediaPost(): {
+  text: HTMLElement;
+  photos: HTMLImageElement[];
+  video: HTMLVideoElement;
+  controls: HTMLElement;
+} {
+  const { article, text } = xPost("https://x.com/alice/status/123", false);
+  const grid = document.createElement("div");
+  const photos = [1, 2].map((index) => {
+    const link = document.createElement("a");
+    link.href = `https://x.com/alice/status/123/photo/${index}`;
+    const image = placed(
+      document.createElement("img"),
+      (index - 1) * 100,
+      100,
+      100,
+      100,
+    );
+    image.src = `https://pbs.example/photo-${index}.jpg`;
+    link.append(image);
+    grid.append(link);
+    return image;
+  });
+  const player = placed(document.createElement("div"), 0, 200, 200, 100);
+  const video = placed(document.createElement("video"), 0, 200, 200, 100);
+  video.poster = "https://pbs.example/poster.jpg";
+  // The player's own layer over the video, which takes the hit instead.
+  const controls = document.createElement("div");
+  player.append(video, controls);
+  grid.append(player);
+  article.append(grid);
+  return { text, photos, video, controls };
+}
+
+describe("download picker (media mode)", () => {
+  beforeEach(resetPickerEnvironment);
+
+  async function armed(): Promise<{
+    sendMessage: ReturnType<typeof vi.fn>;
+    click: (x: number, y: number) => void;
+    hover: (x: number, y: number) => Promise<void>;
+    label: () => string | null | undefined;
+    banner: () => string | null | undefined;
+    /** Arms the picker again after a pick. */
+    restart: () => void;
+  }> {
+    const { sendMessage, sendPickerMessage } = installChrome();
+    const shadows = captureShadows();
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    await import("../../src/picker.js");
+    startMediaMessage(sendPickerMessage);
+    return {
+      sendMessage,
+      click: (x, y) => trustedClick(clickListenerOf(addEventListener), x, y),
+      hover: async (x, y) => {
+        document.dispatchEvent(
+          new PointerEvent("pointermove", { clientX: x, clientY: y }),
+        );
+        await flush();
+      },
+      label: () =>
+        shadows.overlay?.querySelector("[data-picker-label]")?.textContent,
+      banner: () =>
+        shadows.banner?.querySelector('[data-picker-banner="true"]')
+          ?.textContent,
+      restart: () => startMediaMessage(sendPickerMessage),
+    };
+  }
+
+  it("sends an X post's one video from a click on its text", async () => {
+    const { article, text } = xPost("https://x.com/alice/status/123", true);
+    const video = article.querySelector("video");
+    if (!video) throw new Error("Missing video");
+    placed(video, 0, 100, 200, 100);
+    hitTest([text]);
+    const picker = await armed();
+    expect(overlayElement()?.getAttribute("aria-label")).toBe(
+      "Provenance Lens download picker",
+    );
+    await picker.hover(10, 10);
+    expect(picker.label()).toBe("Video · x.com · Send · Esc to cancel");
+    expect(overlayElement()?.getAttribute("aria-label")).toBe(
+      "Provenance Lens download picker. Video · x.com · Send · Esc to cancel",
+    );
+
+    picker.click(10, 10);
+    expect(picker.sendMessage).toHaveBeenCalledWith({
+      type: "picker-link-selected",
+      sessionToken: SESSION_TOKEN,
+      url: "https://x.com/alice/status/123",
+    });
+  });
+
+  it("sends the clicked photo of an X post as an image and its one video as the post", async () => {
+    const { photos, controls } = xMediaPost();
+    const picker = await armed();
+    for (const [index, photo] of photos.entries()) {
+      hitTest([photo]);
+      if (index > 0) picker.restart();
+      await picker.hover(index * 100 + 50, 150);
+      expect(picker.label()).toBe(
+        "Image · 100 × 100 px · Send · Esc to cancel",
+      );
+      picker.click(index * 100 + 50, 150);
+      await vi.waitFor(() =>
+        expect(picker.sendMessage).toHaveBeenCalledTimes(index + 1),
+      );
+      expect(picker.sendMessage.mock.calls[index]?.[0]).toMatchObject({
+        type: "picker-selected",
+        sessionToken: SESSION_TOKEN,
+        selection: {
+          url: `https://pbs.example/photo-${index + 1}.jpg`,
+          sourceKind: "img",
+        },
+      });
+    }
+
+    // The player's layer takes the hit; the point is on the video's box.
+    hitTest([controls]);
+    picker.restart();
+    picker.click(50, 250);
+    expect(picker.sendMessage).toHaveBeenLastCalledWith({
+      type: "picker-link-selected",
+      sessionToken: SESSION_TOKEN,
+      url: "https://x.com/alice/status/123",
+    });
+  });
+
+  it("sends a video for its poster, never the poster image", async () => {
+    const { video } = xMediaPost();
+    hitTest([video]);
+    const picker = await armed();
+    await picker.hover(50, 250);
+    expect(picker.label()).toBe("Video · x.com · Send · Esc to cancel");
+    picker.click(50, 250);
+    expect(picker.sendMessage).toHaveBeenCalledWith({
+      type: "picker-link-selected",
+      sessionToken: SESSION_TOKEN,
+      url: "https://x.com/alice/status/123",
+    });
+  });
+
+  it("sends the second of two videos in an X post as /video/4", async () => {
+    const { video } = xMediaPost();
+    const second = placed(document.createElement("video"), 200, 200, 200, 100);
+    video.parentElement?.after(second);
+    hitTest([second]);
+    const picker = await armed();
+    picker.click(250, 250);
+    expect(picker.sendMessage).toHaveBeenCalledWith({
+      type: "picker-link-selected",
+      sessionToken: SESSION_TOKEN,
+      url: "https://x.com/alice/status/123/video/4",
+    });
+  });
+
+  it("sends the video when an image inside its player is drawn over it", async () => {
+    setPageUrl("https://news.example/story");
+    const player = placed(document.createElement("div"), 0, 0, 320, 180);
+    const video = placed(document.createElement("video"), 0, 0, 320, 180);
+    const logo = placed(document.createElement("img"), 10, 10, 40, 20);
+    logo.src = "https://news.example/logo.png";
+    player.append(video, logo);
+    document.body.append(player);
+    hitTest([logo, video, player]);
+    const picker = await armed();
+    await picker.hover(20, 20);
+    expect(picker.label()).toBe("Video · news.example · Send · Esc to cancel");
+    picker.click(20, 20);
+    expect(picker.sendMessage).toHaveBeenCalledWith({
+      type: "picker-page-selected",
+      sessionToken: SESSION_TOKEN,
+    });
+  });
+
+  it("sends a video drawn over an image, not the image", async () => {
+    setPageUrl("https://news.example/story");
+    const hero = placed(document.createElement("img"), 0, 0, 640, 360);
+    hero.src = "https://news.example/hero.jpg";
+    const video = placed(document.createElement("video"), 0, 0, 320, 180);
+    document.body.append(hero, video);
+    hitTest([video, hero]);
+    const picker = await armed();
+    picker.click(20, 20);
+    expect(picker.sendMessage).toHaveBeenCalledWith({
+      type: "picker-page-selected",
+      sessionToken: SESSION_TOKEN,
+    });
+  });
+
+  it("sends the image of a modal drawn over a video, not the video", async () => {
+    const { video } = xMediaPost();
+    const modal = placed(document.createElement("div"), 0, 0, 1024, 768);
+    const photo = placed(document.createElement("img"), 0, 150, 400, 200);
+    photo.src = "https://pbs.example/viewer.jpg";
+    modal.append(photo);
+    document.body.append(modal);
+    hitTest([photo, modal, video]);
+    const picker = await armed();
+    picker.click(50, 250);
+    await vi.waitFor(() => expect(picker.sendMessage).toHaveBeenCalledTimes(1));
+    expect(picker.sendMessage.mock.calls[0]?.[0]).toMatchObject({
+      type: "picker-selected",
+      selection: { url: "https://pbs.example/viewer.jpg" },
+    });
+  });
+
+  it("sends a YouTube or Vimeo embed as its video's page, and another frame as the page", async () => {
+    setPageUrl("https://news.example/story");
+    const article = document.createElement("article");
+    const frames = [
+      "https://www.youtube-nocookie.com/embed/abcdefghijk?rel=0",
+      "https://player.vimeo.com/video/76979871",
+      "https://player.example/v/1",
+    ].map((src) => {
+      const frame = placed(document.createElement("iframe"), 0, 0, 320, 180);
+      frame.src = src;
+      article.append(frame);
+      return frame;
+    });
+    document.body.append(article);
+    const picker = await armed();
+    const sent: unknown[] = [];
+    for (const [index, frame] of frames.entries()) {
+      hitTest([frame, article]);
+      if (index > 0) picker.restart();
+      picker.click(20, 20);
+      sent.push(picker.sendMessage.mock.calls.at(-1)?.[0]);
+    }
+    expect(sent).toEqual([
+      {
+        type: "picker-link-selected",
+        sessionToken: SESSION_TOKEN,
+        url: "https://www.youtube.com/watch?v=abcdefghijk",
+      },
+      {
+        type: "picker-link-selected",
+        sessionToken: SESSION_TOKEN,
+        url: "https://vimeo.com/76979871",
+      },
+      { type: "picker-page-selected", sessionToken: SESSION_TOKEN },
+    ]);
+  });
+
+  it("sends a video slotted into a player whose open shadow root hit-tests its host", async () => {
+    setPageUrl("https://talks.example/talk");
+    const main = document.createElement("main");
+    const controller = placed(document.createElement("div"), 0, 0, 640, 360);
+    const shadow = controller.attachShadow({ mode: "open" });
+    const bar = placed(document.createElement("div"), 0, 316, 640, 44);
+    const button = placed(document.createElement("button"), 0, 316, 44, 44);
+    bar.append(button);
+    shadow.append(document.createElement("slot"), bar);
+    const video = placed(document.createElement("video"), 0, 0, 640, 360);
+    video.src = "blob:https://talks.example/1";
+    controller.append(video);
+    main.append(controller);
+    document.body.append(main);
+    // As in Chromium, a shadow root's hits run on to its host and the
+    // host's ancestors.
+    Object.defineProperty(shadow, "elementsFromPoint", {
+      configurable: true,
+      value: (): Element[] => [
+        button,
+        bar,
+        controller,
+        main,
+        document.body,
+        document.documentElement,
+      ],
+    });
+    hitTest([controller, video, main, document.body, document.documentElement]);
+    const picker = await armed();
+    await picker.hover(20, 330);
+    expect(picker.label()).toBe("Video · talks.example · Send · Esc to cancel");
+    picker.click(20, 330);
+    expect(picker.sendMessage).toHaveBeenCalledWith({
+      type: "picker-page-selected",
+      sessionToken: SESSION_TOKEN,
+    });
+  });
+
+  it("refuses a click on the text of an X post that shows only images", async () => {
+    const { article, text } = xPost("https://x.com/alice/status/123", false);
+    const link = document.createElement("a");
+    link.href = "https://x.com/alice/status/123/photo/1";
+    const image = document.createElement("img");
+    image.src = "https://pbs.example/photo-1.jpg";
+    link.append(image);
+    article.append(link);
+    hitTest([text]);
+    const picker = await armed();
+    await picker.hover(10, 10);
+    expect(overlayElement()?.style.display).toBe("none");
+    picker.click(10, 10);
+    expect(picker.sendMessage).not.toHaveBeenCalled();
+    expect(picker.banner()).toBe("Click the image or the video itself");
+    expect(overlayElement()).not.toBeNull();
+  });
+
+  it("sends a YouTube thumbnail in a watch link as that video", async () => {
+    const link = document.createElement("a");
+    link.href = "https://www.youtube.com/watch?v=abcdefghijk&pp=feed";
+    const thumbnail = placed(document.createElement("img"), 0, 0, 160, 90);
+    thumbnail.src = "https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg";
+    link.append(thumbnail);
+    document.body.append(link);
+    hitTest([thumbnail]);
+    const picker = await armed();
+    await picker.hover(20, 20);
+    expect(picker.label()).toBe(
+      "Video · www.youtube.com · Send · Esc to cancel",
+    );
+    picker.click(20, 20);
+    expect(picker.sendMessage).toHaveBeenCalledWith({
+      type: "picker-link-selected",
+      sessionToken: SESSION_TOKEN,
+      url: "https://www.youtube.com/watch?v=abcdefghijk",
+    });
+  });
+
+  it("sends a plain image as an image", async () => {
+    const image = placed(document.createElement("img"), 10, 20, 30, 40);
+    image.src = "https://page.example/image.png";
+    document.body.append(image);
+    hitTest([image]);
+    const picker = await armed();
+    await picker.hover(20, 30);
+    expect(picker.label()).toBe("Image · 30 × 40 px · Send · Esc to cancel");
+    expect(overlayElement()?.getAttribute("aria-label")).toBe(
+      "Provenance Lens download picker. Image · 30 × 40 px · Send · Esc to cancel",
+    );
+    picker.click(20, 30);
+    await vi.waitFor(() => expect(picker.sendMessage).toHaveBeenCalledTimes(1));
+    expect(picker.sendMessage.mock.calls[0]?.[0]).toMatchObject({
+      type: "picker-selected",
+      sessionToken: SESSION_TOKEN,
+      selection: { url: "https://page.example/image.png" },
+    });
+  });
+
+  it("sends the page itself for a lone video on an article page", async () => {
+    setPageUrl("https://news.example/story");
+    const video = placed(document.createElement("video"), 0, 0, 320, 180);
+    document.body.append(video);
+    hitTest([video]);
+    const picker = await armed();
+    await picker.hover(20, 20);
+    expect(picker.label()).toBe("Video · news.example · Send · Esc to cancel");
+    picker.click(20, 20);
+    expect(picker.sendMessage).toHaveBeenCalledTimes(1);
+    expect(picker.sendMessage).toHaveBeenCalledWith({
+      type: "picker-page-selected",
+      sessionToken: SESSION_TOKEN,
+    });
+  });
+
+  it("sends a video whose player layer takes the hit", async () => {
+    setPageUrl("https://news.example/story");
+    const player = placed(document.createElement("div"), 0, 0, 320, 180);
+    const video = placed(document.createElement("video"), 0, 0, 320, 180);
+    const controls = document.createElement("div");
+    player.append(video, controls);
+    document.body.append(player);
+    hitTest([controls]);
+    const picker = await armed();
+    picker.click(20, 20);
+    expect(picker.sendMessage).toHaveBeenCalledWith({
+      type: "picker-page-selected",
+      sessionToken: SESSION_TOKEN,
+    });
+  });
+
+  it("never sends the poster of a video that does not show as an image", async () => {
+    const video = document.createElement("video");
+    video.poster = "https://page.example/poster.jpg";
+    document.body.append(video);
+    hitTest([video]);
+    const picker = await armed();
+    picker.click(20, 20);
+    expect(picker.sendMessage).not.toHaveBeenCalled();
+    expect(picker.banner()).toBe("Nothing to download here");
+  });
+
+  it("refuses a lone video on a listing page", async () => {
+    setPageUrl("https://www.youtube.com/@channel");
+    const video = placed(document.createElement("video"), 0, 0, 320, 180);
+    document.body.append(video);
+    hitTest([video]);
+    const picker = await armed();
+    picker.click(20, 20);
+    expect(picker.sendMessage).not.toHaveBeenCalled();
+    expect(picker.banner()).toBe("Open the video's own page, then pick it");
+  });
+
+  it("refuses a click on an empty area", async () => {
+    const empty = document.createElement("div");
+    document.body.append(empty);
+    hitTest([empty]);
+    const picker = await armed();
+    picker.click(5, 5);
+    expect(picker.sendMessage).not.toHaveBeenCalled();
+    expect(picker.banner()).toBe("Nothing to download here");
+  });
+});
+
 function matchMediaFor(matching: readonly string[]): void {
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
@@ -1077,6 +1524,7 @@ describe("pick banner", () => {
       "Send video · Click a post with a video · Esc to cancel",
     ],
     ["image", "synthid", "Google SynthID · Click an image · Esc to cancel"],
+    ["media", undefined, "Click an image or a video · Esc to cancel"],
   ] as const)(
     "names the armed picker (mode %s, label %s)",
     async (mode, label, text) => {
@@ -1605,6 +2053,55 @@ describe("mount rule for the banner, overlay and toast", () => {
     fullscreen = player;
     document.dispatchEvent(new Event("fullscreenchange"));
     for (const root of mountedRoots()) expect(root.parentElement).toBe(player);
+  });
+
+  it("shows the overlay, banner and toast again on top when the root element goes fullscreen", async () => {
+    const open = new WeakSet<Element>();
+    const hidePopover = vi.fn(function (this: HTMLElement) {
+      open.delete(this);
+    });
+    Object.defineProperty(HTMLElement.prototype, "hidePopover", {
+      configurable: true,
+      value: hidePopover,
+    });
+    const matches = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      "matches",
+    )?.value as (this: Element, selector: string) => boolean;
+    vi.spyOn(Element.prototype, "matches").mockImplementation(function (
+      this: Element,
+      selector: string,
+    ) {
+      return selector === ":popover-open"
+        ? open.has(this)
+        : matches.call(this, selector);
+    });
+    let fullscreen: Element | null = null;
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => fullscreen,
+    });
+    const showPopover = await showAll();
+    const roots = mountedRoots();
+    for (const root of roots) open.add(root);
+    expect(hidePopover).not.toHaveBeenCalled();
+    showPopover.mockClear();
+
+    // The parent stays the root element, but the fullscreen layer is now
+    // above each surface until it is shown again.
+    fullscreen = document.documentElement;
+    document.dispatchEvent(new Event("fullscreenchange"));
+    for (const root of roots) {
+      expect(root.parentElement).toBe(document.documentElement);
+      // Earlier tests' picker copies still listen on this document, so the
+      // calls are counted per surface.
+      expect(
+        hidePopover.mock.contexts.filter((on) => on === root),
+      ).toHaveLength(1);
+      expect(
+        showPopover.mock.contexts.filter((on) => on === root),
+      ).toHaveLength(1);
+    }
   });
 
   it("mounts the overlay, banner and toast again when the page leaves fullscreen", async () => {

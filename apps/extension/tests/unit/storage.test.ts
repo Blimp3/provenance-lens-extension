@@ -1,20 +1,22 @@
-import type { HistoryRecord } from "@provenance-lens/shared";
+import type { ActivityEntry, HistoryRecord } from "@provenance-lens/shared";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   appendHistory,
   clearHistory,
   defaultSettings,
+  getActivity,
   getHistory,
   getLatestRecord,
   getResult,
   getSettings,
-  getWindowLatestRecord,
   deleteHistoryItem,
   replaceHistoryRecord,
-  setWindowLatestRecord,
   STORAGE_KEYS,
   saveSettings,
+  startActivity,
+  trimActivity,
+  updateActivity,
 } from "../../src/storage.js";
 
 type MemoryArea = {
@@ -225,38 +227,8 @@ describe("history and transient latest retention", () => {
     await expect(getLatestRecord()).resolves.toEqual(record);
   });
 
-  it("binds concurrent window popups to their own validated results", async () => {
-    const second = {
-      ...record,
-      id: "123e4567-e89b-42d3-a456-426614174001",
-      createdAt: "2026-09-01T10:00:01.000Z",
-    };
-    await expect(setWindowLatestRecord(7, record)).resolves.toBe(true);
-    await expect(setWindowLatestRecord(8, second)).resolves.toBe(true);
-    await expect(getWindowLatestRecord(7)).resolves.toEqual(record);
-    await expect(getWindowLatestRecord(8)).resolves.toEqual(second);
-  });
-
-  it("keeps the newest completion for concurrent checks in one window", async () => {
-    const newer = {
-      ...record,
-      id: "123e4567-e89b-42d3-a456-426614174001",
-      createdAt: "2026-09-01T10:00:01.000Z",
-    };
-    await expect(setWindowLatestRecord(7, newer)).resolves.toBe(true);
-    await expect(setWindowLatestRecord(7, record)).resolves.toBe(false);
-    await expect(getWindowLatestRecord(7)).resolves.toEqual(newer);
-  });
-
-  it("resolves a window-bound result when retained history is disabled", async () => {
-    const second = {
-      ...record,
-      id: "123e4567-e89b-42d3-a456-426614174001",
-      createdAt: "2026-09-01T10:00:01.000Z",
-    };
+  it("resolves the transient latest result when retained history is disabled", async () => {
     await appendHistory(record, 0);
-    await setWindowLatestRecord(7, record);
-    await appendHistory(second, 0);
     await expect(getHistory()).resolves.toEqual([]);
     await expect(getResult(record.id)).resolves.toEqual(record);
   });
@@ -269,21 +241,17 @@ describe("history and transient latest retention", () => {
 
   it("clears both retained and transient records", async () => {
     await appendHistory(record, 20);
-    await setWindowLatestRecord(7, record);
     await clearHistory();
     await expect(getHistory()).resolves.toEqual([]);
     await expect(getLatestRecord()).resolves.toBeNull();
-    await expect(getWindowLatestRecord(7)).resolves.toBeNull();
   });
 
   it("moves latest to the next retained item after deletion", async () => {
     const second = { ...record, id: "123e4567-e89b-42d3-a456-426614174001" };
     await appendHistory(record, 20);
     await appendHistory(second, 20);
-    await setWindowLatestRecord(7, second);
     await deleteHistoryItem(second.id);
     await expect(getLatestRecord()).resolves.toEqual(record);
-    await expect(getWindowLatestRecord(7)).resolves.toBeNull();
   });
 
   it("serializes concurrent appends and deletion without losing or resurrecting records", async () => {
@@ -353,18 +321,16 @@ describe("history and transient latest retention", () => {
     await expect(getLatestRecord()).resolves.toEqual(second);
   });
 
-  it("replaces retained, transient, and window-bound records without resurrecting a deletion", async () => {
+  it("replaces retained and transient records without resurrecting a deletion", async () => {
     const replacement = {
       ...record,
       result: { ...record.result, summary: "The rechecked result." },
     };
     await appendHistory(record, 0);
-    await setWindowLatestRecord(7, record);
 
     await expect(replaceHistoryRecord(replacement)).resolves.toBe(true);
     await expect(getHistory()).resolves.toEqual([]);
     await expect(getLatestRecord()).resolves.toEqual(replacement);
-    await expect(getWindowLatestRecord(7)).resolves.toEqual(replacement);
 
     await Promise.all([
       replaceHistoryRecord({
@@ -375,7 +341,190 @@ describe("history and transient latest retention", () => {
     ]);
     await expect(getHistory()).resolves.toEqual([]);
     await expect(getLatestRecord()).resolves.toBeNull();
-    await expect(getWindowLatestRecord(7)).resolves.toBeNull();
     await expect(replaceHistoryRecord(replacement)).resolves.toBe(false);
+  });
+});
+
+describe("Recent's activity list", () => {
+  beforeEach(() => {
+    installStorageMocks();
+  });
+
+  function started(index: number): ActivityEntry {
+    return {
+      id: `423e4567-e89b-42d3-a456-4266141740${String(index).padStart(2, "0")}`,
+      title: "Send video",
+      kind: "page-link",
+      tabId: 7,
+      pageTitle: null,
+      pageUrl: "https://page.example/",
+      linkUrl: null,
+      startedAt: "2026-10-14T20:00:00.000Z",
+      state: "running",
+      message: null,
+      operationId: null,
+      recordId: null,
+    };
+  }
+
+  it("keeps as many entries as history keeps records, newest first", async () => {
+    for (let index = 0; index < 12; index += 1)
+      await startActivity(started(index), 10);
+    const kept = await getActivity();
+    expect(kept.map(({ id }) => id)).toEqual(
+      Array.from({ length: 10 }, (_, offset) => started(11 - offset).id),
+    );
+  });
+
+  it("keeps nothing with history off", async () => {
+    await startActivity(started(0), 20);
+    await startActivity(started(1), 0);
+    await expect(getActivity()).resolves.toEqual([]);
+    expect(currentLocal.values[STORAGE_KEYS.activity]).toBeUndefined();
+  });
+
+  it("applies a lower retention, or history off, as soon as it is saved", async () => {
+    for (let index = 0; index < 12; index += 1)
+      await startActivity(started(index), 20);
+    await saveSettings({ ...defaultSettings, historyRetention: 10 });
+    expect((await getActivity()).map(({ id }) => id)).toEqual(
+      Array.from({ length: 10 }, (_, offset) => started(11 - offset).id),
+    );
+    // The two older entries leave storage, so a higher retention later does
+    // not bring them back.
+    expect(currentLocal.values[STORAGE_KEYS.activity]).toHaveLength(10);
+    await saveSettings({ ...defaultSettings, historyRetention: 20 });
+    expect(await getActivity()).toHaveLength(10);
+    await saveSettings({ ...defaultSettings, historyRetention: 0 });
+    await expect(getActivity()).resolves.toEqual([]);
+    expect(currentLocal.values[STORAGE_KEYS.activity]).toBeUndefined();
+  });
+
+  it("trims to the retention it is given, also before that is saved", async () => {
+    for (let index = 0; index < 12; index += 1)
+      await startActivity(started(index), 20);
+    await trimActivity(10);
+    expect(
+      (currentLocal.values[STORAGE_KEYS.activity] as ActivityEntry[]).map(
+        ({ id }) => id,
+      ),
+    ).toEqual(
+      Array.from({ length: 10 }, (_, offset) => started(11 - offset).id),
+    );
+  });
+
+  it("changes an entry only while it runs", async () => {
+    await startActivity(started(0), 20);
+    await updateActivity(started(0).id, {
+      title: `  Sent\nvideo ${"x".repeat(100)}`,
+      kind: "video",
+      linkUrl: "https://x.com/alice/status/1",
+    });
+    await updateActivity(started(0).id, {
+      state: "failed",
+      message: `  Line one\nline two ${"x".repeat(300)}`,
+    });
+    // An ended entry keeps its state; an unknown one changes nothing.
+    await updateActivity(started(0).id, { state: "sent" });
+    await updateActivity(started(1).id, { state: "sent" });
+    const [only, ...rest] = await getActivity();
+    expect(rest).toEqual([]);
+    expect(only).toMatchObject({
+      kind: "video",
+      linkUrl: "https://x.com/alice/status/1",
+      state: "failed",
+    });
+    expect(only?.title).toMatch(/^Sent video x+$/u);
+    expect(only?.title).toHaveLength(80);
+    expect(only?.message).toMatch(/^Line one line two x+$/u);
+    expect(only?.message).toHaveLength(180);
+  });
+
+  it("reads only as many entries as history retention keeps now", async () => {
+    currentLocal.values[STORAGE_KEYS.activity] = Array.from(
+      { length: 25 },
+      (_, index) => started(index),
+    );
+    expect(await getActivity()).toHaveLength(20);
+    currentLocal.values[STORAGE_KEYS.settings] = {
+      ...defaultSettings,
+      historyRetention: 10,
+    };
+    expect((await getActivity()).map(({ id }) => id)).toEqual(
+      Array.from({ length: 10 }, (_, index) => started(index).id),
+    );
+    currentLocal.values[STORAGE_KEYS.settings] = {
+      ...defaultSettings,
+      historyRetention: 0,
+    };
+    await expect(getActivity()).resolves.toEqual([]);
+  });
+
+  it("drops the query and fragment of an older entry's page and of any address in a message", async () => {
+    currentLocal.values[STORAGE_KEYS.activity] = [
+      {
+        ...started(0),
+        pageUrl: "https://page.example/reset?code=1&t=2#token",
+        state: "failed",
+        message:
+          "DigiBot could not fetch https://cdn.example/v.mp4?sig=abc#t=1. See (https://page.example/help?x=1).",
+      },
+    ];
+    expect(await getActivity()).toEqual([
+      expect.objectContaining({
+        pageUrl: "https://page.example/reset",
+        message:
+          "DigiBot could not fetch https://cdn.example/v.mp4. See (https://page.example/help).",
+      }),
+    ]);
+
+    // The next write saves the clean values, and an update's message is
+    // cleaned too.
+    await startActivity(started(1), 20);
+    await updateActivity(started(1).id, {
+      state: "failed",
+      message: "Expired link https://dl.example/d/1?token=secret",
+    });
+    const stored = currentLocal.values[
+      STORAGE_KEYS.activity
+    ] as ActivityEntry[];
+    expect(
+      stored.map(({ pageUrl, message }) => ({ pageUrl, message })),
+    ).toEqual([
+      {
+        pageUrl: "https://page.example/",
+        message: "Expired link https://dl.example/d/1",
+      },
+      {
+        pageUrl: "https://page.example/reset",
+        message:
+          "DigiBot could not fetch https://cdn.example/v.mp4. See (https://page.example/help).",
+      },
+    ]);
+  });
+
+  it("drops a user name and password, and cuts an address without a scheme too", async () => {
+    currentLocal.values[STORAGE_KEYS.activity] = [
+      {
+        ...started(0),
+        state: "failed",
+        message:
+          "Sign in at https://user:pa55@a.example/p?x=1, then open www.example.com/reset?token=abc, example.com/?code=1 or https://blog.example/@alice/post?s=2; v2.0 and e.g. stay.",
+      },
+    ];
+    expect(await getActivity()).toEqual([
+      expect.objectContaining({
+        message:
+          "Sign in at https://a.example/p, then open www.example.com/reset, example.com/ or https://blog.example/@alice/post; v2.0 and e.g. stay.",
+      }),
+    ]);
+  });
+
+  it("is cleared with history", async () => {
+    await startActivity(started(0), 20);
+    await appendHistory(record, 20);
+    await clearHistory();
+    await expect(getActivity()).resolves.toEqual([]);
+    await expect(getHistory()).resolves.toEqual([]);
   });
 });

@@ -14,7 +14,7 @@ const bundledClientToken = "";
 export const entryPoints = {
   background: join(sourceDir, "background.ts"),
   picker: join(sourceDir, "picker.ts"),
-  popup: join(sourceDir, "ui/popup.ts"),
+  palette: join(sourceDir, "ui/palette.ts"),
   settings: join(sourceDir, "ui/settings.ts"),
   history: join(sourceDir, "ui/history.ts"),
   details: join(sourceDir, "ui/details.ts"),
@@ -43,6 +43,7 @@ if (import.meta.main) {
   await rm(outputDir, { recursive: true, force: true });
   await mkdir(outputDir, { recursive: true });
   await cp(join(publicDir, "styles.css"), join(outputDir, "styles.css"));
+  await cp(join(publicDir, "palette.css"), join(outputDir, "palette.css"));
   await cp(
     join(publicDir, "icons/icon-source.svg"),
     join(outputDir, "icons/icon-source.svg"),
@@ -59,7 +60,7 @@ if (import.meta.main) {
   await cp(resolve(appDir, "../..", "LICENSE"), join(outputDir, "LICENSE"));
 
   for (const page of [
-    "popup",
+    "palette",
     "settings",
     "history",
     "details",

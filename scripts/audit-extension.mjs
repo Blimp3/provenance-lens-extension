@@ -57,6 +57,38 @@ const command = manifest.commands?.["pick-image"];
 if (command?.suggested_key?.default !== "Alt+Shift+V") {
   failures.push("pick-image must suggest Alt+Shift+V");
 }
+const palette = manifest.commands?.["open-palette"]?.suggested_key;
+if (
+  palette?.default !== "Alt+Shift+Space" ||
+  palette?.mac !== "Alt+Shift+Space"
+) {
+  failures.push("open-palette must suggest Alt+Shift+Space");
+}
+const suggested = Object.entries(manifest.commands ?? {})
+  .filter(([, entry]) => entry.suggested_key)
+  .map(([name]) => name)
+  .sort();
+if (
+  JSON.stringify(suggested) !== JSON.stringify(["open-palette", "pick-image"])
+)
+  failures.push("only open-palette and pick-image may suggest a key");
+if (manifest.action?.default_popup)
+  failures.push(
+    "action.default_popup is not allowed: the toolbar opens the palette",
+  );
+// palette.html is the only page a website may load, in a frame or as a tab;
+// without the worker's single-use record it stays blank.
+const expectedResources = [
+  { resources: ["palette.html"], matches: ["http://*/*", "https://*/*"] },
+];
+if (
+  JSON.stringify(manifest.web_accessible_resources ?? []) !==
+  JSON.stringify(expectedResources)
+) {
+  failures.push(
+    "web_accessible_resources must be exactly palette.html for HTTP(S) pages",
+  );
+}
 
 if (failures.length > 0) {
   console.error("Extension manifest audit failed:");

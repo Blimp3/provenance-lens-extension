@@ -137,35 +137,42 @@ describe("connected integration request contract", () => {
     );
   });
 
-  it("sends the link-download request DigiBot's contract fixture records", async () => {
+  it("sends the link-download requests DigiBot's contract fixture records", async () => {
     const { local } = installChrome();
     await local.set({ [sessionKey]: session });
-    const recorded = contract.linkDownload;
-    const sent: { url: string; init: RequestInit }[] = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string, init: RequestInit = {}) => {
-        sent.push({ url, init });
-        return response(recorded.response, recorded.status);
-      }),
-    );
     const client = await import("../../src/integration-client.js");
 
-    await expect(
-      client.createLinkDownload(
-        recorded.request.body.operationId,
-        recorded.request.body.sourceUrl,
-        undefined,
-        { output: "mp3" },
-      ),
-    ).resolves.toEqual(recorded.response);
+    for (const [recorded, output] of [
+      [contract.linkDownload, "mp3"],
+      [contract.linkDownloadVoice, "voice"],
+      [contract.linkDownloadM4a, "m4a"],
+    ] as const) {
+      const sent: { url: string; init: RequestInit }[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((url: string, init: RequestInit = {}) => {
+          sent.push({ url, init });
+          return response(recorded.response, recorded.status);
+        }),
+      );
 
-    expect(sent).toHaveLength(1);
-    const [{ url, init } = { url: "", init: {} }] = sent;
-    expect(init.method).toBe(recorded.request.method);
-    expect(new URL(url).pathname).toBe(recorded.request.path);
-    if (typeof init.body !== "string") throw new Error("Expected a JSON body");
-    expect(JSON.parse(init.body)).toEqual(recorded.request.body);
+      await expect(
+        client.createLinkDownload(
+          recorded.request.body.operationId,
+          recorded.request.body.sourceUrl,
+          undefined,
+          { output },
+        ),
+      ).resolves.toEqual(recorded.response);
+
+      expect(sent).toHaveLength(1);
+      const [{ url, init } = { url: "", init: {} }] = sent;
+      expect(init.method).toBe(recorded.request.method);
+      expect(new URL(url).pathname).toBe(recorded.request.path);
+      if (typeof init.body !== "string")
+        throw new Error("Expected a JSON body");
+      expect(JSON.parse(init.body)).toEqual(recorded.request.body);
+    }
   });
 
   it("sends only the link-download options that are present", async () => {
@@ -188,7 +195,7 @@ describe("connected integration request contract", () => {
     await client.createLinkDownload(operationId, sourceUrl);
     await client.createLinkDownload(operationId, sourceUrl, undefined, {});
     await client.createLinkDownload(operationId, sourceUrl, undefined, {
-      output: "mp3",
+      output: "voice",
     });
     await client.createLinkDownload(operationId, sourceUrl, undefined, clip);
     await client.createLinkDownload(operationId, sourceUrl, undefined, {
@@ -199,7 +206,7 @@ describe("connected integration request contract", () => {
     expect(bodies).toEqual([
       { operationId, sourceUrl },
       { operationId, sourceUrl },
-      { operationId, sourceUrl, output: "mp3" },
+      { operationId, sourceUrl, output: "voice" },
       { operationId, sourceUrl, ...clip },
       { operationId, sourceUrl, output: "mp3", ...clip },
     ]);
@@ -1014,6 +1021,68 @@ describe("connected integration request contract", () => {
       operationId,
     );
     expect(outbox?.bytes?.size).toBe(4);
+  });
+
+  it("hands Recent each resumed operation's entry and status before the record goes", async () => {
+    const { local } = installChrome();
+    const entryId = "523e4567-e89b-42d3-a456-426614174000";
+    const otherId = "223e4567-e89b-42d3-a456-426614174000";
+    await local.set({
+      [sessionKey]: session,
+      [pendingOperationsKey]: [
+        {
+          accountId: session.accountId,
+          sessionId: session.sessionId,
+          operationId,
+          createdAt: "2026-09-16T10:01:02.000Z",
+          activityId: entryId,
+          mediaKind: "audio",
+        },
+        // Another device session's operation is discarded.
+        {
+          accountId: session.accountId,
+          sessionId: "different-device-session",
+          operationId: otherId,
+          createdAt: "2026-09-16T10:01:02.000Z",
+          activityId: otherId,
+          mediaKind: "video",
+        },
+      ],
+    });
+    const failed = {
+      ...awaitingUpload,
+      state: "failed",
+      error: { code: "telegram_failed", message: "Telegram refused it." },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => response(failed)),
+    );
+    const client = await import("../../src/integration-client.js");
+    await expect(client.pendingIntegrationActivityIds()).resolves.toEqual([
+      entryId,
+      otherId,
+    ]);
+    const ended: [string | undefined, string | null, boolean, unknown][] = [];
+    await client.resumePendingIntegrationOperations(
+      async (operation, status) => {
+        // The record is still there when Recent hears of it.
+        const pending = await client.pendingIntegrationActivityIds();
+        ended.push([
+          operation.activityId,
+          status?.state ?? null,
+          pending.includes(operation.activityId ?? ""),
+          operation.mediaKind,
+        ]);
+      },
+    );
+
+    // A kind Lens never stores is dropped.
+    expect(ended).toEqual([
+      [entryId, "failed", true, "audio"],
+      [otherId, null, true, undefined],
+    ]);
+    expect(local.values[pendingOperationsKey]).toEqual([]);
   });
 
   it("discards outbox bytes created by a different device session", async () => {

@@ -1,5 +1,7 @@
 import {
   ACTION_ID,
+  ActivityEntrySchema,
+  AUDIO_ACTION_ID,
   DISCLOSURE_VERSION,
   DOWNLOAD_ACTION_ID,
   ExtensionMessageSchema,
@@ -16,9 +18,11 @@ import {
   makeIndeterminateResult,
   originPattern,
   parseAllowedImageUrl,
+  resultLabel,
   sanitizeDisplayText,
   sha256Hex,
   type ActionId,
+  type ActivityKind,
   type DisclosureMode,
   type ExtensionMessage,
   type ErrorCode,
@@ -31,6 +35,20 @@ import {
   type VerificationMode,
 } from "@provenance-lens/shared";
 
+import {
+  activityAddress,
+  activityTitle,
+  beginActivity,
+  heldActivityIds,
+  linkActivityKind,
+  noteActivity,
+  operationUpdate,
+  refusalState,
+  STOPPED_MESSAGE,
+  startActivityKind,
+  startedSinceLoad,
+  type ActivityId,
+} from "./activity.js";
 import { getActionDefinition } from "./actions/registry.js";
 import {
   PAGE_LINK_QUEUED_MESSAGE,
@@ -38,8 +56,26 @@ import {
   pageLinkErrorMessage,
   type PageLinkSource,
 } from "./actions/integration-link.js";
-import { LINK_OUTPUT_LABELS } from "./ui/link-output.js";
-import { pickedLinkUrl } from "./page-link-candidates.js";
+import { LINK_OUTPUT_LABELS, type LinkOutput } from "./ui/link-output.js";
+import {
+  needsPostPick,
+  pickedLinkUrl,
+  pickedMediaUrl,
+} from "./page-link-candidates.js";
+import {
+  isPalettePortName,
+  mountPaletteHost,
+  PALETTE_READY_TIMEOUT_MS,
+  palettePortName,
+  type PaletteHostStatus,
+} from "./palette-host.js";
+import {
+  commandRoute,
+  MEDIA_PICK_MESSAGE,
+  PALETTE_OPEN_KEY,
+  type OpenView,
+  type PaletteOpenRecord,
+} from "./ui/palette-commands.js";
 import {
   createHistoryRecord,
   ExtensionWorkflowError,
@@ -50,6 +86,7 @@ import {
 } from "./actions/verify-openai-provenance.js";
 import {
   appendHistory,
+  getActivity,
   getHistory,
   getLatestRecord,
   getResult,
@@ -108,13 +145,15 @@ import {
   API_MODE_REQUIRED_MESSAGE,
   isApiVerificationAuthorized,
 } from "./api-verification-policy.js";
-import { openActionPopup } from "./action-popup.js";
 import {
   isIntegrationConnected,
   IntegrationClientError,
+  pendingIntegrationActivityIds,
   resumePendingIntegrationOperations,
+  type IntegrationPendingOperation,
 } from "./integration-client.js";
 import { runIntegratedImageAction } from "./actions/integration-image.js";
+import { runIntegratedAudioSegmentAction } from "./actions/integration-audio.js";
 import type { IntegrationOperationStatus } from "@provenance-lens/shared";
 
 type PageTarget = {
@@ -126,32 +165,53 @@ type PageTarget = {
 
 type ImageActionId = typeof ACTION_ID | typeof DOWNLOAD_ACTION_ID;
 
-/** Sends one page link: the registry's page-link and video-pick handlers. */
+/**
+ * Sends one page link: the registry's page-link and video-pick handlers. The
+ * page-link action resolves to the DigiBot operation id it sent.
+ */
 type PageLinkSender = (
   page: PageLinkSource,
   options: LinkDownloadOptions,
-) => Promise<void>;
+) => Promise<string | void>;
 
 type ImagePickerSession = {
   mode: "image";
   actionId: ImageActionId;
   trigger: ActionTrigger;
   verificationMode: VerificationMode;
+  activityId: ActivityId;
 };
 /** The Google SynthID handoff: the picked image is saved, never verified. */
 type SynthIdPickerSession = {
   mode: "image";
   actionId: typeof SYNTHID_ACTION_ID;
   trigger: ActionTrigger;
+  activityId: ActivityId;
 };
-/** A video pick: the clicked post's link goes out with the popup's output. */
+/** A video pick: the clicked post's link goes out with the chosen output. */
 type LinkPickerSession = {
   mode: "link";
   options: LinkDownloadOptions;
   send: PageLinkSender;
+  activityId: ActivityId;
 };
-type PickerSession = PageTarget &
-  (ImagePickerSession | SynthIdPickerSession | LinkPickerSession);
+/**
+ * The download pick: the click decides the run. An image goes out as the
+ * image download, a video as the video pick with the video output, and a
+ * video with no post or video link as Send video with the tab's address.
+ */
+type MediaPickerSession = {
+  mode: "media";
+  trigger: "popup" | "keyboard";
+  verificationMode: VerificationMode;
+  activityId: ActivityId;
+};
+type ArmedPicker =
+  | ImagePickerSession
+  | SynthIdPickerSession
+  | LinkPickerSession
+  | MediaPickerSession;
+type PickerSession = PageTarget & ArmedPicker;
 
 type PendingDisclosure = {
   id: string;
@@ -160,6 +220,9 @@ type PendingDisclosure = {
   trigger: ActionTrigger;
   selection: ImageSelection | null;
   pageTarget: PageTarget | null;
+  activityId: ActivityId;
+  // The tab that shows the disclosure, once it is open.
+  disclosureTabId?: number | undefined;
 } & (
   | { actionId: typeof ACTION_ID; verificationMode: VerificationMode }
   // The SynthID handoff's own one-time acknowledgement; it has no selection.
@@ -167,10 +230,12 @@ type PendingDisclosure = {
 );
 
 const PENDING_DISCLOSURES_KEY = "provenanceLens.pendingDisclosures";
+const MAX_PENDING_DISCLOSURES = 8;
 /**
- * Link picks outlive the service worker: Chrome stops an idle worker after
- * about 30 s, and a user scrolls a timeline before clicking. Image picks need
- * no record; their selection arrives with the page still bound.
+ * Link and download picks outlive the service worker: Chrome stops an idle
+ * worker after about 30 s, and a user scrolls a timeline before clicking.
+ * Image picks need no record; their selection arrives with the page still
+ * bound.
  */
 const LINK_PICKER_SESSIONS_KEY = "provenanceLens.linkPickerSessions";
 const MAX_LINK_PICKER_SESSIONS = 8;
@@ -232,36 +297,60 @@ const SCREENSHOT_TIMEOUT_MS = 20_000;
 const MAX_RESULT_TOAST_BINDINGS = 32;
 const RESULT_TOAST_BINDINGS_KEY = "provenanceLens.resultToastBindings";
 let resultToastBindingMutation = Promise.resolve();
+// One shared menu rebuild, so install, startup and load cannot race.
+let menusReady: Promise<void> | null = null;
+let paletteMountMutation: Promise<void> = Promise.resolve();
+/** How long a closed disclosure tab's acknowledgement may still take. */
+const DISCLOSURE_CLOSE_GRACE_MS = 1_000;
 
 chrome.runtime.onInstalled.addListener(() => {
   void ensureTrustedStorageAccess();
   void ensureContextMenu();
-  void resumePendingIntegrationOperations();
+  void resumePendingIntegrationOperations(endResumedActivity);
 });
 chrome.runtime.onStartup.addListener(() => {
   void ensureTrustedStorageAccess();
   void ensureContextMenu();
-  void resumePendingIntegrationOperations();
+  void resumePendingIntegrationOperations(endResumedActivity);
 });
 void ensureTrustedStorageAccess();
 void ensureContextMenu();
-void resumePendingIntegrationOperations();
+void endStoppedActivity();
+void resumePendingIntegrationOperations(endResumedActivity);
 
-chrome.commands.onCommand.addListener((command) => {
-  if (command !== "pick-image") return;
-  void startFromActiveTab("keyboard");
+chrome.commands.onCommand.addListener((command, tab) => {
+  void runBrowserCommand(command, tab);
+});
+
+// There is no default popup: a toolbar click opens the palette on the page.
+chrome.action?.onClicked?.addListener((tab) => {
+  void openPalette(tab, "root");
+});
+
+// The worker only watches palette host ports, to forget a closed palette's
+// tab. It never disconnects one: that would close every open palette.
+chrome.runtime.onConnect?.addListener((port) => {
+  if (!isPalettePortName(port.name)) return;
+  const token = port.name.slice(palettePortName("").length);
+  port.onDisconnect.addListener(() => {
+    void forgetPaletteMount({ token });
+  });
+});
+chrome.tabs?.onRemoved?.addListener((tabId) => {
+  void forgetPaletteMount({ tabId });
+  void endArmedPicks((session) => session.tabId === tabId, PICK_TAB_CLOSED);
+  void endClosedDisclosure(tabId);
 });
 
 const contextMenus = getContextMenusApi();
 if (contextMenus) {
   contextMenus.onClicked.addListener((info, tab) => {
-    if (info.menuItemId !== ACTION_ID || !tab || tab.id === undefined) return;
-    void handleContextMenu(info, tab);
+    void handleMenuClick(info, tab);
   });
 }
 
 // Messages that start, resume, cancel or retry a verification come only from
-// the extension's own pages (popup, details, disclosure). Picker and result
+// the extension's own pages (palette, details, disclosure). Picker and result
 // toast messages come from content scripts and keep their tab, frame and
 // document binding checks instead.
 const EXTENSION_PAGE_MESSAGE_TYPES: ReadonlySet<ExtensionMessage["type"]> =
@@ -272,21 +361,53 @@ const EXTENSION_PAGE_MESSAGE_TYPES: ReadonlySet<ExtensionMessage["type"]> =
     "download-fallback",
     "cancel-active",
   ]);
+/** What a palette frame inside a web page may ask for. */
+const PAGE_FRAME_MESSAGE_TYPES: ReadonlySet<ExtensionMessage["type"]> = new Set(
+  ["start-action", "cancel-active"],
+);
 
 chrome.runtime.onMessage.addListener((message: unknown, sender) => {
   const parsed = ExtensionMessageSchema.safeParse(message);
   if (!parsed.success) return false;
-  if (
-    EXTENSION_PAGE_MESSAGE_TYPES.has(parsed.data.type) &&
-    !isExtensionPageSender(sender)
-  )
-    return false;
+  if (EXTENSION_PAGE_MESSAGE_TYPES.has(parsed.data.type)) {
+    if (!isExtensionPageSender(sender)) return false;
+    if (isPageFrameSender(sender)) {
+      if (!PAGE_FRAME_MESSAGE_TYPES.has(parsed.data.type)) return false;
+      void handlePageFrameMessage(parsed.data, sender);
+      return false;
+    }
+  }
   void handleExtensionMessage(parsed.data, sender);
   return false;
 });
 
 function isExtensionPageSender(sender: chrome.runtime.MessageSender): boolean {
   return sender.url?.startsWith(chrome.runtime.getURL("")) === true;
+}
+
+/** An extension frame inside a tab's page: the palette's page frame. */
+function isPageFrameSender(sender: chrome.runtime.MessageSender): boolean {
+  return sender.tab !== undefined && sender.frameId !== 0;
+}
+
+/**
+ * A palette frame inside a page acts only for the tab the worker mounted it
+ * into, only while that tab is the active one, and only as the frame of that
+ * mount's token: another palette frame the page embeds is refused.
+ */
+async function handlePageFrameMessage(
+  message: ExtensionMessage,
+  sender: chrome.runtime.MessageSender,
+): Promise<void> {
+  const tabId = sender.tab?.id;
+  if (tabId === undefined || sender.tab?.active !== true) return;
+  const token = await paletteMountToken(tabId);
+  if (
+    token === null ||
+    sender.url !== chrome.runtime.getURL(`palette.html#t=${token}`)
+  )
+    return;
+  await handleExtensionMessage(message, sender);
 }
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -305,7 +426,13 @@ async function handleExtensionMessage(
   switch (message.type) {
     case "start-action": {
       const action = getActionDefinition(message.actionId);
-      if (action?.inputType === "audio-file") {
+      const options = message.options ?? {};
+      const { startSeconds, endSeconds } = options;
+      if (
+        action?.inputType === "audio-file" &&
+        (startSeconds === undefined || endSeconds === undefined)
+      ) {
+        // The audio page opens; Recent lists the check it runs there.
         try {
           await action.handler();
         } catch {
@@ -316,26 +443,20 @@ async function handleExtensionMessage(
         }
         return;
       }
-      if (action?.inputType === "page-link") {
-        await sendPageLinkFromActiveTab(action.handler, message.options ?? {});
-        return;
-      }
-      if (action?.inputType === "video-pick") {
-        await startVideoPickFromActiveTab(
-          action.handler,
-          message.options ?? {},
-        );
-        return;
-      }
-      if (message.actionId === SYNTHID_ACTION_ID) {
-        await startSynthIdPickFromActiveTab(message.trigger);
-        return;
-      }
-      if (action?.inputType !== "image-file") return;
-      await startFromActiveTab(
-        message.trigger,
-        message.actionId as ImageActionId,
+      const activityId = await beginActivity(
+        activityTitle(message.actionId, options),
+        startActivityKind(message.actionId, options),
+        await activeTab().catch(() => undefined),
       );
+      try {
+        await startAction(message, action, options, activityId);
+      } catch (error: unknown) {
+        await noteActivity(activityId, {
+          state: "failed",
+          message: START_FAILED_MESSAGE,
+        });
+        throw error;
+      }
       return;
     }
     case "resume-permission":
@@ -349,6 +470,9 @@ async function handleExtensionMessage(
       return;
     case "picker-link-selected":
       await handlePickerLinkSelected(message, sender);
+      return;
+    case "picker-page-selected":
+      await handlePickerPageSelected(message, sender);
       return;
     case "cancel-active":
       await cancelActiveVerification(sender.tab?.id);
@@ -370,9 +494,54 @@ async function handleExtensionMessage(
   }
 }
 
+/** A start from the palette or a key, after Recent's entry was written. */
+async function startAction(
+  message: Extract<ExtensionMessage, { type: "start-action" }>,
+  action: ReturnType<typeof getActionDefinition>,
+  options: LinkDownloadOptions,
+  activityId: ActivityId,
+): Promise<void> {
+  const { startSeconds, endSeconds } = options;
+  if (action?.inputType === "audio-file") {
+    // A range from the palette checks this page's audio in the worker.
+    if (startSeconds !== undefined && endSeconds !== undefined)
+      await verifyPageAudioSegment(startSeconds, endSeconds, activityId);
+    return;
+  }
+  if (action?.inputType === "page-link") {
+    await sendPageLinkFromActiveTab(action.handler, options, activityId);
+    return;
+  }
+  if (action?.inputType === "video-pick") {
+    await startVideoPickFromActiveTab(action.handler, options, activityId);
+    return;
+  }
+  if (message.actionId === SYNTHID_ACTION_ID) {
+    await startSynthIdPickFromActiveTab(message.trigger, activityId);
+    return;
+  }
+  if (message.actionId === DOWNLOAD_ACTION_ID) {
+    await startMediaPickFromActiveTab(message.trigger, activityId);
+    return;
+  }
+  if (action?.inputType !== "image-file") {
+    await noteActivity(activityId, {
+      state: "failed",
+      message: START_FAILED_MESSAGE,
+    });
+    return;
+  }
+  await startFromActiveTab(
+    message.trigger,
+    message.actionId as ImageActionId,
+    activityId,
+  );
+}
+
 async function startFromActiveTab(
   trigger: "popup" | "keyboard",
   actionId: ImageActionId = ACTION_ID,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const tabs = await chrome.tabs.query({
     active: true,
@@ -383,10 +552,11 @@ async function startFromActiveTab(
     await notifyStandaloneError(
       "protected_page",
       "No active browser page is available.",
+      { activityId },
     );
     return;
   }
-  await requestActionOnTab(tab.id, 0, trigger, null, actionId);
+  await requestActionOnTab(tab.id, 0, trigger, null, actionId, activityId);
 }
 
 /** Whether a page link is being sent; a repeated click meanwhile is ignored. */
@@ -398,23 +568,49 @@ const PICKED_LINK_MESSAGE =
 const PAGE_LINK_SENT_TITLE = "Sent to DigiBot";
 const SYNTHID_FAILED_TITLE = "Google SynthID handoff failed";
 const PAGE_LINK_FAILED_TITLE = "Page link not sent";
+/** Why a download pick on a listing page's video is refused. */
+const OWN_PAGE_MESSAGE = "Open the video's own page, then pick it.";
+/** Why a download pick is refused when the tab's address cannot be read. */
+const TAB_ADDRESS_MESSAGE =
+  "Lens cannot read this tab's address. Reload the page, then pick again.";
+const LINK_IN_FLIGHT_MESSAGE = "Another page link is still being sent.";
+/** How Recent's entry ends when its start threw before any report. */
+const START_FAILED_MESSAGE = "The action could not be started.";
+/** How an armed pick's entry ends when no click can come any more. */
+const PICK_TAB_CLOSED = "The tab was closed before a pick.";
+/** A download pick's entry, once its click picked what it sends. */
+const SENT_VIDEO_TITLE = "Sent video";
+const SENT_IMAGE_TITLE = "Sent image";
+const PICK_REPLACED = "The pick ended when another action used the page.";
 
 /**
- * The page-link action reports through the workflow state, so the popup stays
- * open; the badge is handled here, where its timer lives. The options (an MP3
- * output or a clip range) travel with the link unchanged. The page is bound
- * too, so the send also reports on it.
+ * The page-link action reports through the workflow state and a toast on the
+ * bound page; the badge is handled here, where its timer lives. The options
+ * (an audio output or a clip range) travel with the link unchanged. An X or
+ * YouTube listing page (a timeline, profile, channel, search or playlist)
+ * starts the post picker with the same options instead.
  */
 async function sendPageLinkFromActiveTab(
   send: PageLinkSender,
   options: LinkDownloadOptions = {},
+  activityId: ActivityId = null,
 ): Promise<void> {
-  if (pageLinkInFlight) return;
+  if (pageLinkInFlight) {
+    await noteActivity(activityId, {
+      state: "refused",
+      message: LINK_IN_FLIGHT_MESSAGE,
+    });
+    return;
+  }
   const tabs = await chrome.tabs.query({
     active: true,
     lastFocusedWindow: true,
   });
   const tab = tabs[0];
+  if (tab?.id !== undefined && tab.url && needsPostPick(tab.url)) {
+    await startVideoPickOnTab(tab, send, options, activityId);
+    return;
+  }
   const pageTarget =
     tab?.id !== undefined && !isProtectedPage(tab.url ?? "")
       ? await bindPageTarget(tab.id, 0)
@@ -426,6 +622,7 @@ async function sendPageLinkFromActiveTab(
     tab?.id,
     pageTarget,
     LINK_ACTION_ID,
+    activityId,
   );
 }
 
@@ -442,18 +639,27 @@ async function deliverPageLink(
   tabId: number | undefined,
   pageTarget: PageTarget | null,
   actionId: ToastRetry["actionId"],
+  activityId: ActivityId,
 ): Promise<void> {
   if (pageLinkInFlight) {
+    await noteActivity(activityId, {
+      state: "refused",
+      message: LINK_IN_FLIGHT_MESSAGE,
+    });
     await showPageToast(pageTarget, {
       tone: "error",
       title: PAGE_LINK_FAILED_TITLE,
-      message: "Another page link is still being sent.",
+      message: LINK_IN_FLIGHT_MESSAGE,
       resultId: null,
     });
     return;
   }
   pageLinkInFlight = true;
   try {
+    await noteActivity(activityId, {
+      kind: linkActivityKind(options),
+      linkUrl: activityAddress(page.url),
+    });
     if (tabId !== undefined) await setBadge(tabId, "…").catch(() => undefined);
     await showPageToast(pageTarget, {
       tone: "progress",
@@ -466,13 +672,27 @@ async function deliverPageLink(
     });
     let failure: unknown = null;
     let failed = false;
+    let operationId: string | void = undefined;
     try {
-      await send(page, options);
+      operationId = await send(page, options);
     } catch (error: unknown) {
       // The action already stored this message in the workflow state.
       failure = error;
       failed = true;
     }
+    await noteActivity(
+      activityId,
+      failed
+        ? {
+            state: failure instanceof PageLinkError ? "refused" : "failed",
+            message: pageLinkErrorMessage(failure),
+          }
+        : {
+            state: "sent",
+            message: PAGE_LINK_QUEUED_MESSAGE,
+            operationId: operationId ?? null,
+          },
+    );
     if (tabId !== undefined)
       await (failed ? setBadge(tabId, "!") : clearBadge(tabId)).catch(
         () => undefined,
@@ -513,9 +733,12 @@ async function deliverPageLink(
   }
 }
 
-function linkOutput(options: LinkDownloadOptions): "video" | "mp3" | "clip" {
+function linkOutput(options: LinkDownloadOptions): LinkOutput {
   if (options.startSeconds !== undefined) return "clip";
-  return options.output === "mp3" ? "mp3" : "video";
+  // Lens sends no MP3, though the shared schema keeps DigiBot's mp3 output.
+  return options.output === "voice" || options.output === "m4a"
+    ? options.output
+    : "video";
 }
 
 function linkHost(url: string | undefined): string {
@@ -541,13 +764,14 @@ function toastRetry(
 }
 
 /**
- * Starts the picker in link mode on the active tab. The popup closes when it
- * asks, so a refusal here goes to the badge and the workflow state, and the
- * pick itself reports on the page.
+ * Starts the picker in link mode on the active tab. The palette closes when
+ * it asks, so a refusal here goes to the badge and the workflow state, and
+ * the pick itself reports on the page.
  */
 async function startVideoPickFromActiveTab(
   send: PageLinkSender,
   options: LinkDownloadOptions,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const tabs = await chrome.tabs.query({
     active: true,
@@ -558,15 +782,26 @@ async function startVideoPickFromActiveTab(
     await notifyStandaloneError(
       "protected_page",
       "No active browser page is available.",
+      { activityId },
     );
     return;
   }
+  await startVideoPickOnTab(tab, send, options, activityId);
+}
+
+async function startVideoPickOnTab(
+  tab: chrome.tabs.Tab,
+  send: PageLinkSender,
+  options: LinkDownloadOptions,
+  activityId: ActivityId,
+): Promise<void> {
   const tabId = tab.id;
+  if (tabId === undefined) return;
   if (isProtectedPage(tab.url ?? "")) {
     await notifyStandaloneError(
       "protected_page",
       "Video picking is not supported on this browser page.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
@@ -574,12 +809,12 @@ async function startVideoPickFromActiveTab(
     await notifyStandaloneError(
       "backend_configuration_missing",
       "Connect Provenance Lens to DigiBot in Settings before picking a video.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
   try {
-    await injectPicker(tabId, 0, { mode: "link", options, send });
+    await injectPicker(tabId, 0, { mode: "link", options, send, activityId });
     await setWorkflow(
       "picking",
       "Click a post with a video to send its link to Telegram.",
@@ -589,7 +824,63 @@ async function startVideoPickFromActiveTab(
     await notifyStandaloneError(
       "permission_denied",
       "The video picker could not access this page.",
-      { tabId },
+      { tabId, activityId },
+    );
+  }
+}
+
+/**
+ * Starts the download pick on the active tab: one picker for an image or a
+ * video. Like the video pick it needs DigiBot first; the run the click
+ * becomes keeps its own checks.
+ */
+async function startMediaPickFromActiveTab(
+  trigger: MediaPickerSession["trigger"],
+  activityId: ActivityId = null,
+): Promise<void> {
+  const tabs = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
+  const tabId = tabs[0]?.id;
+  if (tabId === undefined) {
+    await notifyStandaloneError(
+      "protected_page",
+      "No active browser page is available.",
+      { activityId },
+    );
+    return;
+  }
+  if (isProtectedPage(tabs[0]?.url ?? "")) {
+    await notifyStandaloneError(
+      "protected_page",
+      "Picking is not supported on this browser page.",
+      { tabId, activityId },
+    );
+    return;
+  }
+  if (!(await isIntegrationConnected())) {
+    await notifyStandaloneError(
+      "backend_configuration_missing",
+      "Connect Provenance Lens to DigiBot in Settings before picking an image or a video.",
+      { tabId, activityId },
+    );
+    return;
+  }
+  const settings = await getSettings();
+  try {
+    await injectPicker(tabId, 0, {
+      mode: "media",
+      trigger,
+      verificationMode: settings.verificationMode,
+      activityId,
+    });
+    await setWorkflow("picking", MEDIA_PICK_MESSAGE, DOWNLOAD_ACTION_ID);
+  } catch {
+    await notifyStandaloneError(
+      "permission_denied",
+      "The picker could not access this page.",
+      { tabId, activityId },
     );
   }
 }
@@ -600,13 +891,14 @@ async function requestActionOnTab(
   trigger: ActionTrigger,
   selection: ImageSelection | null = null,
   actionId: ImageActionId = ACTION_ID,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const action = getActionDefinition(actionId);
   if (!action || action.inputType !== "image-file") {
     await notifyStandaloneError(
       "invalid_request",
       "The requested action is unavailable.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
@@ -616,7 +908,7 @@ async function requestActionOnTab(
     await notifyStandaloneError(
       "protected_page",
       "Image picking is not supported on this browser page.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
@@ -625,7 +917,7 @@ async function requestActionOnTab(
     await notifyStandaloneError(
       "backend_configuration_missing",
       "Connect Provenance Lens to DigiBot in Settings before downloading an image.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
@@ -649,6 +941,7 @@ async function requestActionOnTab(
       verificationMode: settings.verificationMode,
       selection,
       pageTarget,
+      activityId,
     });
     return;
   }
@@ -660,6 +953,7 @@ async function requestActionOnTab(
       expectedVerificationMode: settings.verificationMode,
       trigger,
       pageTarget,
+      activityId,
     });
     return;
   }
@@ -669,6 +963,7 @@ async function requestActionOnTab(
       actionId,
       trigger,
       verificationMode: settings.verificationMode,
+      activityId,
     });
     await setWorkflow(
       "picking",
@@ -683,7 +978,7 @@ async function requestActionOnTab(
     await notifyStandaloneError(
       "permission_denied",
       "The image picker could not access this page.",
-      { tabId },
+      { tabId, activityId },
     );
   }
 }
@@ -711,7 +1006,12 @@ async function resumeDisclosure(
       return;
     }
     await setSynthIdDisclosureVersion(SYNTHID_DISCLOSURE_VERSION);
-    await startSynthIdPick(pending.tabId, pending.frameId, pending.trigger);
+    await startSynthIdPick(
+      pending.tabId,
+      pending.frameId,
+      pending.trigger,
+      pending.activityId,
+    );
     return;
   }
 
@@ -752,6 +1052,7 @@ async function resumeDisclosure(
         expectedVerificationMode: pending.verificationMode,
         trigger: pending.trigger,
         pageTarget: pending.pageTarget,
+        activityId: pending.activityId,
       });
     } else {
       await injectPicker(pending.tabId, pending.frameId, {
@@ -759,6 +1060,7 @@ async function resumeDisclosure(
         actionId: pending.actionId,
         trigger: pending.trigger,
         verificationMode: pending.verificationMode,
+        activityId: pending.activityId,
       });
       await setWorkflow(
         "picking",
@@ -772,18 +1074,67 @@ async function resumeDisclosure(
     await notifyStandaloneError(
       "permission_denied",
       "The image picker could not access this page.",
-      { pageTarget: pending.pageTarget, tabId: pending.tabId },
+      {
+        pageTarget: pending.pageTarget,
+        tabId: pending.tabId,
+        activityId: pending.activityId,
+      },
     );
   }
 }
 
 async function openDisclosure(pending: PendingDisclosure): Promise<void> {
-  pendingDisclosures.set(pending.id, pending);
-  await persistPendingDisclosure(pending);
-  const kind = pending.actionId === SYNTHID_ACTION_ID ? "&kind=synthid" : "";
-  await chrome.tabs.create({
-    url: `${chrome.runtime.getURL("disclosure.html")}?pending=${encodeURIComponent(pending.id)}${kind}`,
+  // A reopened disclosure gets its own tab.
+  const opening = { ...pending, disclosureTabId: undefined };
+  pendingDisclosures.set(opening.id, opening);
+  await persistPendingDisclosure(opening);
+  const kind = opening.actionId === SYNTHID_ACTION_ID ? "&kind=synthid" : "";
+  const tab = await chrome.tabs.create({
+    url: `${chrome.runtime.getURL("disclosure.html")}?pending=${encodeURIComponent(opening.id)}${kind}`,
   });
+  // A tab closed without the acknowledgement then ends the action.
+  if (tab?.id === undefined || !pendingDisclosures.has(opening.id)) return;
+  const shown = { ...opening, disclosureTabId: tab.id };
+  pendingDisclosures.set(shown.id, shown);
+  await persistPendingDisclosure(shown);
+}
+
+/**
+ * A disclosure tab closed without its acknowledgement cancels the action.
+ * The page closes its own tab just after it acknowledges, so the record is
+ * read again after a moment: by then an acknowledged one is gone.
+ */
+async function endClosedDisclosure(tabId: number): Promise<void> {
+  const ids = new Set(
+    [...pendingDisclosures.values()]
+      .filter(({ disclosureTabId }) => disclosureTabId === tabId)
+      .map(({ id }) => id),
+  );
+  for (const [id, stored] of Object.entries(await storedDisclosures()))
+    if (isRecord(stored) && stored["disclosureTabId"] === tabId) ids.add(id);
+  if (ids.size === 0) return;
+  await new Promise((settle) => setTimeout(settle, DISCLOSURE_CLOSE_GRACE_MS));
+  for (const id of ids) {
+    const pending =
+      pendingDisclosures.get(id) ?? (await readPendingDisclosure(id));
+    if (!pending) continue;
+    pendingDisclosures.delete(id);
+    await deletePendingDisclosure(id);
+    await noteActivity(pending.activityId, {
+      state: "cancelled",
+      message: "The disclosure was closed before it was acknowledged.",
+    });
+  }
+}
+
+async function storedDisclosures(): Promise<Record<string, unknown>> {
+  try {
+    const values = await chrome.storage.session.get(PENDING_DISCLOSURES_KEY);
+    const current = values[PENDING_DISCLOSURES_KEY];
+    return isRecord(current) ? current : {};
+  } catch {
+    return {};
+  }
 }
 
 async function persistPendingDisclosure(
@@ -798,10 +1149,19 @@ async function persistPendingDisclosure(
     // inline bytes stay in the service-worker map and are discarded on
     // suspension; a resumed context-menu request then safely reopens picker.
     current[pending.id] = { ...pending, selection: null, pageTarget: null };
-    const entries = Object.entries(current).slice(-8);
+    const entries = Object.entries(current);
+    const kept = entries.slice(-MAX_PENDING_DISCLOSURES);
     await chrome.storage.session.set({
-      [PENDING_DISCLOSURES_KEY]: Object.fromEntries(entries),
+      [PENDING_DISCLOSURES_KEY]: Object.fromEntries(kept),
     });
+    // A disclosure dropped for newer ones can no longer start its action.
+    for (const [id, dropped] of entries.slice(0, -MAX_PENDING_DISCLOSURES)) {
+      pendingDisclosures.delete(id);
+      await noteActivity(
+        isRecord(dropped) ? storedActivityId(dropped["activityId"]) : null,
+        { state: "failed", message: STOPPED_MESSAGE },
+      );
+    }
   } catch {
     // The in-memory map remains usable if session storage is unavailable.
   }
@@ -844,6 +1204,7 @@ async function readPendingDisclosure(
         verificationMode: "synthid",
         pageTarget: null,
         selection: null,
+        activityId: storedActivityId(candidate["activityId"]),
       };
     }
     const parsedMode = VerificationModeSchema.safeParse(
@@ -875,6 +1236,7 @@ async function readPendingDisclosure(
         candidate["selection"] === null
           ? null
           : (selection as { success: true; data: ImageSelection }).data,
+      activityId: storedActivityId(candidate["activityId"]),
     };
   } catch {
     return null;
@@ -898,8 +1260,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** A stored entry id, or null for a record written before Recent kept one. */
+function storedActivityId(value: unknown): ActivityId {
+  const parsed = ActivityEntrySchema.shape.id.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 async function persistLinkPickerSession(
-  session: PageTarget & LinkPickerSession,
+  session: PageTarget & (LinkPickerSession | MediaPickerSession),
 ): Promise<void> {
   try {
     const values = await chrome.storage.session.get(LINK_PICKER_SESSIONS_KEY);
@@ -907,14 +1275,21 @@ async function persistLinkPickerSession(
       ? values[LINK_PICKER_SESSIONS_KEY]
       : {};
     // Only the serialisable coordinates; the handler is rebuilt on restore.
-    const { sessionToken, tabId, frameId, documentId, mode, options } = session;
+    const { sessionToken, tabId, frameId, documentId, activityId } = session;
     current[sessionToken] = {
       sessionToken,
       tabId,
       frameId,
       documentId,
-      mode,
-      options,
+      // A pick that Recent does not list stores no entry id.
+      ...(activityId !== null ? { activityId } : {}),
+      ...(session.mode === "link"
+        ? { mode: session.mode, options: session.options }
+        : {
+            mode: session.mode,
+            trigger: session.trigger,
+            verificationMode: session.verificationMode,
+          }),
     };
     const entries = Object.entries(current).slice(-MAX_LINK_PICKER_SESSIONS);
     await chrome.storage.session.set({
@@ -926,8 +1301,9 @@ async function persistLinkPickerSession(
 }
 
 /**
- * A link pick this worker no longer holds, rebuilt around the registry's
- * video-pick handler; null when nothing valid was stored for the token.
+ * A link or download pick this worker no longer holds, a link pick rebuilt
+ * around the registry's video-pick handler; null when nothing valid was
+ * stored for the token.
  */
 async function restoreLinkPickerSession(
   sessionToken: string,
@@ -940,12 +1316,36 @@ async function restoreLinkPickerSession(
     if (
       !isRecord(stored) ||
       stored["sessionToken"] !== sessionToken ||
-      stored["mode"] !== "link" ||
       typeof stored["tabId"] !== "number" ||
       typeof stored["frameId"] !== "number" ||
       typeof stored["documentId"] !== "string"
     )
       return null;
+    const target = {
+      sessionToken,
+      tabId: stored["tabId"],
+      frameId: stored["frameId"],
+      documentId: stored["documentId"],
+      activityId: storedActivityId(stored["activityId"]),
+    };
+    if (stored["mode"] === "media") {
+      const trigger = stored["trigger"];
+      const verificationMode = VerificationModeSchema.safeParse(
+        stored["verificationMode"],
+      );
+      if (
+        (trigger !== "popup" && trigger !== "keyboard") ||
+        !verificationMode.success
+      )
+        return null;
+      return {
+        mode: "media",
+        ...target,
+        trigger,
+        verificationMode: verificationMode.data,
+      };
+    }
+    if (stored["mode"] !== "link") return null;
     const options = LinkDownloadOptionsSchema.safeParse(
       stored["options"] ?? {},
     );
@@ -954,15 +1354,22 @@ async function restoreLinkPickerSession(
     if (action?.inputType !== "video-pick") return null;
     return {
       mode: "link",
-      sessionToken,
-      tabId: stored["tabId"],
-      frameId: stored["frameId"],
-      documentId: stored["documentId"],
+      ...target,
       options: options.data,
       send: action.handler,
     };
   } catch {
     return null;
+  }
+}
+
+async function storedLinkPickerTokens(): Promise<string[]> {
+  try {
+    const values = await chrome.storage.session.get(LINK_PICKER_SESSIONS_KEY);
+    const current = values[LINK_PICKER_SESSIONS_KEY];
+    return isRecord(current) ? Object.keys(current) : [];
+  } catch {
+    return [];
   }
 }
 
@@ -1030,6 +1437,11 @@ async function bindPageTarget(
       } satisfies PickerRuntimeMessage,
       { documentId: target.documentId },
     );
+    // The page drops its armed picker on a new binding.
+    await endArmedPicks(
+      (session) => session.tabId === tabId && session.frameId === frameId,
+      PICK_REPLACED,
+    );
     return target;
   } catch {
     return null;
@@ -1039,12 +1451,12 @@ async function bindPageTarget(
 async function injectPicker(
   tabId: number,
   frameId: number,
-  session: ImagePickerSession | SynthIdPickerSession | LinkPickerSession,
+  session: ArmedPicker,
 ): Promise<void> {
   const target = await bindPageTarget(tabId, frameId);
   if (!target) throw new Error("The picker could not access this page.");
   pickerSessions.set(target.sessionToken, { ...session, ...target });
-  if (session.mode === "link")
+  if (session.mode !== "image")
     await persistLinkPickerSession({ ...session, ...target });
   try {
     await chrome.tabs.sendMessage(
@@ -1054,56 +1466,74 @@ async function injectPicker(
         runtimeVersion: PICKER_RUNTIME_VERSION,
         sessionToken: target.sessionToken,
         // An image pick is the runtime's default and keeps the older message.
-        ...(session.mode === "link" ? { mode: session.mode } : {}),
+        ...(session.mode !== "image" ? { mode: session.mode } : {}),
         label: pickerLabel(session),
       } satisfies PickerRuntimeMessage,
       { documentId: target.documentId },
     );
   } catch (error: unknown) {
     pickerSessions.delete(target.sessionToken);
-    if (session.mode === "link")
+    if (session.mode !== "image")
       await forgetLinkPickerSession(target.sessionToken);
     throw error;
   }
 }
 
 /** The banner and hover verb for what the armed picker does. */
-function pickerLabel(
-  session: ImagePickerSession | SynthIdPickerSession | LinkPickerSession,
-): PickerLabel {
+function pickerLabel(session: ArmedPicker): PickerLabel {
   if (session.mode === "link") return "send-video";
+  if (session.mode === "media") return "send-media";
   if (session.actionId === SYNTHID_ACTION_ID) return "synthid";
   return session.actionId === DOWNLOAD_ACTION_ID ? "send-image" : "verify";
 }
 
+/**
+ * A picked image from the bound picker session runs the session's image
+ * action; a download pick's image runs the image download. A download pick
+ * may come back from storage after a worker restart and is taken once.
+ */
 async function handlePickerSelected(
   message: Extract<ExtensionMessage, { type: "picker-selected" }>,
   sender: chrome.runtime.MessageSender,
 ): Promise<void> {
-  const session = pickerSessions.get(message.sessionToken);
+  // A live image session is taken before any await, so a second message in
+  // the same tick finds nothing.
+  const session =
+    pickerSessions.get(message.sessionToken) ??
+    (await restoreLinkPickerSession(message.sessionToken));
   if (
     !session ||
-    session.mode !== "image" ||
+    session.mode === "link" ||
     sender.tab?.id !== session.tabId ||
     sender.frameId !== session.frameId ||
     sender.documentId !== session.documentId
   )
     return;
+  if (session.mode === "media" && !spendLinkPick(message.sessionToken)) return;
   pickerSessions.delete(message.sessionToken);
   const selection = ImageSelectionSchema.safeParse(message.selection);
   if (!selection.success) {
     await notifyStandaloneError(
       "image_retrieval_failed",
       "The selected image information is invalid.",
-      { pageTarget: session, tabId: session.tabId },
+      {
+        pageTarget: session,
+        tabId: session.tabId,
+        activityId: session.activityId,
+      },
     );
     return;
   }
   await stopPicker(session);
-  if (session.actionId === SYNTHID_ACTION_ID) {
+  if (session.mode === "image" && session.actionId === SYNTHID_ACTION_ID) {
     await runSynthIdHandoff(session, selection.data);
     return;
   }
+  if (session.mode === "media")
+    await noteActivity(session.activityId, {
+      title: SENT_IMAGE_TITLE,
+      kind: "image",
+    });
   const page =
     session.frameId === 0
       ? await bindPageSnapshot(
@@ -1114,12 +1544,12 @@ async function handlePickerSelected(
         )
       : null;
   await executeAction(session.tabId, session.frameId, selection.data, {
-    actionId: session.actionId,
+    actionId: session.mode === "media" ? DOWNLOAD_ACTION_ID : session.actionId,
     page,
     expectedVerificationMode: session.verificationMode,
-    reopenPopupWhenComplete: true,
     trigger: session.trigger,
     pageTarget: session,
+    activityId: session.activityId,
   });
 }
 
@@ -1135,23 +1565,30 @@ async function handlePickerCancelled(
     sender.documentId !== session.documentId
   )
     return;
-  if (session.mode === "link" && !spendLinkPick(message.sessionToken)) return;
+  if (session.mode !== "image" && !spendLinkPick(message.sessionToken)) return;
   pickerSessions.delete(message.sessionToken);
   await stopPicker(session);
-  await setWorkflow(
-    "idle",
+  const cancelled =
     session.mode === "link"
       ? "Video pick cancelled."
-      : "Image selection cancelled.",
-  );
+      : session.mode === "media"
+        ? "Pick cancelled."
+        : "Image selection cancelled.";
+  await setWorkflow("idle", cancelled);
+  await noteActivity(session.activityId, {
+    state: "cancelled",
+    message: cancelled,
+  });
   await clearBadge(session.tabId);
 }
 
 /**
  * A picked link from the bound picker session goes out like the page link,
- * with the output chosen in the popup. The session may come back from storage
- * after a worker restart; either way it is taken exactly once. The address is
- * checked again here, so an X timeline or profile address is never sent.
+ * with the output chosen in the palette; a download pick's video goes out as
+ * the video pick with the video output. The session may come back from
+ * storage after a worker restart; either way it is taken exactly once. The
+ * address is checked again here, so an X timeline or profile address is never
+ * sent, and only a download pick keeps an X post's `/video/<n>`.
  */
 async function handlePickerLinkSelected(
   message: Extract<ExtensionMessage, { type: "picker-link-selected" }>,
@@ -1160,7 +1597,7 @@ async function handlePickerLinkSelected(
   const session = await findPickerSession(message.sessionToken);
   if (
     !session ||
-    session.mode !== "link" ||
+    (session.mode !== "link" && session.mode !== "media") ||
     sender.tab?.id !== session.tabId ||
     sender.frameId !== session.frameId ||
     sender.documentId !== session.documentId
@@ -1169,30 +1606,99 @@ async function handlePickerLinkSelected(
   if (!spendLinkPick(message.sessionToken)) return;
   pickerSessions.delete(message.sessionToken);
   await stopPicker(session);
-  const url = pickedLinkUrl(message.url);
-  if (url === null) {
-    await setWorkflow("error", PICKED_LINK_MESSAGE, PICK_VIDEO_ACTION_ID);
-    await setBadge(session.tabId, "!").catch(() => undefined);
-    await showPageToast(session, {
-      tone: "error",
-      title: PAGE_LINK_FAILED_TITLE,
-      message: PICKED_LINK_MESSAGE,
-      resultId: null,
-    });
+  const url =
+    session.mode === "media"
+      ? pickedMediaUrl(message.url)
+      : pickedLinkUrl(message.url);
+  const action =
+    session.mode === "media"
+      ? getActionDefinition(PICK_VIDEO_ACTION_ID)
+      : undefined;
+  const send =
+    session.mode === "link"
+      ? session.send
+      : action?.inputType === "video-pick"
+        ? action.handler
+        : null;
+  if (url === null || send === null) {
+    await refusePick(session, PICKED_LINK_MESSAGE, PICK_VIDEO_ACTION_ID);
     return;
   }
+  if (session.mode === "media")
+    await noteActivity(session.activityId, { title: SENT_VIDEO_TITLE });
   await deliverPageLink(
-    session.send,
+    send,
     { url },
-    session.options,
+    session.mode === "link" ? session.options : {},
     session.tabId,
     session,
     PICK_VIDEO_ACTION_ID,
+    session.activityId,
   );
 }
 
+/**
+ * A download pick on a video with no post or video link sends the tab's own
+ * address as Send video does, read from the tab, not the page. A listing
+ * page is refused: its video is picked on the video's own page.
+ */
+async function handlePickerPageSelected(
+  message: Extract<ExtensionMessage, { type: "picker-page-selected" }>,
+  sender: chrome.runtime.MessageSender,
+): Promise<void> {
+  const session = await findPickerSession(message.sessionToken);
+  if (
+    !session ||
+    session.mode !== "media" ||
+    sender.tab?.id !== session.tabId ||
+    sender.frameId !== session.frameId ||
+    sender.documentId !== session.documentId
+  )
+    return;
+  if (!spendLinkPick(message.sessionToken)) return;
+  pickerSessions.delete(message.sessionToken);
+  await stopPicker(session);
+  const tab = await chrome.tabs.get(session.tabId).catch(() => undefined);
+  const action = getActionDefinition(LINK_ACTION_ID);
+  if (!tab?.url || action?.inputType !== "page-link") {
+    await refusePick(session, TAB_ADDRESS_MESSAGE, LINK_ACTION_ID);
+    return;
+  }
+  if (needsPostPick(tab.url)) {
+    await refusePick(session, OWN_PAGE_MESSAGE, LINK_ACTION_ID);
+    return;
+  }
+  await noteActivity(session.activityId, { title: SENT_VIDEO_TITLE });
+  await deliverPageLink(
+    action.handler,
+    { url: tab.url },
+    {},
+    session.tabId,
+    session,
+    LINK_ACTION_ID,
+    session.activityId,
+  );
+}
+
+/** A pick refused before any request: the workflow, the badge and a toast. */
+async function refusePick(
+  session: PickerSession,
+  message: string,
+  actionId: ToastRetry["actionId"],
+): Promise<void> {
+  await setWorkflow("error", message, actionId);
+  await noteActivity(session.activityId, { state: "refused", message });
+  await setBadge(session.tabId, "!").catch(() => undefined);
+  await showPageToast(session, {
+    tone: "error",
+    title: PAGE_LINK_FAILED_TITLE,
+    message,
+    resultId: null,
+  });
+}
+
 async function stopPicker(session: PickerSession): Promise<void> {
-  if (session.mode === "link")
+  if (session.mode !== "image")
     await forgetLinkPickerSession(session.sessionToken);
   try {
     await chrome.tabs.sendMessage(
@@ -1212,11 +1718,20 @@ async function stopPicker(session: PickerSession): Promise<void> {
 async function handleContextMenu(
   info: chrome.contextMenus.OnClickData,
   tab: chrome.tabs.Tab,
+  actionId: ImageActionId = ACTION_ID,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const tabId = tab.id;
   if (tabId === undefined) return;
   if (!info.srcUrl || /^blob:/iu.test(info.srcUrl)) {
-    await requestActionOnTab(tabId, info.frameId ?? 0, "context-menu");
+    await requestActionOnTab(
+      tabId,
+      info.frameId ?? 0,
+      "context-menu",
+      null,
+      actionId,
+      activityId,
+    );
     return;
   }
   const selection = contextMenuSelection(info.srcUrl, tab.url ?? "");
@@ -1224,11 +1739,18 @@ async function handleContextMenu(
     await notifyStandaloneError(
       "image_retrieval_failed",
       "The context-menu image URL is invalid.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
-  await requestActionOnTab(tabId, info.frameId ?? 0, "context-menu", selection);
+  await requestActionOnTab(
+    tabId,
+    info.frameId ?? 0,
+    "context-menu",
+    selection,
+    actionId,
+    activityId,
+  );
 }
 
 function contextMenuSelection(
@@ -1273,17 +1795,18 @@ async function executeAction(
     page: BoundPageSnapshot | null;
     pageTarget: PageTarget | null;
     expectedVerificationMode?: VerificationMode;
-    reopenPopupWhenComplete?: boolean;
     trigger?: ActionTrigger;
+    activityId?: ActivityId;
   } = { page: null, pageTarget: null },
 ): Promise<void> {
   const actionId = options.actionId ?? ACTION_ID;
+  const activityId = options.activityId ?? null;
   const action = getActionDefinition(actionId);
   if (!action || action.inputType !== "image-file") {
     await notifyStandaloneError(
       "invalid_request",
       "The requested action is unavailable.",
-      { pageTarget: options.pageTarget, tabId },
+      { pageTarget: options.pageTarget, tabId, activityId },
     );
     return;
   }
@@ -1292,7 +1815,7 @@ async function executeAction(
     await notifyStandaloneError(
       "concurrency_limit",
       "An image is already being verified in this tab.",
-      { pageTarget: options.pageTarget, tabId },
+      { pageTarget: options.pageTarget, tabId, activityId },
     );
     return;
   }
@@ -1311,6 +1834,7 @@ async function executeAction(
           pageTarget: options.pageTarget,
           tabId,
           actions: ["connect-digibot"],
+          activityId,
         },
       );
       return;
@@ -1335,6 +1859,7 @@ async function executeAction(
         verificationMode: settings.verificationMode,
         selection,
         pageTarget: options.pageTarget,
+        activityId,
       });
       return;
     }
@@ -1368,7 +1893,7 @@ async function executeAction(
                   : "OpenAI Verify site",
             ),
             resultId: null,
-            // A connected stop ends only the wait, as the popup says.
+            // A connected stop ends only the wait, as its button says.
             actions: [connected ? "stop-waiting" : "cancel"],
           },
     );
@@ -1382,12 +1907,14 @@ async function executeAction(
           hasHostPermission: (url) =>
             hasImageHostPermission(tabId, url, selection.pageOrigin),
         },
+        activityId,
       );
       await finishIntegratedImageAction(
         tabId,
         integrated.status,
         options.pageTarget,
         actionId,
+        activityId,
       );
       return;
     }
@@ -1408,10 +1935,15 @@ async function executeAction(
           tabId,
           actions:
             execution.errorCode === "permission_denied" ? ["grant-access"] : [],
+          activityId,
         });
         return;
       }
       await setWorkflow("idle", execution.message);
+      await noteActivity(activityId, {
+        state: "done",
+        message: execution.message,
+      });
       await clearBadge(tabId);
       if (execution.status === "opened") {
         await showPageToast(options.pageTarget, {
@@ -1431,6 +1963,7 @@ async function executeAction(
         execution.outcome.status,
         options.pageTarget,
         actionId,
+        activityId,
       );
       return;
     }
@@ -1470,12 +2003,13 @@ async function executeAction(
       });
       pruneScreenshotFallbacks();
     }
-    await finishVerification(tabId, record, outcome, options.pageTarget);
-    if (
-      options.reopenPopupWhenComplete &&
-      outcome.errorCode !== "user_cancelled"
-    )
-      await openActionPopup(tabId, record);
+    await finishVerification(
+      tabId,
+      record,
+      outcome,
+      options.pageTarget,
+      activityId,
+    );
   } catch (error: unknown) {
     if (integratedAction) {
       if (
@@ -1485,13 +2019,15 @@ async function executeAction(
       ) {
         // A workflow stop comes only from image retrieval, before any DigiBot
         // request. Its own text names Verify, which is wrong for Download.
-        await setWorkflow(
-          "idle",
+        const stopped =
           error instanceof IntegrationClientError
             ? error.message
-            : "Stopped before anything was sent.",
-          actionId,
-        );
+            : "Stopped before anything was sent.";
+        await setWorkflow("idle", stopped, actionId);
+        await noteActivity(activityId, {
+          state: "cancelled",
+          message: stopped,
+        });
         await clearBadge(tabId).catch(() => undefined);
         await hidePageToast(options.pageTarget);
         return;
@@ -1503,6 +2039,7 @@ async function executeAction(
       await notifyStandaloneError("backend_unavailable", message, {
         pageTarget: options.pageTarget,
         tabId,
+        activityId,
       });
       await clearBadge(tabId).catch(() => undefined);
       return;
@@ -1512,6 +2049,7 @@ async function executeAction(
         tabId,
         options.pageTarget,
         historyPersisted,
+        activityId,
       );
       return;
     }
@@ -1521,7 +2059,7 @@ async function executeAction(
       await notifyStandaloneError(
         "invalid_request",
         "The Website verification workflow could not be completed.",
-        { pageTarget: options.pageTarget, tabId },
+        { pageTarget: options.pageTarget, tabId, activityId },
       );
       return;
     }
@@ -1542,8 +2080,13 @@ async function executeAction(
       settings?.includePageTitle ?? false,
     );
     await appendHistory(record, settings?.historyRetention ?? 20);
-    await finishVerification(tabId, record, outcome, options.pageTarget);
-    if (options.reopenPopupWhenComplete) await openActionPopup(tabId, record);
+    await finishVerification(
+      tabId,
+      record,
+      outcome,
+      options.pageTarget,
+      activityId,
+    );
   } finally {
     transientApiImage?.bytes.fill(0);
     activeVerifications.release(tabId, active.controller);
@@ -1554,6 +2097,7 @@ async function notifyPostResultFailure(
   tabId: number,
   pageTarget: PageTarget | null,
   historyPersisted: boolean,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const message = historyPersisted
     ? "The verification result was saved, but its display could not be completed."
@@ -1561,6 +2105,7 @@ async function notifyPostResultFailure(
   await notifyStandaloneError("invalid_request", message, {
     pageTarget,
     tabId,
+    activityId,
   }).catch(() => undefined);
   await clearBadge(tabId).catch(() => undefined);
 }
@@ -1570,7 +2115,9 @@ async function finishIntegratedImageAction(
   status: IntegrationOperationStatus,
   pageTarget: PageTarget | null,
   actionId: ImageActionId,
+  activityId: ActivityId = null,
 ): Promise<void> {
+  const { operationId } = status;
   if (actionId === DOWNLOAD_ACTION_ID) {
     const message =
       status.state === "failed"
@@ -1584,6 +2131,11 @@ async function finishIntegratedImageAction(
       status.error?.message ?? message,
       actionId,
     );
+    await noteActivity(activityId, {
+      state: status.state === "failed" ? "failed" : "sent",
+      message: status.error?.message ?? message,
+      operationId,
+    });
     if (status.state === "failed") await setBadge(tabId, "!");
     else await clearBadge(tabId);
     const delivered =
@@ -1622,6 +2174,11 @@ async function finishIntegratedImageAction(
       ),
       actionId,
     );
+    await noteActivity(activityId, {
+      state: "done",
+      message: copy.title,
+      operationId,
+    });
     await setBadge(
       tabId,
       detected ? "✓" : result.verdict === "indeterminate" ? "!" : "?",
@@ -1647,6 +2204,12 @@ async function finishIntegratedImageAction(
       status.error?.message ?? "The connected check could not be completed.",
       actionId,
     );
+    await noteActivity(activityId, {
+      state: "failed",
+      message:
+        status.error?.message ?? "The connected check could not be completed.",
+      operationId,
+    });
     await setBadge(tabId, "!");
     await showPageToast(pageTarget, {
       tone: "error",
@@ -1662,6 +2225,7 @@ async function finishIntegratedImageAction(
   const message =
     "The connected check is still processing. Its result will appear in History.";
   await setWorkflow("idle", message, actionId);
+  await noteActivity(activityId, { state: "sent", message, operationId });
   await clearBadge(tabId);
   await showPageToast(pageTarget, {
     tone: "pending",
@@ -1696,8 +2260,24 @@ async function finishVerification(
   record: Pick<HistoryRecord, "id" | "inputKind">,
   outcome: VerificationOutcome,
   pageTarget: PageTarget | null,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const resultId = record.id;
+  await noteActivity(activityId, {
+    state:
+      outcome.errorCode === "user_cancelled"
+        ? "cancelled"
+        : outcome.errorCode
+          ? "failed"
+          : "done",
+    message:
+      outcome.errorCode === "user_cancelled"
+        ? "Verification cancelled."
+        : outcome.errorCode
+          ? outcome.result.summary
+          : resultLabel(outcome.result),
+    recordId: resultId,
+  });
   if (outcome.errorCode === "user_cancelled") {
     await setWorkflow("idle", "Verification cancelled.");
     await clearBadge(tabId);
@@ -2478,19 +3058,216 @@ async function hasImageHostPermission(
   }
 }
 
-async function ensureContextMenu(): Promise<void> {
-  const contextMenus = getContextMenusApi();
-  if (!contextMenus) return;
+const PAGE_URL_PATTERNS = ["http://*/*", "https://*/*"];
+const MENU_IDS = {
+  sendImage: "lens-send-image",
+  linkVideo: "lens-link-video",
+  linkAudio: "lens-link-audio",
+  linkAudioFile: "lens-link-audio-file",
+  mediaVideo: "lens-media-video",
+  mediaOpen: "lens-media-open",
+  open: "lens-open",
+  settings: "lens-act-settings",
+  recent: "lens-act-recent",
+  history: "lens-act-history",
+} as const;
+/**
+ * The right-click items. An image shows three items, which Chrome folds
+ * under one "Provenance Lens" parent.
+ */
+const MENU_ITEMS: readonly chrome.contextMenus.CreateProperties[] = [
+  pageMenuItem(ACTION_ID, "Verify this image", ["image"]),
+  pageMenuItem(MENU_IDS.sendImage, "Send this image to Telegram", ["image"]),
+  pageMenuItem(MENU_IDS.linkVideo, "Send link to Telegram as video", ["link"]),
+  pageMenuItem(MENU_IDS.linkAudio, "Send link to Telegram as voice note", [
+    "link",
+  ]),
+  pageMenuItem(MENU_IDS.linkAudioFile, "Send link to Telegram as audio file", [
+    "link",
+  ]),
+  pageMenuItem(MENU_IDS.mediaVideo, "Send this video to Telegram", [
+    "video",
+    "audio",
+  ]),
+  pageMenuItem(MENU_IDS.mediaOpen, "Lens palette for this video…", [
+    "video",
+    "audio",
+  ]),
+  pageMenuItem(MENU_IDS.open, "Open Lens palette", [
+    "page",
+    "frame",
+    "selection",
+    "image",
+  ]),
+];
+const ACTION_MENU_ITEMS: readonly chrome.contextMenus.CreateProperties[] = [
+  { id: MENU_IDS.settings, title: "Settings…", contexts: ["action"] },
+  { id: MENU_IDS.recent, title: "Recent actions…", contexts: ["action"] },
+  { id: MENU_IDS.history, title: "Result history", contexts: ["action"] },
+];
+/** What each link item sends besides the link. */
+const MENU_LINK_OPTIONS: Readonly<Record<string, LinkDownloadOptions>> = {
+  [MENU_IDS.linkVideo]: {},
+  [MENU_IDS.linkAudio]: { output: "voice" },
+  [MENU_IDS.linkAudioFile]: { output: "m4a" },
+};
+const MENU_LINK_MESSAGE =
+  "That link cannot be sent to Telegram. On X, right-click the post's timestamp.";
+/**
+ * The install, startup and load calls share one rebuild, so their removeAll
+ * and create calls cannot interleave.
+ */
+function ensureContextMenu(): Promise<void> {
+  menusReady ??= rebuildMenus();
+  return menusReady;
+}
+
+async function rebuildMenus(): Promise<void> {
+  const menus = getContextMenusApi();
+  if (!menus) return;
   try {
-    await contextMenus.remove(ACTION_ID);
+    await menus.removeAll();
+    for (const item of [...MENU_ITEMS, ...ACTION_MENU_ITEMS])
+      await createMenu(menus, item);
   } catch {
-    // The menu may not exist on the first installation.
+    // A later startup builds them again.
+    menusReady = null;
   }
-  contextMenus.create({
-    id: ACTION_ID,
-    title: "Check OpenAI provenance",
-    contexts: ["image"],
+}
+
+/** Page items show only on http(s) pages, never on browser pages. */
+function pageMenuItem(
+  id: string,
+  title: string,
+  contexts: NonNullable<chrome.contextMenus.CreateProperties["contexts"]>,
+): chrome.contextMenus.CreateProperties {
+  return { id, title, contexts, documentUrlPatterns: PAGE_URL_PATTERNS };
+}
+
+function createMenu(
+  menus: typeof chrome.contextMenus,
+  item: chrome.contextMenus.CreateProperties,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    menus.create(item, () => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve();
+    });
   });
+}
+
+async function handleMenuClick(
+  info: chrome.contextMenus.OnClickData,
+  tab: chrome.tabs.Tab | undefined,
+): Promise<void> {
+  const tabId = tab?.id;
+  switch (info.menuItemId) {
+    case ACTION_ID:
+      if (tab && tabId !== undefined)
+        await handleContextMenu(
+          info,
+          tab,
+          ACTION_ID,
+          await beginMenuActivity(info.menuItemId, "verify", tab),
+        );
+      return;
+    case MENU_IDS.sendImage: {
+      if (!tab || tabId === undefined) return;
+      const activityId = await beginMenuActivity(info.menuItemId, "image", tab);
+      // Until the palette has a Connect view, Settings shows the pairing.
+      if (!(await isIntegrationConnected())) {
+        await noteActivity(activityId, {
+          state: "refused",
+          message: "Connect Provenance Lens to DigiBot in Settings first.",
+        });
+        await openSettingsAt("integration-heading");
+        return;
+      }
+      await handleContextMenu(info, tab, DOWNLOAD_ACTION_ID, activityId);
+      return;
+    }
+    case MENU_IDS.linkVideo:
+    case MENU_IDS.linkAudio:
+    case MENU_IDS.linkAudioFile: {
+      if (tabId === undefined) return;
+      const options = MENU_LINK_OPTIONS[info.menuItemId] ?? {};
+      await sendMenuLink(
+        info.linkUrl ?? "",
+        tabId,
+        options,
+        await beginMenuActivity(
+          info.menuItemId,
+          linkActivityKind(options),
+          tab,
+        ),
+      );
+      return;
+    }
+    case MENU_IDS.mediaVideo: {
+      // The page's own address; the blob: source is never sent.
+      const action = getActionDefinition(LINK_ACTION_ID);
+      if (action?.inputType === "page-link")
+        await sendPageLinkFromActiveTab(
+          action.handler,
+          {},
+          await beginMenuActivity(info.menuItemId, "video", tab),
+        );
+      return;
+    }
+    case MENU_IDS.mediaOpen:
+      await openPalette(tab, "download", "video");
+      return;
+    case MENU_IDS.open:
+      await openPalette(tab, "root");
+      return;
+    case MENU_IDS.settings:
+      await chrome.tabs.create({ url: chrome.runtime.getURL("settings.html") });
+      return;
+    case MENU_IDS.recent:
+      await openPalette(tab, "recent");
+      return;
+    case MENU_IDS.history:
+      await chrome.tabs.create({ url: chrome.runtime.getURL("history.html") });
+      return;
+  }
+}
+
+/** A right-clicked link goes out like a picked one: checked, then sent. */
+async function sendMenuLink(
+  linkUrl: string,
+  tabId: number,
+  options: LinkDownloadOptions,
+  activityId: ActivityId = null,
+): Promise<void> {
+  const action = getActionDefinition(LINK_ACTION_ID);
+  if (action?.inputType !== "page-link") return;
+  const pageTarget = await bindPageTarget(tabId, 0);
+  const url = pickedLinkUrl(linkUrl);
+  if (url === null) {
+    await setWorkflow("error", MENU_LINK_MESSAGE, LINK_ACTION_ID);
+    await noteActivity(activityId, {
+      state: "refused",
+      message: MENU_LINK_MESSAGE,
+    });
+    await setBadge(tabId, "!").catch(() => undefined);
+    await showPageToast(pageTarget, {
+      tone: "error",
+      title: PAGE_LINK_FAILED_TITLE,
+      message: MENU_LINK_MESSAGE,
+      resultId: null,
+    });
+    return;
+  }
+  await deliverPageLink(
+    action.handler,
+    { url },
+    options,
+    tabId,
+    pageTarget,
+    LINK_ACTION_ID,
+    activityId,
+  );
 }
 
 function getContextMenusApi(): typeof chrome.contextMenus | undefined {
@@ -2508,6 +3285,108 @@ async function ensureTrustedStorageAccess(): Promise<void> {
   } catch {
     // Older Chromium builds may not expose the access-level API.
   }
+}
+
+// Recent ----------------------------------------------------------------------
+
+/** A right-click item's entry, under the item's own title. */
+function beginMenuActivity(
+  menuItemId: string | number,
+  kind: ActivityKind,
+  tab: chrome.tabs.Tab | undefined,
+): Promise<ActivityId> {
+  const item = MENU_ITEMS.find(({ id }) => id === menuItemId);
+  return beginActivity(item?.title ?? "Lens action", kind, tab);
+}
+
+/** The armed picks that match: those this worker holds and those a stopped worker stored. */
+async function armedPicks(
+  match: (session: PickerSession) => boolean,
+): Promise<PickerSession[]> {
+  const armed = [...pickerSessions.values()].filter(match);
+  for (const sessionToken of await storedLinkPickerTokens()) {
+    if (pickerSessions.has(sessionToken)) continue;
+    const session = await restoreLinkPickerSession(sessionToken);
+    if (session && match(session)) armed.push(session);
+  }
+  return armed;
+}
+
+/**
+ * Ends Recent's entries for armed picks no click can reach any more. The
+ * sessions stay as they are: their own guards still decide any message that
+ * comes back.
+ */
+async function endArmedPicks(
+  match: (session: PickerSession) => boolean,
+  message: string,
+): Promise<void> {
+  for (const session of await armedPicks(match))
+    await noteActivity(session.activityId, { state: "cancelled", message });
+}
+
+/**
+ * Ends Recent's entries a stopped worker left running: those no stored pick,
+ * pending disclosure, pending DigiBot operation or extension page still
+ * holds. Image picks live only in the worker, so theirs end here too. An
+ * action this worker started, even while this runs, stays running.
+ */
+async function endStoppedActivity(): Promise<void> {
+  try {
+    const kept = new Set([
+      ...(await storedActivityIds(LINK_PICKER_SESSIONS_KEY)),
+      ...(await storedActivityIds(PENDING_DISCLOSURES_KEY)),
+      ...(await pendingIntegrationActivityIds()),
+      ...(await heldActivityIds()),
+    ]);
+    for (const entry of await getActivity()) {
+      if (
+        entry.state === "running" &&
+        !kept.has(entry.id) &&
+        !startedSinceLoad(entry.id)
+      )
+        await noteActivity(entry.id, {
+          state: "failed",
+          message: STOPPED_MESSAGE,
+        });
+    }
+  } catch {
+    // Recent still shows an entry this old as stopped.
+  }
+}
+
+/** The entry ids a session-storage map of records keeps. */
+async function storedActivityIds(key: string): Promise<string[]> {
+  const values = await chrome.storage.session.get(key);
+  const current = values[key];
+  if (!isRecord(current)) return [];
+  return Object.values(current).flatMap((stored) => {
+    const id = isRecord(stored) ? storedActivityId(stored["activityId"]) : null;
+    return id === null ? [] : [id];
+  });
+}
+
+/**
+ * Ends the entry of a DigiBot operation a restarted worker resumed, worded
+ * for what the operation stored that it checks; an operation an earlier
+ * version stored is read from its status.
+ */
+async function endResumedActivity(
+  operation: IntegrationPendingOperation,
+  status: IntegrationOperationStatus | null,
+): Promise<void> {
+  const audio =
+    operation.mediaKind === "audio" ||
+    (operation.mediaKind === undefined &&
+      status !== null &&
+      (status.segment !== null ||
+        status.envelope?.media.mimeType.startsWith("audio/") === true));
+  await noteActivity(
+    operation.activityId ?? null,
+    status === null
+      ? { state: "failed", message: STOPPED_MESSAGE }
+      : operationUpdate(status, audio ? "audio" : "image"),
+  );
 }
 
 async function setWorkflow(
@@ -2566,8 +3445,29 @@ async function cancelActiveVerification(
     activeVerifications.tabIds(),
     focusedTabId,
   );
+  if (tabId !== undefined) {
+    activeVerifications.abort(tabId, USER_CANCELLED_REASON);
+    return;
+  }
+  // Nothing runs: the palette's "Cancel pick" stops the armed picker.
+  await cancelArmedPicker(senderTabId ?? focusedTabId);
+}
+
+/** Stops the tab's armed picks, also one a stopped worker stored. */
+async function cancelArmedPicker(tabId: number | undefined): Promise<void> {
   if (tabId === undefined) return;
-  activeVerifications.abort(tabId, USER_CANCELLED_REASON);
+  const armed = await armedPicks((session) => session.tabId === tabId);
+  if (armed.length === 0) return;
+  for (const session of armed) {
+    pickerSessions.delete(session.sessionToken);
+    await stopPicker(session);
+    await noteActivity(session.activityId, {
+      state: "cancelled",
+      message: "Pick cancelled.",
+    });
+  }
+  await setWorkflow("idle", "Pick cancelled.");
+  await clearBadge(tabId).catch(() => undefined);
 }
 
 async function notifyDetectedResult(
@@ -2627,9 +3527,14 @@ async function notifyStandaloneError(
     tabId?: number;
     title?: string;
     actions?: ToastAction[];
+    activityId?: ActivityId;
   } = {},
 ): Promise<void> {
   await setWorkflow("error", reason);
+  await noteActivity(options.activityId ?? null, {
+    state: refusalState(code),
+    message: reason,
+  });
   if (options.tabId !== undefined) {
     await setBadge(options.tabId, "!").catch(() => undefined);
   }
@@ -2895,6 +3800,11 @@ async function handleToastAction(
         binding.tabId,
         pageTarget,
         retry.actionId,
+        await beginActivity(
+          activityTitle(retry.actionId, retry.options),
+          linkActivityKind(retry.options),
+          await chrome.tabs.get(binding.tabId).catch(() => undefined),
+        ),
       );
       return;
     }
@@ -2908,7 +3818,16 @@ async function handleToastAction(
       await openSettingsAt("verification-mode-heading");
       return;
     case "check-synthid":
-      await startSynthIdPick(binding.tabId, binding.frameId, "popup");
+      await startSynthIdPick(
+        binding.tabId,
+        binding.frameId,
+        "popup",
+        await beginActivity(
+          activityTitle(SYNTHID_ACTION_ID),
+          "verify",
+          await chrome.tabs.get(binding.tabId).catch(() => undefined),
+        ),
+      );
       return;
   }
 }
@@ -2929,6 +3848,7 @@ async function hasDownloadsPermission(): Promise<boolean> {
 
 async function startSynthIdPickFromActiveTab(
   trigger: ActionTrigger,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const tabs = await chrome.tabs.query({
     active: true,
@@ -2939,10 +3859,11 @@ async function startSynthIdPickFromActiveTab(
     await notifyStandaloneError(
       "protected_page",
       "No active browser page is available.",
+      { activityId },
     );
     return;
   }
-  await startSynthIdPick(tab.id, 0, trigger);
+  await startSynthIdPick(tab.id, 0, trigger, activityId);
 }
 
 /**
@@ -2955,17 +3876,22 @@ async function startSynthIdPick(
   tabId: number,
   frameId: number,
   trigger: ActionTrigger,
+  activityId: ActivityId = null,
 ): Promise<void> {
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   if (!tab || isProtectedPage(tab.url ?? "")) {
     await notifyStandaloneError(
       "protected_page",
       "Image picking is not supported on this browser page.",
-      { tabId },
+      { tabId, activityId },
     );
     return;
   }
   if (!(await hasDownloadsPermission())) {
+    await noteActivity(activityId, {
+      state: "refused",
+      message: "Allow download access in Settings first.",
+    });
     await openSettingsAt("permissions-heading");
     return;
   }
@@ -2979,6 +3905,7 @@ async function startSynthIdPick(
       verificationMode: "synthid",
       selection: null,
       pageTarget: null,
+      activityId,
     });
     return;
   }
@@ -2987,6 +3914,7 @@ async function startSynthIdPick(
       mode: "image",
       actionId: SYNTHID_ACTION_ID,
       trigger,
+      activityId,
     });
     await setWorkflow(
       "picking",
@@ -2997,7 +3925,7 @@ async function startSynthIdPick(
     await notifyStandaloneError(
       "permission_denied",
       "The image picker could not access this page.",
-      { tabId },
+      { tabId, activityId },
     );
   }
 }
@@ -3007,10 +3935,10 @@ async function startSynthIdPick(
  * No history record and no cache entry: Lens never sees Google's result.
  */
 async function runSynthIdHandoff(
-  session: PageTarget,
+  session: PageTarget & { activityId: ActivityId },
   selection: ImageSelection,
 ): Promise<void> {
-  const { tabId } = session;
+  const { tabId, activityId } = session;
   const action = getActionDefinition(SYNTHID_ACTION_ID);
   if (action?.inputType !== "image-file") return;
   const active = activeVerifications.claim(tabId);
@@ -3018,7 +3946,7 @@ async function runSynthIdHandoff(
     await notifyStandaloneError(
       "concurrency_limit",
       "Another image is still being checked in this tab.",
-      { pageTarget: session, tabId, title: SYNTHID_FAILED_TITLE },
+      { pageTarget: session, tabId, title: SYNTHID_FAILED_TITLE, activityId },
     );
     return;
   }
@@ -3046,10 +3974,15 @@ async function runSynthIdHandoff(
         title: SYNTHID_FAILED_TITLE,
         actions:
           execution.errorCode === "permission_denied" ? ["grant-access"] : [],
+        activityId,
       });
       return;
     }
     await setWorkflow("idle", execution.message);
+    await noteActivity(activityId, {
+      state: "done",
+      message: execution.message,
+    });
     await clearBadge(tabId);
     if (execution.status === "opened") {
       await showPageToast(session, {
@@ -3065,11 +3998,390 @@ async function runSynthIdHandoff(
     await notifyStandaloneError(
       "invalid_request",
       "The Google SynthID handoff could not be completed.",
-      { pageTarget: session, tabId, title: SYNTHID_FAILED_TITLE },
+      { pageTarget: session, tabId, title: SYNTHID_FAILED_TITLE, activityId },
     );
   } finally {
     activeVerifications.release(tabId, active.controller);
   }
+}
+
+// The Lens palette ------------------------------------------------------------
+
+const PALETTE_MOUNTS_KEY = "provenanceLens.paletteMounts";
+const MAX_PALETTE_MOUNTS = 8;
+type PaletteMount = { tabId: number; token: string };
+
+/**
+ * A browser command. open-palette and open-clip open the palette; the others
+ * run at once and report by toast.
+ * ⌥⇧V on a browser page also opens the fallback popup, which says why.
+ */
+async function runBrowserCommand(
+  command: string,
+  tab: chrome.tabs.Tab | undefined,
+): Promise<void> {
+  const route = commandRoute(command);
+  if (!route) return;
+  if (route.kind === "palette") {
+    await openPalette(tab, route.view);
+    return;
+  }
+  if (route.kind === "cancel") {
+    await cancelActiveVerification(undefined);
+    return;
+  }
+  await handleExtensionMessage(
+    {
+      type: "start-action",
+      actionId: route.actionId,
+      trigger: "keyboard",
+      ...(route.options ? { options: route.options } : {}),
+    },
+    {},
+  );
+  if (command !== "pick-image") return;
+  const target = tab?.id !== undefined ? tab : await activeTab();
+  if (target?.id !== undefined && isProtectedPage(target.url ?? ""))
+    await openFallbackPopup(
+      target,
+      paletteRecord(target, "root", "page", "popup"),
+    );
+}
+
+/**
+ * Opens the palette on the tab, or closes the one open there. The worker
+ * stores a single-use record for the frame, injects the host into frame 0
+ * and waits for the frame's "ready". A browser page, a page that refuses the
+ * host or a frame that does not answer gets the fallback popup.
+ */
+async function openPalette(
+  tab: chrome.tabs.Tab | undefined,
+  view: OpenView,
+  scope: PaletteOpenRecord["scope"] = "page",
+): Promise<void> {
+  const target = tab?.id !== undefined ? tab : await activeTab();
+  const tabId = target?.id;
+  if (!target || tabId === undefined) return;
+  const record = paletteRecord(target, view, scope, "page");
+  if (record.page !== "web") {
+    await openFallbackPopup(target, { ...record, host: "popup" });
+    return;
+  }
+  // Known before the frame can ask, so a first key right after opening works.
+  await rememberPaletteMount(tabId, record.token);
+  await chrome.storage.session.set({ [PALETTE_OPEN_KEY]: record });
+  let status: PaletteHostStatus;
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [0] },
+      func: mountPaletteHost,
+      args: [
+        chrome.runtime.getURL(`palette.html#t=${record.token}`),
+        record.token,
+        PALETTE_READY_TIMEOUT_MS,
+      ],
+    });
+    status = paletteHostStatus(results[0]?.result);
+  } catch {
+    status = "failed";
+  }
+  if (status === "ready") return;
+  await forgetPaletteMount({ token: record.token });
+  await discardPaletteRecord(record.token);
+  // The same key closed the palette that was open.
+  if (status === "closed") return;
+  await openFallbackPopup(target, {
+    ...record,
+    token: crypto.randomUUID(),
+    host: "popup",
+  });
+}
+
+/** What the frame may know about the page: its host name, never its address. */
+function paletteRecord(
+  tab: chrome.tabs.Tab,
+  view: OpenView,
+  scope: PaletteOpenRecord["scope"],
+  host: PaletteOpenRecord["host"],
+): PaletteOpenRecord {
+  const url = tab.url ?? "";
+  const http = /^https?:\/\//iu.test(url);
+  return {
+    token: crypto.randomUUID(),
+    tabId: tab.id ?? 0,
+    view,
+    host,
+    page: !http ? "none" : isProtectedPage(url) ? "link-only" : "web",
+    hostname: http ? linkHost(url) : "",
+    scope,
+    needsPick: http && needsPostPick(url),
+  };
+}
+
+/**
+ * The palette as the toolbar popup: focus the window first, since openPopup
+ * refuses an inactive one, and reset the popup after.
+ * When the browser still refuses, the palette opens in a tab.
+ */
+async function openFallbackPopup(
+  tab: chrome.tabs.Tab,
+  record: PaletteOpenRecord,
+): Promise<void> {
+  const tabId = tab.id;
+  if (tabId === undefined) return;
+  await chrome.storage.session.set({ [PALETTE_OPEN_KEY]: record });
+  try {
+    if (tab.windowId !== undefined)
+      await chrome.windows
+        .update(tab.windowId, { focused: true })
+        .catch(() => undefined);
+    await chrome.action.setPopup({
+      tabId,
+      popup: `palette.html?host=popup#t=${record.token}`,
+    });
+    await chrome.action.openPopup(
+      tab.windowId !== undefined ? { windowId: tab.windowId } : {},
+    );
+  } catch {
+    await discardPaletteRecord(record.token);
+    await openPaletteTab(record);
+  } finally {
+    await chrome.action.setPopup({ tabId, popup: "" }).catch(() => undefined);
+  }
+}
+
+/** The palette in a tab, with its own record and no page to act on. */
+async function openPaletteTab(from: PaletteOpenRecord): Promise<void> {
+  const record: PaletteOpenRecord = {
+    ...from,
+    token: crypto.randomUUID(),
+    view: "root",
+    host: "tab",
+    page: "none",
+    hostname: "",
+    scope: "page",
+    needsPick: false,
+  };
+  await chrome.storage.session.set({ [PALETTE_OPEN_KEY]: record });
+  try {
+    await chrome.tabs.create({
+      url: chrome.runtime.getURL(`palette.html#t=${record.token}`),
+    });
+  } catch {
+    await discardPaletteRecord(record.token);
+  }
+}
+
+async function activeTab(): Promise<chrome.tabs.Tab | undefined> {
+  const tabs = await chrome.tabs
+    .query({ active: true, lastFocusedWindow: true })
+    .catch(() => []);
+  return tabs[0];
+}
+
+function paletteHostStatus(value: unknown): PaletteHostStatus {
+  const status = isRecord(value) ? value["status"] : undefined;
+  return status === "ready" || status === "closed" || status === "timeout"
+    ? status
+    : "failed";
+}
+
+async function discardPaletteRecord(token: string): Promise<void> {
+  try {
+    const values = await chrome.storage.session.get(PALETTE_OPEN_KEY);
+    const stored = values[PALETTE_OPEN_KEY];
+    if (isRecord(stored) && stored["token"] === token)
+      await chrome.storage.session.remove(PALETTE_OPEN_KEY);
+  } catch {
+    // A stale record is single-use and replaced by the next open.
+  }
+}
+
+async function readPaletteMounts(): Promise<PaletteMount[]> {
+  const values = await chrome.storage.session.get(PALETTE_MOUNTS_KEY);
+  const raw = values[PALETTE_MOUNTS_KEY];
+  return Array.isArray(raw)
+    ? raw.filter(
+        (mount): mount is PaletteMount =>
+          isRecord(mount) &&
+          typeof mount["tabId"] === "number" &&
+          typeof mount["token"] === "string",
+      )
+    : [];
+}
+
+/** The tabs with a mounted palette, in session storage across worker restarts. */
+function mutatePaletteMounts(
+  change: (mounts: PaletteMount[]) => PaletteMount[],
+): Promise<void> {
+  const next = paletteMountMutation.then(async () => {
+    const mounts = change(await readPaletteMounts());
+    await chrome.storage.session.set({
+      [PALETTE_MOUNTS_KEY]: mounts.slice(-MAX_PALETTE_MOUNTS),
+    });
+  });
+  paletteMountMutation = next.catch(() => undefined);
+  return next.catch(() => undefined);
+}
+
+function rememberPaletteMount(tabId: number, token: string): Promise<void> {
+  return mutatePaletteMounts((mounts) => [
+    ...mounts.filter((mount) => mount.tabId !== tabId),
+    { tabId, token },
+  ]);
+}
+
+function forgetPaletteMount(match: {
+  tabId?: number;
+  token?: string;
+}): Promise<void> {
+  return mutatePaletteMounts((mounts) =>
+    mounts.filter(
+      (mount) => mount.tabId !== match.tabId && mount.token !== match.token,
+    ),
+  );
+}
+
+/** The token of the palette mounted into a tab, or null when none is. */
+async function paletteMountToken(tabId: number): Promise<string | null> {
+  await paletteMountMutation;
+  try {
+    const mounts = await readPaletteMounts();
+    return mounts.find((mount) => mount.tabId === tabId)?.token ?? null;
+  } catch {
+    return null;
+  }
+}
+
+const AUDIO_CHECK_FAILED_TITLE = "Audio check failed";
+
+/**
+ * Checks the audio of the active page's video between two times through
+ * DigiBot, in the worker, so the palette can close at once.
+ * The page shows a progress toast, then the result in its place.
+ */
+async function verifyPageAudioSegment(
+  startSeconds: number,
+  endSeconds: number,
+  activityId: ActivityId = null,
+): Promise<void> {
+  const tab = await activeTab();
+  const tabId = tab?.id;
+  const url = tab?.url ?? "";
+  if (tabId === undefined || isProtectedPage(url)) {
+    await notifyStandaloneError(
+      "protected_page",
+      "Open a normal web page to check its audio.",
+      tabId === undefined ? { activityId } : { tabId, activityId },
+    );
+    return;
+  }
+  const pageTarget = await bindPageTarget(tabId, 0);
+  if (!(await isIntegrationConnected())) {
+    await notifyStandaloneError(
+      "backend_configuration_missing",
+      "Connect Provenance Lens to DigiBot in Settings before checking audio.",
+      {
+        pageTarget,
+        tabId,
+        title: AUDIO_CHECK_FAILED_TITLE,
+        actions: ["connect-digibot"],
+        activityId,
+      },
+    );
+    return;
+  }
+  try {
+    await setWorkflow("verifying", "Verifying audio…", AUDIO_ACTION_ID);
+    await setBadge(tabId, "…").catch(() => undefined);
+    await showPageToast(pageTarget, {
+      tone: "progress",
+      title: "Verifying audio…",
+      message: progressToastMessage(linkHost(url), "DigiBot check"),
+      resultId: null,
+    });
+    const outcome = await runIntegratedAudioSegmentAction(
+      url,
+      startSeconds,
+      endSeconds,
+      activityId,
+    );
+    await finishPageAudioCheck(tabId, outcome.status, pageTarget, activityId);
+  } catch (error: unknown) {
+    await notifyStandaloneError(
+      "backend_unavailable",
+      error instanceof Error
+        ? error.message
+        : "The audio segment could not be checked.",
+      { pageTarget, tabId, title: AUDIO_CHECK_FAILED_TITLE, activityId },
+    );
+  }
+}
+
+async function finishPageAudioCheck(
+  tabId: number,
+  status: IntegrationOperationStatus,
+  pageTarget: PageTarget | null,
+  activityId: ActivityId,
+): Promise<void> {
+  const { operationId } = status;
+  const evidence = status.envelope?.result?.evidence;
+  if (evidence) {
+    const detected = evidence.verdict === "openai_signal_detected";
+    const indeterminate = evidence.verdict === "indeterminate";
+    // The same title as History and the result details give this evidence.
+    const title = resultLabel(evidence, "audio");
+    await setWorkflow(
+      "idle",
+      sanitizeDisplayText(`${title}. ${evidence.summary}`, 512),
+      AUDIO_ACTION_ID,
+    );
+    await noteActivity(activityId, {
+      state: "done",
+      message: title,
+      operationId,
+    });
+    await setBadge(tabId, detected ? "✓" : indeterminate ? "!" : "?");
+    await showPageToast(pageTarget, {
+      tone: indeterminate ? "error" : detected ? "detected" : "no-signal",
+      title,
+      // A missing signal is never proof of a human recording.
+      message:
+        detected || indeterminate
+          ? evidence.summary
+          : "This does not prove that the audio is human-recorded or that it was not generated by another AI system.",
+      resultId: null,
+      actions: ["history"],
+    });
+    return;
+  }
+  if (status.state === "failed") {
+    const message =
+      status.error?.message ?? "The audio segment could not be checked.";
+    await setWorkflow("error", message, AUDIO_ACTION_ID);
+    await noteActivity(activityId, { state: "failed", message, operationId });
+    await setBadge(tabId, "!");
+    await showPageToast(pageTarget, {
+      tone: "error",
+      title: AUDIO_CHECK_FAILED_TITLE,
+      message,
+      resultId: null,
+      actions: ["history"],
+    });
+    return;
+  }
+  const message =
+    "The audio check is still processing. Its result will appear in History.";
+  await setWorkflow("idle", message, AUDIO_ACTION_ID);
+  await noteActivity(activityId, { state: "sent", message, operationId });
+  await clearBadge(tabId);
+  await showPageToast(pageTarget, {
+    tone: "pending",
+    title: "Check accepted",
+    message,
+    resultId: null,
+    actions: ["history"],
+  });
 }
 
 function toBase64(bytes: Uint8Array): string {

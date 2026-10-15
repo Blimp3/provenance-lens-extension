@@ -1,0 +1,567 @@
+/*
+ * The Lens palette. The tokens are defined once here; src/ui/tokens.ts mirrors
+ * them for the picker, banner and toast, and a unit test keeps the two lists
+ * equal.
+ */
+:root {
+  color-scheme: light dark;
+  --lens-page: light-dark(#f4f5f7, #0f1115);
+  --lens-surface: light-dark(#ffffff, #1b1e25);
+  --lens-surface-2: light-dark(#f6f7f9, #16181e);
+  --lens-line: light-dark(#e4e7ec, #2c313b);
+  --lens-line-strong: light-dark(#d0d5dd, #3b4250);
+  --lens-text: light-dark(#101828, #f2f4f7);
+  --lens-muted: light-dark(#4d5566, #a6aebd);
+  --lens-hover: light-dark(#f2f4f7, #232731);
+  --lens-selected: light-dark(#e3f1f6, #173f4b);
+  --lens-accent: light-dark(#0b6e8a, #22d3ee);
+  --lens-accent-ink: light-dark(#ffffff, #04222b);
+  --lens-accent-soft: light-dark(#e6f4f8, #12313a);
+  --lens-ok: light-dark(#157a42, #4ade80);
+  --lens-ok-soft: light-dark(#e7f5ec, #123222);
+  --lens-neutral: light-dark(#475467, #a3adbd);
+  --lens-neutral-soft: light-dark(#eef1f5, #262b35);
+  --lens-warn: light-dark(#8a5300, #fbbf24);
+  --lens-warn-soft: light-dark(#fcf1da, #3a2a08);
+  --lens-danger: light-dark(#b42318, #fb8f8f);
+  --lens-danger-soft: light-dark(#fdecea, #3f1a1a);
+  --lens-kbd-bg: light-dark(#ffffff, #2a2f3a);
+  --lens-kbd-text: light-dark(#344054, #d0d5dd);
+  --lens-scrim: light-dark(#1018285c, #0000008f);
+  --lens-shadow: 0 24px 64px #10182847, 0 2px 8px #1018281f;
+  --lens-focus: var(--lens-accent);
+  --lens-font:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI",
+    Roboto, sans-serif;
+  --lens-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --lens-shadow: 0 24px 64px #00000099, 0 2px 8px #00000066;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  color: var(--lens-text);
+  font: 400 13px/18px var(--lens-font);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--lens-scrim);
+  animation: lens-fade 120ms linear;
+}
+
+.panel {
+  position: fixed;
+  top: max(48px, 14vh);
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  width: min(640px, calc(100vw - 32px));
+  max-height: min(480px, calc(100vh - 96px));
+  transform: translateX(-50%);
+  border: 1px solid var(--lens-line);
+  border-radius: 14px;
+  background: var(--lens-surface);
+  box-shadow: var(--lens-shadow);
+  overflow: hidden;
+  animation: lens-rise 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.search {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  height: 56px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--lens-line);
+}
+
+.back {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--lens-muted);
+  cursor: pointer;
+}
+
+.back .icon {
+  transform: scaleX(-1);
+}
+
+.chip {
+  flex: none;
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--lens-accent-soft);
+  color: var(--lens-accent);
+  font: 500 12px/16px var(--lens-font);
+  cursor: pointer;
+}
+
+.query {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--lens-text);
+  font: 400 17px/24px var(--lens-font);
+}
+
+.query::placeholder,
+.actions-query::placeholder {
+  color: var(--lens-muted);
+}
+
+.accessory {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  max-width: 40%;
+  overflow: hidden;
+  color: var(--lens-muted);
+  font: 400 12px/16px var(--lens-font);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accessory .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--lens-line-strong);
+  border-top-color: var(--lens-accent);
+  border-radius: 50%;
+  animation: lens-spin 800ms linear infinite;
+}
+
+.hint {
+  flex: none;
+  margin: 0;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--lens-line);
+  color: var(--lens-muted);
+  font: 400 12px/16px var(--lens-font);
+}
+
+.hint.error {
+  color: var(--lens-danger);
+}
+
+.list {
+  flex: 1;
+  min-height: 0;
+  padding: 6px;
+  overflow-y: auto;
+}
+
+.group-header {
+  height: 28px;
+  padding: 0 12px;
+  color: var(--lens-muted);
+  font: 600 12px/28px var(--lens-font);
+}
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: var(--lens-text);
+  cursor: default;
+}
+
+.row-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  color: var(--lens-muted);
+}
+
+.row-text {
+  display: flex;
+  flex: 1;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.row-title {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  font: 500 14px/20px var(--lens-font);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-subtitle {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--lens-muted);
+  font: 400 13px/18px var(--lens-font);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-subtitle.warn {
+  color: var(--lens-warn);
+}
+
+.row-right {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  color: var(--lens-muted);
+  font: 400 13px/18px var(--lens-font);
+}
+
+.alias {
+  height: 18px;
+  padding: 0 5px;
+  border: 1px solid var(--lens-line-strong);
+  border-radius: 4px;
+  font: 500 11px/16px var(--lens-mono);
+}
+
+kbd,
+.keycap {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 1px solid var(--lens-line-strong);
+  border-radius: 4px;
+  background: var(--lens-kbd-bg);
+  color: var(--lens-kbd-text);
+  font: 500 11px/16px var(--lens-mono);
+}
+
+.quick {
+  color: var(--lens-muted);
+  font: 500 11px/16px var(--lens-mono);
+}
+
+.trailing {
+  width: 12px;
+  color: var(--lens-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.row[aria-selected="true"] {
+  background: var(--lens-selected);
+}
+
+.row[aria-selected="true"]::before {
+  position: absolute;
+  top: 10px;
+  left: 4px;
+  width: 3px;
+  height: 20px;
+  border-radius: 2px;
+  background: var(--lens-accent);
+  content: "";
+}
+
+.row[aria-selected="true"] .row-icon {
+  color: var(--lens-accent);
+}
+
+.dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--lens-neutral);
+}
+
+.dot.ok {
+  background: var(--lens-ok);
+}
+
+.dot.danger {
+  background: var(--lens-danger);
+}
+
+.dot.warn {
+  background: var(--lens-warn);
+}
+
+.row-note {
+  padding: 0 12px 6px 44px;
+  color: var(--lens-muted);
+  font: 400 12px/16px var(--lens-font);
+}
+
+.list-note {
+  margin: 0;
+  padding: 8px 12px;
+  color: var(--lens-muted);
+  font: 400 12px/16px var(--lens-font);
+}
+
+.empty {
+  display: grid;
+  place-items: center;
+  height: 72px;
+  margin: 0;
+  color: var(--lens-muted);
+  font: 400 13px/18px var(--lens-font);
+  text-align: center;
+}
+
+.footer {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 40px;
+  padding: 0 8px 0 12px;
+  border-top: 1px solid var(--lens-line);
+  background: var(--lens-surface-2);
+  color: var(--lens-muted);
+  font: 400 12px/16px var(--lens-font);
+}
+
+.footer-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.footer-keys {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+}
+
+.footer-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.divider {
+  width: 1px;
+  height: 16px;
+  background: var(--lens-line);
+}
+
+.actions-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--lens-muted);
+  font: 400 12px/16px var(--lens-font);
+  cursor: pointer;
+}
+
+.actions-button:hover,
+.back:hover {
+  background: var(--lens-hover);
+}
+
+.actions-button:focus-visible,
+.back:focus-visible,
+.chip:focus-visible {
+  outline: 2px solid var(--lens-focus);
+  outline-offset: 1px;
+}
+
+.actions {
+  position: absolute;
+  right: 8px;
+  bottom: 48px;
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  max-height: 320px;
+  border: 1px solid var(--lens-line);
+  border-radius: 12px;
+  background: var(--lens-surface);
+  box-shadow: var(--lens-shadow);
+  overflow: hidden;
+}
+
+.actions-query {
+  flex: none;
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 1px solid var(--lens-line);
+  outline: none;
+  background: transparent;
+  color: var(--lens-text);
+  font: 400 13px/18px var(--lens-font);
+}
+
+.actions-list {
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.actions-list .row {
+  height: 36px;
+}
+
+/* The fallback popup under the toolbar icon: no scrim, the panel fills it. */
+.host-popup body {
+  width: 640px;
+  height: 440px;
+}
+
+.host-popup .scrim {
+  display: none;
+}
+
+.host-popup .panel {
+  inset: 0;
+  width: 100%;
+  max-height: none;
+  transform: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  animation: none;
+}
+
+/* The tab: a page background, the panel near the top. */
+.host-tab body {
+  background: var(--lens-page);
+}
+
+.host-tab .scrim {
+  display: none;
+}
+
+.host-tab .panel {
+  top: 10vh;
+}
+
+@keyframes lens-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* No fade: IntersectionObserver v2 counts a panel below full opacity as
+   hidden, and keys run only once it reports the panel visible. */
+@keyframes lens-rise {
+  from {
+    transform: translate(-50%, -6px);
+  }
+}
+
+@keyframes lens-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scrim,
+  .panel {
+    animation: none;
+  }
+
+  .spinner {
+    border: 0;
+    animation: none;
+  }
+
+  .spinner::before {
+    content: "…";
+  }
+}
+
+@media (forced-colors: active) {
+  .panel,
+  .actions {
+    border: 1px solid CanvasText;
+  }
+
+  .row[aria-selected="true"] {
+    outline: 2px solid Highlight;
+  }
+
+  .row[aria-selected="true"]::before {
+    background: Highlight;
+  }
+}

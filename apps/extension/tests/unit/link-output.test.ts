@@ -5,10 +5,8 @@ import {
   CLIP_LIMIT_MESSAGE,
   CLIP_ORDER_MESSAGE,
   LINK_OUTPUT_LABELS,
-  LINK_OUTPUTS,
-  isLinkOutput,
-  linkOptionsFor,
   parseClock,
+  parseClockRange,
 } from "../../src/ui/link-output.js";
 
 describe("page-link output controls", () => {
@@ -46,80 +44,48 @@ describe("page-link output controls", () => {
     expect(parseClock(text)).toBeNull();
   });
 
-  it("lists the outputs the dropdown offers", () => {
-    expect(LINK_OUTPUTS).toEqual(["video", "mp3", "clip"]);
-    expect(LINK_OUTPUTS.map((output) => LINK_OUTPUT_LABELS[output])).toEqual([
-      "Video",
-      "MP3",
-      "Clip",
-    ]);
-    expect(isLinkOutput("mp3")).toBe(true);
-    expect(isLinkOutput("m4a")).toBe(false);
-  });
-
-  it("sends no options for a video and only the output for an MP3", () => {
-    expect(linkOptionsFor("video", "1:05", "2:00")).toEqual({
-      ok: true,
-      options: null,
-    });
-    expect(linkOptionsFor("mp3", "", "")).toEqual({
-      ok: true,
-      options: { output: "mp3" },
+  it("names each output in a progress toast, with no MP3", () => {
+    expect(LINK_OUTPUT_LABELS).toEqual({
+      video: "Video",
+      voice: "Voice note",
+      m4a: "Audio file",
+      clip: "Clip",
     });
   });
 
-  it("turns a clip's clock values into seconds", () => {
-    expect(linkOptionsFor("clip", "1:05", "2:00")).toEqual({
+  it("turns a clip range's clock values into seconds", () => {
+    expect(parseClockRange("1:05-2:00")).toEqual({
       ok: true,
-      options: { startSeconds: 65, endSeconds: 120 },
+      startSeconds: 65,
+      endSeconds: 120,
     });
-    expect(linkOptionsFor("clip", "0", "24:00:00")).toEqual({
+    expect(parseClockRange("0-24:00:00")).toEqual({
       ok: true,
-      options: { startSeconds: 0, endSeconds: 86400 },
-    });
-  });
-
-  it("names the clip fields that are not clock values", () => {
-    expect(linkOptionsFor("clip", "", "")).toEqual({
-      ok: false,
-      message: CLIP_FORMAT_MESSAGE,
-      fields: ["start", "end"],
-    });
-    expect(linkOptionsFor("clip", "1:05", "2:0")).toEqual({
-      ok: false,
-      message: CLIP_FORMAT_MESSAGE,
-      fields: ["end"],
+      startSeconds: 0,
+      endSeconds: 86400,
     });
   });
 
   it("refuses a clip beyond 24 hours or one that ends before it starts", () => {
-    expect(linkOptionsFor("clip", "0", "24:00:01")).toEqual({
-      ok: false,
-      message: CLIP_LIMIT_MESSAGE,
-      fields: ["end"],
-    });
-    expect(linkOptionsFor("clip", "86401", "86402")).toEqual({
-      ok: false,
-      message: CLIP_LIMIT_MESSAGE,
-      fields: ["start", "end"],
-    });
-    // Uncapped digits parse, so an over-long value gets the limit message.
-    for (const end of ["1234567", "100:00:00", "10000:00"]) {
-      expect(linkOptionsFor("clip", "0", end)).toEqual({
+    for (const text of ["0-24:00:01", "86401-86402"])
+      expect(parseClockRange(text)).toEqual({
         ok: false,
         message: CLIP_LIMIT_MESSAGE,
-        fields: ["end"],
       });
-    }
-    for (const [start, end] of [
-      ["2:00", "2:00"],
-      ["2:00", "1:05"],
-    ] as const) {
-      expect(linkOptionsFor("clip", start, end)).toEqual({
+    // Uncapped digits parse, so an over-long value gets the limit message.
+    for (const end of ["1234567", "100:00:00", "10000:00"])
+      expect(parseClockRange(`0-${end}`)).toEqual({
+        ok: false,
+        message: CLIP_LIMIT_MESSAGE,
+      });
+    for (const text of ["2:00-2:00", "2:00-1:05"])
+      expect(parseClockRange(text)).toEqual({
         ok: false,
         message: CLIP_ORDER_MESSAGE,
-        fields: ["end"],
       });
-    }
+    expect(parseClockRange("1:05-2:0")).toEqual({
+      ok: false,
+      message: CLIP_FORMAT_MESSAGE,
+    });
   });
 });

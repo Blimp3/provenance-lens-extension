@@ -13,14 +13,15 @@ const linkClipSecondsSchema = z
   .max(MAX_LINK_CLIP_SECONDS);
 
 /**
- * What a page link may ask of DigiBot besides the default video: an MP3, a
- * clip, or both. Only present keys are sent, so a Video request stays
+ * What a page link may ask of DigiBot besides the default video: an audio
+ * output (the OGG/Opus voice note, an M4A audio file or an MP3), a clip, or
+ * both. Only present keys are sent, so a Video request stays
  * {operationId, sourceUrl}; DigiBot refuses any other output or a one-sided,
  * empty or over-long clip with a 400.
  */
 export const LinkDownloadOptionsSchema = z
   .object({
-    output: z.literal("mp3").optional(),
+    output: z.enum(["voice", "m4a", "mp3"]).optional(),
     startSeconds: linkClipSecondsSchema.optional(),
     endSeconds: linkClipSecondsSchema.optional(),
   })

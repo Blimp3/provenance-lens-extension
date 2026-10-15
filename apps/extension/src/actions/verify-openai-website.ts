@@ -19,7 +19,7 @@ export const WEBSITE_HANDOFF_MESSAGE =
   "The exact image was downloaded. Upload it to OpenAI Verify to review its supported provenance signals.";
 
 export const WEBSITE_DOWNLOAD_PERMISSION_MESSAGE =
-  "Grant optional download access from the popup or Settings before using Website mode.";
+  "Grant optional download access in Settings before using Website mode.";
 
 export const WEBSITE_OPEN_ERROR_MESSAGE =
   "The exact image was downloaded, but OpenAI Verify could not be opened. Open it manually to upload the file.";

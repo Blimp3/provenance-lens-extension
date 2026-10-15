@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   runIntegratedAudioFileAction: vi.fn(),
   runIntegratedAudioSegmentAction: vi.fn(),
+  startActivity: vi.fn(),
+  updateActivity: vi.fn(),
   updateSettings: vi.fn(),
   verifyAudioFile: vi.fn(),
 }));
@@ -25,6 +27,8 @@ vi.mock("../../src/integration-client.js", () => ({
 vi.mock("../../src/storage.js", () => ({
   appendHistory: mocks.appendHistory,
   getSettings: mocks.getSettings,
+  startActivity: mocks.startActivity,
+  updateActivity: mocks.updateActivity,
   updateSettings: mocks.updateSettings,
 }));
 
@@ -131,9 +135,22 @@ function chooseVideoSegment(url: string, start: string, end: string): void {
 }
 
 describe("audio check authorization", () => {
+  // The Web Locks the page asks for, by name.
+  const lockNames: string[] = [];
+
   beforeEach(() => {
     vi.resetModules();
     renderPage();
+    lockNames.length = 0;
+    Object.defineProperty(navigator, "locks", {
+      configurable: true,
+      value: {
+        request: (name: string, callback: () => Promise<void>) => {
+          lockNames.push(name);
+          return Promise.resolve().then(callback);
+        },
+      },
+    });
     mocks.appendHistory.mockReset().mockResolvedValue(undefined);
     mocks.createAudioHistoryRecord.mockReset().mockReturnValue(record);
     mocks.verifyAudioFile.mockReset().mockResolvedValue({
@@ -146,6 +163,8 @@ describe("audio check authorization", () => {
     mocks.getIntegrationSession.mockReset().mockResolvedValue(null);
     mocks.runIntegratedAudioFileAction.mockReset();
     mocks.runIntegratedAudioSegmentAction.mockReset();
+    mocks.startActivity.mockReset().mockResolvedValue(undefined);
+    mocks.updateActivity.mockReset().mockResolvedValue(undefined);
     Object.defineProperty(globalThis, "chrome", {
       configurable: true,
       value: { runtime: { openOptionsPage: vi.fn() } },
@@ -184,6 +203,28 @@ describe("audio check authorization", () => {
     );
     expect(authorization?.hidden).toBe(true);
     expect((checkbox as HTMLInputElement).required).toBe(false);
+    // Recent lists the check with its saved record.
+    expect(mocks.startActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Verify an audio file",
+        kind: "verify",
+        pageUrl: null,
+        state: "running",
+      }),
+      20,
+    );
+    const entryId = (
+      mocks.startActivity.mock.calls[0]?.[0] as { id: string } | undefined
+    )?.id;
+    // The page holds the entry, so the worker's start-up sweep keeps it.
+    expect(lockNames).toEqual([`provenance-lens.activity:${String(entryId)}`]);
+    await vi.waitFor(() =>
+      expect(mocks.updateActivity).toHaveBeenCalledWith(entryId, {
+        state: "done",
+        message: "OpenAI audio signal detected",
+        recordId: record.id,
+      }),
+    );
   });
 
   it("keeps the API-only action blocked in Website mode and shows Settings", async () => {
@@ -209,7 +250,16 @@ describe("audio check authorization", () => {
     );
     expect(mocks.updateSettings).not.toHaveBeenCalled();
     expect(mocks.verifyAudioFile).not.toHaveBeenCalled();
+    // A form the page refused never ran, so Recent lists nothing.
+    expect(mocks.startActivity).not.toHaveBeenCalled();
   });
+  /** The id of the entry the page started for its check. */
+  function startedEntryId(): string | undefined {
+    return (
+      mocks.startActivity.mock.calls[0]?.[0] as { id: string } | undefined
+    )?.id;
+  }
+
   it("shows the connected check as complete once its verdict is saved", async () => {
     mocks.getSettings.mockResolvedValue(apiSettings);
     mocks.getIntegrationSession.mockResolvedValue({
@@ -235,8 +285,14 @@ describe("audio check authorization", () => {
       ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 
     await vi.waitFor(() =>
-      expect(mocks.runIntegratedAudioFileAction).toHaveBeenCalledWith(file),
+      expect(mocks.runIntegratedAudioFileAction).toHaveBeenCalledWith(
+        file,
+        startedEntryId(),
+      ),
     );
+    expect(lockNames).toEqual([
+      `provenance-lens.activity:${String(startedEntryId())}`,
+    ]);
     const status = document.getElementById("audio-status");
     await vi.waitFor(() =>
       expect(status?.textContent).toBe(
@@ -248,6 +304,11 @@ describe("audio check authorization", () => {
       "Detected signals: SynthID.",
     );
     expect(mocks.verifyAudioFile).not.toHaveBeenCalled();
+    expect(mocks.updateActivity).toHaveBeenCalledWith(expect.any(String), {
+      state: "done",
+      message: "OpenAI audio signal detected",
+      operationId: "323e4567-e89b-42d3-a456-426614174000",
+    });
   });
 
   it("shows the segment check as complete once its verdict is saved", async () => {
@@ -273,13 +334,18 @@ describe("audio check authorization", () => {
       .getElementById("audio-form")
       ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 
+    // The pending operation keeps the entry, so a resume can end it.
     await vi.waitFor(() =>
       expect(mocks.runIntegratedAudioSegmentAction).toHaveBeenCalledWith(
         "https://video.example/watch?v=fixture",
         5,
         20,
+        startedEntryId(),
       ),
     );
+    expect(lockNames).toEqual([
+      `provenance-lens.activity:${String(startedEntryId())}`,
+    ]);
     const status = document.getElementById("audio-status");
     await vi.waitFor(() =>
       expect(status?.textContent).toBe(
@@ -292,5 +358,19 @@ describe("audio check authorization", () => {
     );
     expect(mocks.runIntegratedAudioFileAction).not.toHaveBeenCalled();
     expect(mocks.verifyAudioFile).not.toHaveBeenCalled();
+    expect(mocks.startActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Verify a video's audio",
+        kind: "verify",
+        // Only the origin and the path: a query can hold a token.
+        pageUrl: "https://video.example/watch",
+      }),
+      20,
+    );
+    expect(mocks.updateActivity).toHaveBeenCalledWith(expect.any(String), {
+      state: "done",
+      message: "OpenAI audio signal detected",
+      operationId: "423e4567-e89b-42d3-a456-426614174000",
+    });
   });
 });

@@ -550,6 +550,7 @@ export const PickerLabelSchema = z.enum([
   "verify",
   "send-image",
   "send-video",
+  "send-media",
   "synthid",
 ]);
 export type PickerLabel = z.infer<typeof PickerLabelSchema>;
@@ -598,9 +599,11 @@ export const PickerRuntimeMessageSchema = z.discriminatedUnion("type", [
       type: z.literal("picker-start"),
       runtimeVersion: z.literal(PICKER_RUNTIME_VERSION),
       sessionToken: z.string().uuid(),
-      // "link" picks a post or page link to send to DigiBot; omitted, an image.
-      mode: z.enum(["image", "link"]).optional(),
-      // Omitted, "verify" for an image and "send-video" for a link.
+      // "link" picks a post or page link to send to DigiBot, "media" an image
+      // or a video to send to Telegram; omitted, an image.
+      mode: z.enum(["image", "link", "media"]).optional(),
+      // Omitted, "verify" for an image, "send-video" for a link and
+      // "send-media" for an image or a video.
       label: PickerLabelSchema.optional(),
     })
     .strict(),
@@ -668,7 +671,7 @@ export const ExtensionMessageSchema = z.discriminatedUnion("type", [
       type: z.literal("start-action"),
       actionId: ActionIdSchema,
       trigger: z.enum(["popup", "keyboard"]),
-      // The page link's output (MP3) or clip; the other actions take none.
+      // The page link's audio output or clip; the other actions take none.
       options: LinkDownloadOptionsSchema.optional(),
     })
     .strict(),
@@ -691,6 +694,14 @@ export const ExtensionMessageSchema = z.discriminatedUnion("type", [
       sessionToken: z.string().uuid(),
       // The background validates the address again before anything is sent.
       url: z.string().trim().min(1).max(2_048),
+    })
+    .strict(),
+  // A download pick on a video with no post or video link: the background
+  // sends the tab's own address, as Send video does.
+  z
+    .object({
+      type: z.literal("picker-page-selected"),
+      sessionToken: z.string().uuid(),
     })
     .strict(),
   z.object({ type: z.literal("cancel-active") }).strict(),
@@ -842,3 +853,55 @@ export const WorkflowStateSchema = z
   })
   .strict();
 export type WorkflowState = z.infer<typeof WorkflowStateSchema>;
+
+/**
+ * What one Recent entry sent to Telegram or checked: the media or the output
+ * of a link send, or a check. "page-link" is a send whose output is not
+ * known yet: a download pick before its click.
+ */
+export const ActivityKindSchema = z.enum([
+  "image",
+  "video",
+  "audio-file",
+  "voice",
+  "page-link",
+  "verify",
+  "clip",
+]);
+export type ActivityKind = z.infer<typeof ActivityKindSchema>;
+
+/**
+ * "running" until the action ends; then it never changes again. "cancelled"
+ * is an action the user stopped.
+ */
+export const ActivityStateSchema = z.enum([
+  "running",
+  "sent",
+  "done",
+  "failed",
+  "refused",
+  "cancelled",
+]);
+export type ActivityState = z.infer<typeof ActivityStateSchema>;
+
+/** One action the user started, as Recent lists it; stored locally only. */
+export const ActivityEntrySchema = z
+  .object({
+    id: z.string().uuid(),
+    title: z.string().trim().min(1).max(80),
+    kind: ActivityKindSchema,
+    tabId: z.number().int().nonnegative().nullable(),
+    pageTitle: z.string().trim().max(256).nullable(),
+    // The http(s) page's origin and path, without its query or fragment;
+    // null for an extension page such as the audio check.
+    pageUrl: z.string().max(2_048).nullable(),
+    // The address a link send sent, its query included.
+    linkUrl: z.string().max(2_048).nullable(),
+    startedAt: z.iso.datetime({ offset: true }),
+    state: ActivityStateSchema,
+    message: z.string().trim().max(180).nullable(),
+    operationId: z.string().uuid().nullable(),
+    recordId: z.string().uuid().nullable(),
+  })
+  .strict();
+export type ActivityEntry = z.infer<typeof ActivityEntrySchema>;

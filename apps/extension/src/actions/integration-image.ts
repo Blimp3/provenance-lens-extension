@@ -37,6 +37,8 @@ export async function runIntegratedImageAction(
   action: IntegratedImageAction,
   selection: ImageSelection,
   retrieval: ImageRetrievalContext,
+  // Recent's entry, kept with the pending operation for a resume.
+  activityId: string | null = null,
 ): Promise<IntegratedImageOutcome> {
   const session = await getIntegrationSession();
   if (!session)
@@ -89,6 +91,8 @@ export async function runIntegratedImageAction(
       sessionId: session.sessionId,
       operationId,
       createdAt,
+      ...(activityId !== null ? { activityId } : {}),
+      mediaKind: "image",
     });
 
     let status = await createIntegrationOperation(

@@ -65,6 +65,8 @@ describe("shared runtime schemas", () => {
     };
     expect(ExtensionMessageSchema.parse(start)).toEqual(start);
     for (const options of [
+      { output: "voice" },
+      { output: "m4a" },
       { output: "mp3" },
       { startSeconds: 65, endSeconds: 120 },
     ]) {
@@ -76,7 +78,7 @@ describe("shared runtime schemas", () => {
     for (const options of [
       { startSeconds: 65 },
       { startSeconds: 120, endSeconds: 65 },
-      { output: "m4a" },
+      { output: "opus" },
       { output: "mp3", quality: "320k" },
     ]) {
       expect(
@@ -92,7 +94,7 @@ describe("shared runtime schemas", () => {
     ).toBe(false);
   });
 
-  it("accepts a link-mode picker start and a picked link from the bound session", () => {
+  it("accepts a link or media picker start and a picked link or page from the bound session", () => {
     const start = {
       type: "picker-start",
       runtimeVersion: PICKER_RUNTIME_VERSION,
@@ -103,6 +105,9 @@ describe("shared runtime schemas", () => {
       PickerRuntimeMessageSchema.parse({ ...start, mode: "link" }),
     ).toEqual({ ...start, mode: "link" });
     expect(
+      PickerRuntimeMessageSchema.parse({ ...start, mode: "media" }),
+    ).toEqual({ ...start, mode: "media" });
+    expect(
       PickerRuntimeMessageSchema.safeParse({ ...start, mode: "audio" }).success,
     ).toBe(false);
 
@@ -112,12 +117,23 @@ describe("shared runtime schemas", () => {
       url: "https://x.com/alice/status/123",
     };
     expect(ExtensionMessageSchema.parse(picked)).toEqual(picked);
+    const page = {
+      type: "picker-page-selected",
+      sessionToken: start.sessionToken,
+    };
+    expect(ExtensionMessageSchema.parse(page)).toEqual(page);
     for (const invalid of [
       { ...picked, url: "" },
       { ...picked, url: "x".repeat(2_049) },
       { ...picked, sessionToken: "session-1" },
       { ...picked, selection: {} },
       { type: "picker-link-selected", sessionToken: start.sessionToken },
+      { type: "picker-page-selected", sessionToken: "session-1" },
+      {
+        type: "picker-page-selected",
+        sessionToken: start.sessionToken,
+        url: "https://x.com/home",
+      },
     ]) {
       expect(
         ExtensionMessageSchema.safeParse(invalid).success,
@@ -208,14 +224,20 @@ describe("shared runtime schemas", () => {
     ).toBe(true);
   });
 
-  it("names the armed picker with one of the four banner labels", () => {
+  it("names the armed picker with one of the five banner labels", () => {
     const start = {
       type: "picker-start",
       runtimeVersion: PICKER_RUNTIME_VERSION,
       sessionToken: "123e4567-e89b-42d3-a456-426614174000",
     };
     expect(PICKER_RUNTIME_VERSION).toBe("0.9.0");
-    for (const label of ["verify", "send-image", "send-video", "synthid"])
+    for (const label of [
+      "verify",
+      "send-image",
+      "send-video",
+      "send-media",
+      "synthid",
+    ])
       expect(
         PickerRuntimeMessageSchema.safeParse({ ...start, label }).success,
       ).toBe(true);

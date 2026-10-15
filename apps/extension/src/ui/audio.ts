@@ -1,9 +1,19 @@
 import {
+  AUDIO_ACTION_ID,
   DISCLOSURE_VERSION,
   NormalizedProvenanceResultSchema,
+  resultLabel,
   type HistoryRecord,
+  type IntegrationOperationStatus,
 } from "@provenance-lens/shared";
 
+import {
+  activityTitle,
+  beginActivity,
+  noteActivity,
+  operationUpdate,
+  type ActivityId,
+} from "../activity.js";
 import {
   createAudioHistoryRecord,
   verifyAudioFile,
@@ -64,10 +74,19 @@ async function check(): Promise<void> {
   result.hidden = true;
   status.textContent = "Checking the exact audio bytes...";
   status.className = "status";
+  // Recent lists a check once it runs, not a form the page refused.
+  let activityId: ActivityId = null;
   try {
     const connected = await getIntegrationSession().catch(() => null);
     if (connected) {
-      const outcome = await runIntegratedAudioFileAction(file);
+      activityId = await beginActivity(
+        activityTitle(AUDIO_ACTION_ID),
+        "verify",
+        null,
+        { held: true },
+      );
+      const outcome = await runIntegratedAudioFileAction(file, activityId);
+      await noteIntegratedCheck(activityId, outcome.status);
       renderIntegratedResult(outcome.status);
       status.textContent = outcome.status.envelope?.result
         ? "Connected audio check complete. The result was saved to DigiBot History."
@@ -98,9 +117,22 @@ async function check(): Promise<void> {
       });
       renderAuthorization(settings);
     }
+    activityId = await beginActivity(
+      activityTitle(AUDIO_ACTION_ID),
+      "verify",
+      null,
+      { held: true },
+    );
     const outcome = await verifyAudioFile(file, settings);
     const record = createAudioHistoryRecord(outcome);
     await appendHistory(record, settings.historyRetention);
+    await noteActivity(activityId, {
+      state: outcome.errorCode ? "failed" : "done",
+      message: outcome.errorCode
+        ? outcome.result.summary
+        : resultLabel(outcome.result, "audio"),
+      recordId: record.id,
+    });
     renderResult(record);
     if (outcome.errorCode) showError(outcome.result.summary);
     else {
@@ -109,10 +141,22 @@ async function check(): Promise<void> {
       status.className = "status success";
     }
   } catch {
+    await noteActivity(activityId, {
+      state: "failed",
+      message: "The audio result could not be saved.",
+    });
     showError("The audio result could not be saved.");
   } finally {
     button.disabled = false;
   }
+}
+
+/** How a connected check ended, as Recent shows it. */
+async function noteIntegratedCheck(
+  activityId: ActivityId,
+  operation: IntegrationOperationStatus,
+): Promise<void> {
+  await noteActivity(activityId, operationUpdate(operation, "audio"));
 }
 
 async function checkVideoSegment(): Promise<void> {
@@ -127,6 +171,7 @@ async function checkVideoSegment(): Promise<void> {
   result.hidden = true;
   status.textContent = "Requesting the selected audio segment...";
   status.className = "status";
+  let activityId: ActivityId = null;
   try {
     if (!(await getIntegrationSession().catch(() => null))) {
       showError(
@@ -134,7 +179,19 @@ async function checkVideoSegment(): Promise<void> {
       );
       return;
     }
-    const outcome = await runIntegratedAudioSegmentAction(source, start, end);
+    activityId = await beginActivity(
+      "Verify a video's audio",
+      "verify",
+      { url: source },
+      { held: true },
+    );
+    const outcome = await runIntegratedAudioSegmentAction(
+      source,
+      start,
+      end,
+      activityId,
+    );
+    await noteIntegratedCheck(activityId, outcome.status);
     renderIntegratedResult(outcome.status);
     status.textContent = outcome.status.envelope?.result
       ? "Audio segment check complete. The result was saved to DigiBot History."
@@ -142,11 +199,12 @@ async function checkVideoSegment(): Promise<void> {
     status.className =
       outcome.status.state === "failed" ? "status error" : "status success";
   } catch (error: unknown) {
-    showError(
+    const message =
       error instanceof Error
         ? error.message
-        : "The audio segment could not be checked.",
-    );
+        : "The audio segment could not be checked.";
+    await noteActivity(activityId, { state: "failed", message });
+    showError(message);
   } finally {
     button.disabled = false;
   }
