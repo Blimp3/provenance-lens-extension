@@ -32,6 +32,8 @@ export type IntegratedAudioOutcome = {
 
 export async function runIntegratedAudioFileAction(
   file: File,
+  // Recent's entry, kept with the pending operation for a resume.
+  activityId: string | null = null,
 ): Promise<IntegratedAudioOutcome> {
   const session = requireSession(await getIntegrationSession());
   const expectedSession = {
@@ -77,6 +79,7 @@ export async function runIntegratedAudioFileAction(
       sessionId: session.sessionId,
       operationId,
       createdAt,
+      ...(activityId !== null ? { activityId } : {}),
     });
     let status = await createIntegrationOperation(
       input,
@@ -131,6 +134,7 @@ export async function runIntegratedAudioSegmentAction(
   sourceUrl: string,
   startSeconds: number,
   endSeconds: number,
+  activityId: string | null = null,
 ): Promise<IntegratedAudioOutcome> {
   const session = requireSession(await getIntegrationSession());
   const expectedSession = {
@@ -160,6 +164,7 @@ export async function runIntegratedAudioSegmentAction(
     sessionId: session.sessionId,
     operationId,
     createdAt,
+    ...(activityId !== null ? { activityId } : {}),
   });
   try {
     let status = await createAudioSegmentOperation(

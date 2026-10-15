@@ -39,9 +39,12 @@ import {
   activityAddress,
   activityTitle,
   beginActivity,
+  heldActivityIds,
   linkActivityKind,
   noteActivity,
+  operationUpdate,
   refusalState,
+  STOPPED_MESSAGE,
   startActivityKind,
   type ActivityId,
 } from "./activity.js";
@@ -82,6 +85,7 @@ import {
 } from "./actions/verify-openai-provenance.js";
 import {
   appendHistory,
+  getActivity,
   getHistory,
   getLatestRecord,
   getResult,
@@ -143,7 +147,9 @@ import {
 import {
   isIntegrationConnected,
   IntegrationClientError,
+  pendingIntegrationActivityIds,
   resumePendingIntegrationOperations,
+  type IntegrationPendingOperation,
 } from "./integration-client.js";
 import { runIntegratedImageAction } from "./actions/integration-image.js";
 import { runIntegratedAudioSegmentAction } from "./actions/integration-audio.js";
@@ -166,9 +172,6 @@ type PageLinkSender = (
   page: PageLinkSource,
   options: LinkDownloadOptions,
 ) => Promise<string | void>;
-
-/** The entry a link send updates, and the kind its video output takes. */
-type LinkActivity = { id: ActivityId; video: "video" | "page-link" };
 
 type ImagePickerSession = {
   mode: "image";
@@ -217,6 +220,8 @@ type PendingDisclosure = {
   selection: ImageSelection | null;
   pageTarget: PageTarget | null;
   activityId: ActivityId;
+  // The tab that shows the disclosure, once it is open.
+  disclosureTabId?: number | undefined;
 } & (
   | { actionId: typeof ACTION_ID; verificationMode: VerificationMode }
   // The SynthID handoff's own one-time acknowledgement; it has no selection.
@@ -224,6 +229,7 @@ type PendingDisclosure = {
 );
 
 const PENDING_DISCLOSURES_KEY = "provenanceLens.pendingDisclosures";
+const MAX_PENDING_DISCLOSURES = 8;
 /**
  * Link and download picks outlive the service worker: Chrome stops an idle
  * worker after about 30 s, and a user scrolls a timeline before clicking.
@@ -293,20 +299,25 @@ let resultToastBindingMutation = Promise.resolve();
 // One shared menu rebuild, so install, startup and load cannot race.
 let menusReady: Promise<void> | null = null;
 let paletteMountMutation: Promise<void> = Promise.resolve();
+/** Recent's entries started before this are a stopped worker's. */
+const WORKER_STARTED_AT = Date.now();
+/** How long a closed disclosure tab's acknowledgement may still take. */
+const DISCLOSURE_CLOSE_GRACE_MS = 1_000;
 
 chrome.runtime.onInstalled.addListener(() => {
   void ensureTrustedStorageAccess();
   void ensureContextMenu();
-  void resumePendingIntegrationOperations();
+  void resumePendingIntegrationOperations(endResumedActivity);
 });
 chrome.runtime.onStartup.addListener(() => {
   void ensureTrustedStorageAccess();
   void ensureContextMenu();
-  void resumePendingIntegrationOperations();
+  void resumePendingIntegrationOperations(endResumedActivity);
 });
 void ensureTrustedStorageAccess();
 void ensureContextMenu();
-void resumePendingIntegrationOperations();
+void endStoppedActivity();
+void resumePendingIntegrationOperations(endResumedActivity);
 
 chrome.commands.onCommand.addListener((command, tab) => {
   void runBrowserCommand(command, tab);
@@ -329,6 +340,7 @@ chrome.runtime.onConnect?.addListener((port) => {
 chrome.tabs?.onRemoved?.addListener((tabId) => {
   void forgetPaletteMount({ tabId });
   void endArmedPicks((session) => session.tabId === tabId, PICK_TAB_CLOSED);
+  void endClosedDisclosure(tabId);
 });
 
 const contextMenus = getContextMenusApi();
@@ -567,6 +579,9 @@ const LINK_IN_FLIGHT_MESSAGE = "Another page link is still being sent.";
 const START_FAILED_MESSAGE = "The action could not be started.";
 /** How an armed pick's entry ends when no click can come any more. */
 const PICK_TAB_CLOSED = "The tab was closed before a pick.";
+/** A download pick's entry, once its click picked what it sends. */
+const SENT_VIDEO_TITLE = "Sent video";
+const SENT_IMAGE_TITLE = "Sent image";
 const PICK_REPLACED = "The pick ended when another action used the page.";
 
 /**
@@ -608,7 +623,7 @@ async function sendPageLinkFromActiveTab(
     tab?.id,
     pageTarget,
     LINK_ACTION_ID,
-    { id: activityId, video: "page-link" },
+    activityId,
   );
 }
 
@@ -625,10 +640,10 @@ async function deliverPageLink(
   tabId: number | undefined,
   pageTarget: PageTarget | null,
   actionId: ToastRetry["actionId"],
-  activity: LinkActivity,
+  activityId: ActivityId,
 ): Promise<void> {
   if (pageLinkInFlight) {
-    await noteActivity(activity.id, {
+    await noteActivity(activityId, {
       state: "refused",
       message: LINK_IN_FLIGHT_MESSAGE,
     });
@@ -642,8 +657,8 @@ async function deliverPageLink(
   }
   pageLinkInFlight = true;
   try {
-    await noteActivity(activity.id, {
-      kind: linkActivityKind(options, activity.video),
+    await noteActivity(activityId, {
+      kind: linkActivityKind(options),
       linkUrl: activityAddress(page.url),
     });
     if (tabId !== undefined) await setBadge(tabId, "…").catch(() => undefined);
@@ -667,7 +682,7 @@ async function deliverPageLink(
       failed = true;
     }
     await noteActivity(
-      activity.id,
+      activityId,
       failed
         ? {
             state: failure instanceof PageLinkError ? "refused" : "failed",
@@ -1070,12 +1085,57 @@ async function resumeDisclosure(
 }
 
 async function openDisclosure(pending: PendingDisclosure): Promise<void> {
-  pendingDisclosures.set(pending.id, pending);
-  await persistPendingDisclosure(pending);
-  const kind = pending.actionId === SYNTHID_ACTION_ID ? "&kind=synthid" : "";
-  await chrome.tabs.create({
-    url: `${chrome.runtime.getURL("disclosure.html")}?pending=${encodeURIComponent(pending.id)}${kind}`,
+  // A reopened disclosure gets its own tab.
+  const opening = { ...pending, disclosureTabId: undefined };
+  pendingDisclosures.set(opening.id, opening);
+  await persistPendingDisclosure(opening);
+  const kind = opening.actionId === SYNTHID_ACTION_ID ? "&kind=synthid" : "";
+  const tab = await chrome.tabs.create({
+    url: `${chrome.runtime.getURL("disclosure.html")}?pending=${encodeURIComponent(opening.id)}${kind}`,
   });
+  // A tab closed without the acknowledgement then ends the action.
+  if (tab?.id === undefined || !pendingDisclosures.has(opening.id)) return;
+  const shown = { ...opening, disclosureTabId: tab.id };
+  pendingDisclosures.set(shown.id, shown);
+  await persistPendingDisclosure(shown);
+}
+
+/**
+ * A disclosure tab closed without its acknowledgement cancels the action.
+ * The page closes its own tab just after it acknowledges, so the record is
+ * read again after a moment: by then an acknowledged one is gone.
+ */
+async function endClosedDisclosure(tabId: number): Promise<void> {
+  const ids = new Set(
+    [...pendingDisclosures.values()]
+      .filter(({ disclosureTabId }) => disclosureTabId === tabId)
+      .map(({ id }) => id),
+  );
+  for (const [id, stored] of Object.entries(await storedDisclosures()))
+    if (isRecord(stored) && stored["disclosureTabId"] === tabId) ids.add(id);
+  if (ids.size === 0) return;
+  await new Promise((settle) => setTimeout(settle, DISCLOSURE_CLOSE_GRACE_MS));
+  for (const id of ids) {
+    const pending =
+      pendingDisclosures.get(id) ?? (await readPendingDisclosure(id));
+    if (!pending) continue;
+    pendingDisclosures.delete(id);
+    await deletePendingDisclosure(id);
+    await noteActivity(pending.activityId, {
+      state: "cancelled",
+      message: "The disclosure was closed before it was acknowledged.",
+    });
+  }
+}
+
+async function storedDisclosures(): Promise<Record<string, unknown>> {
+  try {
+    const values = await chrome.storage.session.get(PENDING_DISCLOSURES_KEY);
+    const current = values[PENDING_DISCLOSURES_KEY];
+    return isRecord(current) ? current : {};
+  } catch {
+    return {};
+  }
 }
 
 async function persistPendingDisclosure(
@@ -1090,10 +1150,19 @@ async function persistPendingDisclosure(
     // inline bytes stay in the service-worker map and are discarded on
     // suspension; a resumed context-menu request then safely reopens picker.
     current[pending.id] = { ...pending, selection: null, pageTarget: null };
-    const entries = Object.entries(current).slice(-8);
+    const entries = Object.entries(current);
+    const kept = entries.slice(-MAX_PENDING_DISCLOSURES);
     await chrome.storage.session.set({
-      [PENDING_DISCLOSURES_KEY]: Object.fromEntries(entries),
+      [PENDING_DISCLOSURES_KEY]: Object.fromEntries(kept),
     });
+    // A disclosure dropped for newer ones can no longer start its action.
+    for (const [id, dropped] of entries.slice(0, -MAX_PENDING_DISCLOSURES)) {
+      pendingDisclosures.delete(id);
+      await noteActivity(
+        isRecord(dropped) ? storedActivityId(dropped["activityId"]) : null,
+        { state: "failed", message: STOPPED_MESSAGE },
+      );
+    }
   } catch {
     // The in-memory map remains usable if session storage is unavailable.
   }
@@ -1461,6 +1530,11 @@ async function handlePickerSelected(
     await runSynthIdHandoff(session, selection.data);
     return;
   }
+  if (session.mode === "media")
+    await noteActivity(session.activityId, {
+      title: SENT_IMAGE_TITLE,
+      kind: "image",
+    });
   const page =
     session.frameId === 0
       ? await bindPageSnapshot(
@@ -1503,7 +1577,7 @@ async function handlePickerCancelled(
         : "Image selection cancelled.";
   await setWorkflow("idle", cancelled);
   await noteActivity(session.activityId, {
-    state: "failed",
+    state: "cancelled",
     message: cancelled,
   });
   await clearBadge(session.tabId);
@@ -1551,6 +1625,8 @@ async function handlePickerLinkSelected(
     await refusePick(session, PICKED_LINK_MESSAGE, PICK_VIDEO_ACTION_ID);
     return;
   }
+  if (session.mode === "media")
+    await noteActivity(session.activityId, { title: SENT_VIDEO_TITLE });
   await deliverPageLink(
     send,
     { url },
@@ -1558,7 +1634,7 @@ async function handlePickerLinkSelected(
     session.tabId,
     session,
     PICK_VIDEO_ACTION_ID,
-    { id: session.activityId, video: "video" },
+    session.activityId,
   );
 }
 
@@ -1593,6 +1669,7 @@ async function handlePickerPageSelected(
     await refusePick(session, OWN_PAGE_MESSAGE, LINK_ACTION_ID);
     return;
   }
+  await noteActivity(session.activityId, { title: SENT_VIDEO_TITLE });
   await deliverPageLink(
     action.handler,
     { url: tab.url },
@@ -1600,7 +1677,7 @@ async function handlePickerPageSelected(
     session.tabId,
     session,
     LINK_ACTION_ID,
-    { id: session.activityId, video: "page-link" },
+    session.activityId,
   );
 }
 
@@ -1831,6 +1908,7 @@ async function executeAction(
           hasHostPermission: (url) =>
             hasImageHostPermission(tabId, url, selection.pageOrigin),
         },
+        activityId,
       );
       await finishIntegratedImageAction(
         tabId,
@@ -1947,7 +2025,10 @@ async function executeAction(
             ? error.message
             : "Stopped before anything was sent.";
         await setWorkflow("idle", stopped, actionId);
-        await noteActivity(activityId, { state: "failed", message: stopped });
+        await noteActivity(activityId, {
+          state: "cancelled",
+          message: stopped,
+        });
         await clearBadge(tabId).catch(() => undefined);
         await hidePageToast(options.pageTarget);
         return;
@@ -2184,7 +2265,12 @@ async function finishVerification(
 ): Promise<void> {
   const resultId = record.id;
   await noteActivity(activityId, {
-    state: outcome.errorCode ? "failed" : "done",
+    state:
+      outcome.errorCode === "user_cancelled"
+        ? "cancelled"
+        : outcome.errorCode
+          ? "failed"
+          : "done",
     message:
       outcome.errorCode === "user_cancelled"
         ? "Verification cancelled."
@@ -3113,7 +3199,7 @@ async function handleMenuClick(
         options,
         await beginMenuActivity(
           info.menuItemId,
-          linkActivityKind(options, "video"),
+          linkActivityKind(options),
           tab,
         ),
       );
@@ -3126,7 +3212,7 @@ async function handleMenuClick(
         await sendPageLinkFromActiveTab(
           action.handler,
           {},
-          await beginMenuActivity(info.menuItemId, "page-link", tab),
+          await beginMenuActivity(info.menuItemId, "video", tab),
         );
       return;
     }
@@ -3181,7 +3267,7 @@ async function sendMenuLink(
     tabId,
     pageTarget,
     LINK_ACTION_ID,
-    { id: activityId, video: "video" },
+    activityId,
   );
 }
 
@@ -3230,7 +3316,65 @@ async function endArmedPicks(
     if (session && match(session)) ended.push(session);
   }
   for (const session of ended)
-    await noteActivity(session.activityId, { state: "failed", message });
+    await noteActivity(session.activityId, { state: "cancelled", message });
+}
+
+/**
+ * Ends Recent's entries a stopped worker left running: those no stored pick,
+ * pending disclosure, pending DigiBot operation or extension page still
+ * holds. Image picks live only in the worker, so theirs end here too. An
+ * action this worker started is newer than its start.
+ */
+async function endStoppedActivity(): Promise<void> {
+  try {
+    const kept = new Set([
+      ...(await storedActivityIds(LINK_PICKER_SESSIONS_KEY)),
+      ...(await storedActivityIds(PENDING_DISCLOSURES_KEY)),
+      ...(await pendingIntegrationActivityIds()),
+      ...(await heldActivityIds()),
+    ]);
+    for (const entry of await getActivity()) {
+      if (
+        entry.state === "running" &&
+        !kept.has(entry.id) &&
+        Date.parse(entry.startedAt) < WORKER_STARTED_AT
+      )
+        await noteActivity(entry.id, {
+          state: "failed",
+          message: STOPPED_MESSAGE,
+        });
+    }
+  } catch {
+    // Recent still shows an entry this old as stopped.
+  }
+}
+
+/** The entry ids a session-storage map of records keeps. */
+async function storedActivityIds(key: string): Promise<string[]> {
+  const values = await chrome.storage.session.get(key);
+  const current = values[key];
+  if (!isRecord(current)) return [];
+  return Object.values(current).flatMap((stored) => {
+    const id = isRecord(stored) ? storedActivityId(stored["activityId"]) : null;
+    return id === null ? [] : [id];
+  });
+}
+
+/** Ends the entry of a DigiBot operation a restarted worker resumed. */
+async function endResumedActivity(
+  operation: IntegrationPendingOperation,
+  status: IntegrationOperationStatus | null,
+): Promise<void> {
+  const audio =
+    status !== null &&
+    (status.segment !== null ||
+      status.envelope?.media.mimeType.startsWith("audio/") === true);
+  await noteActivity(
+    operation.activityId ?? null,
+    status === null
+      ? { state: "failed", message: STOPPED_MESSAGE }
+      : operationUpdate(status, audio ? "audio" : "image"),
+  );
 }
 
 async function setWorkflow(
@@ -3307,7 +3451,7 @@ async function cancelArmedPicker(tabId: number | undefined): Promise<void> {
     pickerSessions.delete(sessionToken);
     await stopPicker(session);
     await noteActivity(session.activityId, {
-      state: "failed",
+      state: "cancelled",
       message: "Pick cancelled.",
     });
   }
@@ -3638,8 +3782,6 @@ async function handleToastAction(
           action?.inputType !== "video-pick")
       )
         return;
-      const video =
-        retry.actionId === PICK_VIDEO_ACTION_ID ? "video" : "page-link";
       await deliverPageLink(
         action.handler,
         { url: retry.url },
@@ -3647,14 +3789,11 @@ async function handleToastAction(
         binding.tabId,
         pageTarget,
         retry.actionId,
-        {
-          id: await beginActivity(
-            activityTitle(retry.actionId, retry.options),
-            linkActivityKind(retry.options, video),
-            await chrome.tabs.get(binding.tabId).catch(() => undefined),
-          ),
-          video,
-        },
+        await beginActivity(
+          activityTitle(retry.actionId, retry.options),
+          linkActivityKind(retry.options),
+          await chrome.tabs.get(binding.tabId).catch(() => undefined),
+        ),
       );
       return;
     }
@@ -4154,6 +4293,7 @@ async function verifyPageAudioSegment(
       url,
       startSeconds,
       endSeconds,
+      activityId,
     );
     await finishPageAudioCheck(tabId, outcome.status, pageTarget, activityId);
   } catch (error: unknown) {

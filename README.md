@@ -78,8 +78,12 @@ the palette closes, focus goes back to the page element that had it.
 
 Over a fullscreen video or element, Lens holds Esc with the browser's Keyboard
 Lock while the palette is open. Esc then goes back in the palette, and the
-browser asks you to press and hold Esc to leave fullscreen. Known limit: when
-the palette closes, it also ends a keyboard lock that the page itself held.
+browser asks you to press and hold Esc to leave fullscreen. Known limits:
+
+- While the palette is open, its Esc lock replaces a wider keyboard lock that
+  the page itself held, and when the palette closes, that lock ends.
+- Keyboard Lock exists only on secure (https) pages. On an http page, Esc
+  still leaves fullscreen.
 
 ### Browser commands
 
@@ -265,10 +269,15 @@ pointer decides what Lens sends:
   post's counted, Lens sends the clicked video as
   `https://x.com/<user>/status/<id>/video/<n>`, where n is its place among the
   post's own photos and videos. A GIF in such a post cannot be sent alone. A
-  video in a quoted post goes as that post when its card links to it, else as
-  the outer post. A photo goes as an image.
+  post that shows a photo without its `/photo/<k>` link goes as its plain
+  status link, because the video's place is then unknown. DigiBot refuses that
+  link as a playlist when the post holds two or more videos. A video in a
+  quoted post goes as that post when its card links to it, else as the outer
+  post. A photo goes as an image.
 - **An embedded YouTube or Vimeo player**: Lens sends its video's own page,
-  `https://www.youtube.com/watch?v=<id>` or `https://vimeo.com/<id>`.
+  `https://www.youtube.com/watch?v=<id>` or `https://vimeo.com/<id>`. For an
+  unlisted Vimeo video, Lens sends `https://vimeo.com/<id>/<hash>`. A YouTube
+  channel's live stream embed names no video, so Lens sends the page.
 - **A video with no post or video link**, such as a news site's player,
   YouTube's player on a watch page or another embedded player: Lens sends the
   page's own address. On an X or YouTube listing page, the picker says "Open
@@ -310,17 +319,29 @@ one entry for each action that you start from the palette, a key, a
 right-click item or a toast button, in Website review mode too. The view shows
 the newest eight entries. Each entry shows:
 
-- an icon for its kind: image, video, audio file, voice note, page link,
-  Verify or clip
-- its state as text: **Started**, **Sent**, **Done**, **Failed** or
-  **Refused**
-- for an action that ended, its short message, such as the result's label or
-  the reason that it failed
+- an icon for what Telegram gets or what ran: image, video, audio file, voice
+  note, Verify or clip. A download pick shows a link icon until you click.
+- its state as text: **Started**, **Sent**, **Done**, **Failed**, **Refused**
+  or **Cancelled**
+- for an action that failed or was refused, its short message, such as the
+  reason that it failed, and for a Verify result, its label
+
+A download pick's entry becomes **Sent video** or **Sent image** when you
+click. A pick or a check that you cancel shows **Cancelled**, without the
+warning colour.
 
 Enter on a Verify entry opens its details while History keeps the result. The
-entry of a connected check opens the History page. Enter on a DigiBot send
-opens the History page, and Enter on a page-link entry opens the address that
-Lens sent. **Result history** stays under **More**.
+entry of a connected check opens the History page. Enter on a link send opens
+the address that Lens sent, and Enter on another DigiBot send opens the
+History page. **Result history** stays under **More**.
+
+An entry that Lens can no longer finish ends as **Failed** with "Lens stopped
+before this action ended." This happens when the browser stops Lens between an
+action's start and its end: at its next start, Lens ends every running entry
+that no armed pick, open disclosure tab or pending DigiBot operation still
+holds. A DigiBot operation that Lens resumes ends its own entry. Recent also
+shows an entry that is still running after ten minutes this way. A disclosure
+tab that you close without **Continue** ends its action as **Cancelled**.
 
 ## Requirements
 
@@ -402,15 +423,18 @@ For local review, load `apps/extension/dist` as an unpacked extension.
   The worker accepts these messages only from the palette frame that it opened,
   in the active tab.
 - Recent's list stays in local extension storage, apart from History. Each
-  entry keeps the command's title, its kind, the page address and the link that
-  a send sent, the start time, the final state with its short message, and the
-  DigiBot operation id or History record id when there is one. Addresses are
-  http(s) only, without the fragment after `#` or a user name and password.
-  Lens keeps the page title only when **Save a sanitized page title with
-  history** is on. The list keeps as many entries as History retention keeps
-  results, and none when retention is **Disabled**. **Clear history** in
-  Settings or **Clear all** on the History page removes the list. Lens never
-  sends the list anywhere.
+  entry keeps the command's title, its kind, the page address as its origin
+  and path only (no query or fragment), the full link that a link send sent,
+  the start time, the final state with its short message, and the DigiBot
+  operation id or History record id when there is one. Addresses are http(s)
+  only, without the fragment after `#` or a user name and password. A sent
+  link keeps its query, because Lens sent it and opens it. Lens keeps the page
+  title only when **Save a sanitized page title with history** is on. The list
+  keeps as many entries as History retention keeps results, and none when
+  retention is **Disabled**. A lower retention or **Disabled** applies to the
+  list as soon as you save it. **Clear history** in Settings or **Clear all**
+  on the History page removes the list, while DigiBot is connected too. Lens
+  never sends the list anywhere.
 - **Verify audio of this page…** and **Clip › Verify this clip's audio** send
   the active tab's full address to DigiBot. DigiBot sends an excerpt of at most
   60 seconds of its audio to OpenAI for the check.

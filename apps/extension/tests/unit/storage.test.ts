@@ -382,9 +382,22 @@ describe("Recent's activity list", () => {
     expect(currentLocal.values[STORAGE_KEYS.activity]).toBeUndefined();
   });
 
+  it("applies a lower retention, or history off, as soon as it is saved", async () => {
+    for (let index = 0; index < 12; index += 1)
+      await startActivity(started(index), 20);
+    await saveSettings({ ...defaultSettings, historyRetention: 10 });
+    expect((await getActivity()).map(({ id }) => id)).toEqual(
+      Array.from({ length: 10 }, (_, offset) => started(11 - offset).id),
+    );
+    await saveSettings({ ...defaultSettings, historyRetention: 0 });
+    await expect(getActivity()).resolves.toEqual([]);
+    expect(currentLocal.values[STORAGE_KEYS.activity]).toBeUndefined();
+  });
+
   it("changes an entry only while it runs", async () => {
     await startActivity(started(0), 20);
     await updateActivity(started(0).id, {
+      title: `  Sent\nvideo ${"x".repeat(100)}`,
       kind: "video",
       linkUrl: "https://x.com/alice/status/1",
     });
@@ -402,6 +415,8 @@ describe("Recent's activity list", () => {
       linkUrl: "https://x.com/alice/status/1",
       state: "failed",
     });
+    expect(only?.title).toMatch(/^Sent video x+$/u);
+    expect(only?.title).toHaveLength(80);
     expect(only?.message).toMatch(/^Line one line two x+$/u);
     expect(only?.message).toHaveLength(180);
   });

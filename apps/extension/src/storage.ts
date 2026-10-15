@@ -89,6 +89,8 @@ export async function saveSettings(settings: ExtensionSettings): Promise<void> {
     [STORAGE_KEYS.settings]: applyBundledClientToken(parsed),
     [SETTINGS_FORMAT_KEY]: SETTINGS_FORMAT_VERSION,
   });
+  // A lower retention, or history off, applies to Recent's list at once.
+  await trimActivity(parsed.historyRetention).catch(() => undefined);
 }
 
 export async function updateSettings(
@@ -162,6 +164,21 @@ export async function getActivity(): Promise<ActivityEntry[]> {
   });
 }
 
+/** Keeps the newest entries that retention allows; history off keeps none. */
+export async function trimActivity(retention: HistoryRetention): Promise<void> {
+  await withStorageMutationLock(async () => {
+    if (retention === 0) {
+      await chrome.storage.local.remove(STORAGE_KEYS.activity);
+      return;
+    }
+    const existing = await getActivity();
+    if (existing.length > retention)
+      await chrome.storage.local.set({
+        [STORAGE_KEYS.activity]: existing.slice(0, retention),
+      });
+  });
+}
+
 /**
  * Adds an action that started. The list keeps as many entries as history
  * keeps records, so with history off it keeps nothing.
@@ -185,7 +202,13 @@ export async function startActivity(
 export type ActivityUpdate = Partial<
   Pick<
     ActivityEntry,
-    "kind" | "linkUrl" | "state" | "message" | "operationId" | "recordId"
+    | "title"
+    | "kind"
+    | "linkUrl"
+    | "state"
+    | "message"
+    | "operationId"
+    | "recordId"
   >
 >;
 
@@ -197,13 +220,15 @@ export async function updateActivity(
   id: string,
   update: ActivityUpdate,
 ): Promise<void> {
-  const patch =
-    update.message === undefined || update.message === null
-      ? update
-      : {
-          ...update,
-          message: sanitizeDisplayText(update.message, 180) || null,
-        };
+  const patch = {
+    ...update,
+    ...(update.title !== undefined
+      ? { title: sanitizeDisplayText(update.title, 80) }
+      : {}),
+    ...(typeof update.message === "string"
+      ? { message: sanitizeDisplayText(update.message, 180) || null }
+      : {}),
+  };
   await withStorageMutationLock(async () => {
     const existing = await getActivity();
     let changed = false;

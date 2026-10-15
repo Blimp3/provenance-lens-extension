@@ -54,6 +54,41 @@ const DIALOG_HTML = `<!doctype html>
   </body>
 </html>`;
 
+// A talk page's player at the top-left corner: a custom element whose open
+// shadow root holds a slotted video, so a hit test at (0, 0) meets the
+// shadow root's host again inside it.
+const TALK_HTML = `<!doctype html>
+<html lang="en">
+  <head><title>Talk fixture</title></head>
+  <body style="margin: 0;">
+    <main>
+      <media-player style="display: block; width: 640px; height: 360px;">
+        <video id="talk-video" slot="media" muted playsinline></video>
+      </media-player>
+    </main>
+    <script>
+      customElements.define(
+        "media-player",
+        class extends HTMLElement {
+          constructor() {
+            super();
+            const shadow = this.attachShadow({ mode: "open" });
+            shadow.innerHTML =
+              "<style>:host { position: relative; background: #000; }" +
+              " ::slotted(video) { display: block; width: 100%; height: 100%; }" +
+              " .bar { position: absolute; inset: auto 0 0 0; height: 44px;" +
+              " background: rgb(0 0 0 / 0.5); }</style>" +
+              '<slot name="media"></slot>' +
+              '<div class="bar"><button type="button">Play</button></div>';
+          }
+        },
+      );
+      const video = document.querySelector("#talk-video");
+      video.src = URL.createObjectURL(new MediaSource());
+    </script>
+  </body>
+</html>`;
+
 const EMBED_HTML = `<!doctype html>
 <html lang="en">
   <body>
@@ -126,7 +161,9 @@ async function launchLens(
         ? EMBED_HTML
         : request.url?.startsWith("/dialog")
           ? DIALOG_HTML
-          : PAGE_HTML,
+          : request.url?.startsWith("/talk")
+            ? TALK_HTML
+            : PAGE_HTML,
     );
   });
   server.listen(0, "127.0.0.1");
@@ -1283,6 +1320,108 @@ test("closes the palette when the page cancels the host's show, and no key reach
     await page.keyboard.press("Enter");
     await page.waitForTimeout(500);
     expect(await startActions(lens)).toEqual([]);
+  } finally {
+    await lens.close();
+  }
+});
+
+test("a page that stops the host's closing beforetoggle and hides it gets no run", async () => {
+  const lens = await launchLens();
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/page.html`);
+    const frame = await openPalette(lens, page);
+    // A capture listener on window hears the closing beforetoggle before the
+    // host does and stops it; the page then hides the host and moves it into
+    // a parent that masks it.
+    await page.evaluate(() => {
+      window.addEventListener(
+        "beforetoggle",
+        (event) => {
+          const target = event.target as HTMLElement | null;
+          if (target?.dataset["provenanceLensPalette"])
+            event.stopImmediatePropagation();
+        },
+        true,
+      );
+      const host = document.querySelector<HTMLElement>(
+        "[data-provenance-lens-palette]",
+      );
+      const masked = document.createElement("div");
+      masked.style.cssText =
+        "position: fixed; inset: 0; " +
+        "mask-image: linear-gradient(transparent, transparent);";
+      document.body.append(masked);
+      if (!host) return;
+      host.hidePopover();
+      masked.moveBefore(host, null);
+    });
+    // The keys go to the frame's own input once a key could run there, which
+    // a closed palette no longer has.
+    await page.waitForTimeout(700);
+    const query = frame.locator("#query");
+    await query
+      .press("v", { timeout: 2_000 })
+      .then(() => query.press("Enter", { timeout: 2_000 }))
+      .catch(() => undefined);
+    await page.waitForTimeout(500);
+    expect(await startActions(lens)).toEqual([]);
+    expect(await hostCount(page)).toBe(0);
+
+    // A plain open and run on the same page still runs.
+    await openPalette(lens, page);
+    await page.keyboard.type("v");
+    await page.keyboard.press("Enter");
+    await expect.poll(() => hostCount(page)).toBe(0);
+    await expect
+      .poll(() => startActions(lens))
+      .toEqual([
+        {
+          type: "start-action",
+          actionId: "verify-openai-provenance",
+          trigger: "popup",
+        },
+      ]);
+  } finally {
+    await lens.close();
+  }
+});
+
+test("the palette mounts on a page whose player's open shadow root is at the top-left corner", async () => {
+  const lens = await launchLens();
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/talk`);
+    expect(
+      await page.evaluate(
+        () => document.elementsFromPoint(0, 0)[1]?.localName ?? null,
+      ),
+    ).toBe("media-player");
+    // In the page, not the popup the worker opens when the host fails.
+    const frame = await openPalette(lens, page);
+    expect(await hostParentName(page)).toBe("html");
+
+    // Leaving fullscreen restacks the palette by the same hit test, and it
+    // keeps the keys.
+    await page.evaluate(() =>
+      document.querySelector("main")?.requestFullscreen(),
+    );
+    await expect.poll(() => hostParentName(page)).toBe("main");
+    await page.evaluate(() => document.exitFullscreen());
+    await expect.poll(() => hostParentName(page)).toBe("html");
+    await takesClicks(page, frame);
+    await page.keyboard.type("v");
+    await page.keyboard.press("Enter");
+    await expect.poll(() => hostCount(page)).toBe(0);
+    await expect
+      .poll(() => startActions(lens))
+      .toEqual([
+        {
+          type: "start-action",
+          actionId: "verify-openai-provenance",
+          trigger: "popup",
+        },
+      ]);
   } finally {
     await lens.close();
   }

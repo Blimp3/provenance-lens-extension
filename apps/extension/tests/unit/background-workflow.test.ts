@@ -10,7 +10,15 @@ import {
   type ActivityEntry,
 } from "@provenance-lens/shared";
 import { Blob as NodeBlob } from "node:buffer";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import type { VerificationOutcome } from "../../src/actions/verify-openai-provenance.js";
 import type * as IntegrationClient from "../../src/integration-client.js";
 import type * as Notifications from "../../src/notifications.js";
@@ -34,6 +42,9 @@ const mocks = vi.hoisted(() => ({
   runIntegratedAudioSegmentAction: vi.fn(),
   startActivity: vi.fn(),
   updateActivity: vi.fn(),
+  getActivity: vi.fn(),
+  resumePendingIntegrationOperations: vi.fn(),
+  pendingIntegrationActivityIds: vi.fn(),
 }));
 /** Recent's list as the worker wrote it, newest first. */
 const recent = vi.hoisted(() => ({ entries: [] as ActivityEntry[] }));
@@ -65,6 +76,7 @@ vi.mock("../../src/storage.js", () => ({
     latest: "provenanceLens.latest",
   },
   appendHistory: mocks.appendHistory,
+  getActivity: mocks.getActivity,
   getHistory: mocks.getHistory,
   getLatestRecord: mocks.getLatestRecord,
   getResult: mocks.getResult,
@@ -89,6 +101,8 @@ vi.mock("../../src/actions/integration-audio.js", () => ({
 vi.mock("../../src/integration-client.js", async (importOriginal) => ({
   ...(await importOriginal<typeof IntegrationClient>()),
   isIntegrationConnected: mocks.isIntegrationConnected,
+  pendingIntegrationActivityIds: mocks.pendingIntegrationActivityIds,
+  resumePendingIntegrationOperations: mocks.resumePendingIntegrationOperations,
 }));
 
 // The binding helpers are pure and run as written; only the copy is faked.
@@ -317,8 +331,11 @@ function setupMocks() {
   mocks.getSynthIdDisclosureVersion.mockResolvedValue(null);
   mocks.setSynthIdDisclosureVersion.mockResolvedValue(undefined);
   mocks.isIntegrationConnected.mockResolvedValue(false);
+  mocks.resumePendingIntegrationOperations.mockResolvedValue(undefined);
+  mocks.pendingIntegrationActivityIds.mockResolvedValue([]);
   // The list's own rules (retention, ended entries) are storage.test.ts's.
   recent.entries = [];
+  mocks.getActivity.mockImplementation(() => Promise.resolve(recent.entries));
   mocks.startActivity.mockImplementation(
     (entry: ActivityEntry, retention: number) => {
       recent.entries = retention === 0 ? [] : [entry, ...recent.entries];
@@ -3230,10 +3247,12 @@ describe("the Lens palette in the worker", () => {
     await vi.waitFor(() =>
       expect(tabMessages(chromeState, "show-toast")).toHaveLength(2),
     );
+    // The pending operation keeps Recent's entry, so a resume can end it.
     expect(mocks.runIntegratedAudioSegmentAction).toHaveBeenCalledWith(
       PAGE_URL,
       30,
       60,
+      recent.entries[0]?.id,
     );
     // Without a range the action opens audio.html; with one it never does.
     expect(mocks.actionHandler).not.toHaveBeenCalled();
@@ -3351,7 +3370,7 @@ describe("Recent's activity list", () => {
   }
 
   it.each([
-    { options: undefined, title: "Send video", kind: "page-link" },
+    { options: undefined, title: "Send video", kind: "video" },
     { options: { output: "voice" }, title: "Send voice note", kind: "voice" },
     {
       options: { output: "m4a" },
@@ -3411,33 +3430,105 @@ describe("Recent's activity list", () => {
     await onlyEntry({ title: "Send voice note", kind: "voice", state: "sent" });
   });
 
-  it("turns a download pick into a video or a page-link entry at the click", async () => {
-    for (const [picked, kind, linkUrl] of [
-      [{ type: "picker-link-selected", url: VIDEO_URL }, "video", VIDEO_URL],
-      [{ type: "picker-page-selected" }, "page-link", PAGE_URL],
+  it("turns a download pick into a Sent video or Sent image entry at the click", async () => {
+    for (const [picked, title, kind, linkUrl] of [
+      [
+        { type: "picker-link-selected", url: VIDEO_URL },
+        "Sent video",
+        "video",
+        VIDEO_URL,
+      ],
+      [{ type: "picker-page-selected" }, "Sent video", "video", PAGE_URL],
+      [
+        { type: "picker-selected", selection: selection() },
+        "Sent image",
+        "image",
+        null,
+      ],
     ] as const) {
       vi.resetModules();
       setupMocks();
       const chromeState = setupChrome();
       connected(chromeState);
+      mocks.runIntegratedImageAction.mockResolvedValue({
+        status: {
+          operationId: OPERATION_ID,
+          state: "succeeded",
+          error: null,
+          envelope: null,
+          archive: { deliveryState: "confirmed", integrityState: "verified" },
+        },
+      });
       await loadBackground();
 
       start(chromeState, DOWNLOAD_ACTION_ID);
       const sessionToken = await armedPick(chromeState);
+      // Its output is not known before the click.
       await onlyEntry({
         title: "Pick to download",
-        kind: "image",
+        kind: "page-link",
         state: "running",
       });
       listenerOf(chromeState)({ ...picked, sessionToken }, pickerSender());
 
       await onlyEntry({
+        title,
         kind,
         linkUrl,
         state: "sent",
         operationId: OPERATION_ID,
       });
     }
+  });
+
+  it("ends a failed or refused link send as failed or refused", async () => {
+    for (const state of ["failed", "refused"] as const) {
+      vi.resetModules();
+      setupMocks();
+      // The worker's own module instance, so its instanceof check holds.
+      const { PageLinkError } =
+        await import("../../src/actions/integration-link.js");
+      const chromeState = setupChrome();
+      const sent = connected(chromeState);
+      sent.page.mockRejectedValue(
+        state === "failed"
+          ? new Error("DigiBot is down.")
+          : new PageLinkError("That page cannot be sent."),
+      );
+      await loadBackground();
+
+      start(chromeState, LINK_ACTION_ID);
+
+      await waitForCall(sent.page, 1);
+      await onlyEntry({ kind: "video", linkUrl: PAGE_URL, state });
+    }
+  });
+
+  it("ends a failed DigiBot image send as failed, never sent", async () => {
+    const chromeState = setupChrome();
+    connected(chromeState);
+    mocks.runIntegratedImageAction.mockResolvedValue({
+      status: {
+        operationId: OPERATION_ID,
+        state: "failed",
+        error: { code: "telegram_failed", message: "Telegram refused it." },
+        envelope: null,
+        archive: { deliveryState: "failed", integrityState: "not_checked" },
+      },
+    });
+    await loadBackground();
+
+    menuClick(chromeState, {
+      menuItemId: "lens-send-image",
+      srcUrl: IMAGE_URL,
+    });
+
+    await onlyEntry({
+      kind: "image",
+      state: "failed",
+      message: "Telegram refused it.",
+      operationId: OPERATION_ID,
+    });
   });
 
   it("ends a right-clicked image send as an image entry with its operation id", async () => {
@@ -3519,7 +3610,7 @@ describe("Recent's activity list", () => {
     );
     await vi.waitFor(() =>
       expect(recent.entries[0]).toMatchObject({
-        state: "failed",
+        state: "cancelled",
         message: "Pick cancelled.",
       }),
     );
@@ -3535,7 +3626,7 @@ describe("Recent's activity list", () => {
     await vi.waitFor(() =>
       expect(recent.entries[0]).toMatchObject({
         title: "Pick an image to verify",
-        state: "failed",
+        state: "cancelled",
         message: "The tab was closed before a pick.",
       }),
     );
@@ -3558,7 +3649,7 @@ describe("Recent's activity list", () => {
         expect.objectContaining({ title: "Send video", state: "sent" }),
         expect.objectContaining({
           title: "Pick to download",
-          state: "failed",
+          state: "cancelled",
           message: "The pick ended when another action used the page.",
         }),
       ]),
@@ -3601,6 +3692,326 @@ describe("Recent's activity list", () => {
     expect(mocks.startActivity).toHaveBeenCalledWith(expect.anything(), 0);
     expect(recent.entries).toEqual([]);
     expect(mocks.updateActivity).not.toHaveBeenCalled();
+  });
+
+  const STOPPED = "Lens stopped before this action ended.";
+  const ENTRY_IDS = [
+    "a23e4567-e89b-42d3-a456-426614174000",
+    "b23e4567-e89b-42d3-a456-426614174000",
+    "c23e4567-e89b-42d3-a456-426614174000",
+    "d23e4567-e89b-42d3-a456-426614174000",
+    "e23e4567-e89b-42d3-a456-426614174000",
+    "f23e4567-e89b-42d3-a456-426614174000",
+    "923e4567-e89b-42d3-a456-426614174000",
+  ] as const;
+
+  /** An entry a stopped worker left running a minute ago. */
+  function leftRunning(id: string, title: string): ActivityEntry {
+    return {
+      id,
+      title,
+      kind: "verify",
+      tabId: TAB_ID,
+      pageTitle: null,
+      pageUrl: PAGE_URL,
+      linkUrl: null,
+      startedAt: new Date(Date.now() - 60_000).toISOString(),
+      state: "running",
+      message: null,
+      operationId: null,
+      recordId: null,
+    };
+  }
+
+  it("ends at start-up each running entry no pick, disclosure, operation or page still holds", async () => {
+    const [stale, picked, disclosed, pending, ended, newer, held] = ENTRY_IDS;
+    recent.entries = [
+      leftRunning(stale, "Pick an image to verify"),
+      leftRunning(picked, "Pick to download"),
+      leftRunning(disclosed, "Check with Google SynthID"),
+      leftRunning(pending, "Send this image to Telegram"),
+      { ...leftRunning(ended, "Send video"), state: "sent" },
+      // Started by this worker, after its start.
+      {
+        ...leftRunning(newer, "Send video"),
+        startedAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+      leftRunning(held, "Verify an audio file"),
+    ];
+    // The audio page holds its running check's entry with a Web Lock.
+    Object.defineProperty(navigator, "locks", {
+      configurable: true,
+      value: {
+        query: () =>
+          Promise.resolve({
+            held: [
+              { name: "another-lock" },
+              { name: `provenance-lens.activity:${held}` },
+            ],
+          }),
+      },
+    });
+    onTestFinished(() => {
+      Reflect.deleteProperty(navigator, "locks");
+    });
+    const chromeState = setupChrome();
+    chromeState.sessionGet.mockImplementation((key: string) =>
+      Promise.resolve(
+        key === "provenanceLens.linkPickerSessions"
+          ? { [key]: { token: { activityId: picked } } }
+          : key === "provenanceLens.pendingDisclosures"
+            ? { [key]: { pending: { activityId: disclosed } } }
+            : {},
+      ),
+    );
+    mocks.pendingIntegrationActivityIds.mockResolvedValue([pending]);
+    await loadBackground();
+
+    await vi.waitFor(() =>
+      expect(recent.entries[0]).toMatchObject({
+        state: "failed",
+        message: STOPPED,
+      }),
+    );
+    expect(recent.entries.slice(1).map(({ state }) => state)).toEqual([
+      "running",
+      "running",
+      "running",
+      "sent",
+      "running",
+      "running",
+    ]);
+  });
+
+  it("ends an armed image pick's entry once a restarted worker no longer holds the pick", async () => {
+    let chromeState = setupChrome();
+    chromeState.setBadgeText.mockResolvedValue(undefined);
+    chromeState.executeScript.mockResolvedValue([
+      { frameId: 0, documentId: DOCUMENT_ID },
+    ]);
+    await loadBackground();
+    start(chromeState, ACTION_ID);
+    const sessionToken = await armedPick(chromeState);
+    await onlyEntry({ title: "Pick an image to verify", state: "running" });
+
+    // Chrome stops the idle worker; the pick's click starts a new one.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    vi.resetModules();
+    chromeState = setupChrome();
+    await loadBackground();
+
+    await onlyEntry({ state: "failed", message: STOPPED });
+    listenerOf(chromeState)(
+      { type: "picker-selected", sessionToken, selection: selection() },
+      pickerSender(),
+    );
+    await flushWorker();
+    expect(mocks.actionHandler).not.toHaveBeenCalled();
+  });
+
+  it("ends a stored DigiBot operation's entry when the restarted worker resumes it", async () => {
+    const [settled, discarded] = ENTRY_IDS;
+    recent.entries = [
+      leftRunning(settled, "Send this image to Telegram"),
+      leftRunning(discarded, "Verify an audio file"),
+    ];
+    mocks.pendingIntegrationActivityIds.mockResolvedValue([settled, discarded]);
+    let onEnded:
+      ((operation: unknown, status: unknown) => Promise<void>) | undefined;
+    mocks.resumePendingIntegrationOperations.mockImplementation(
+      (callback: typeof onEnded) => {
+        onEnded = callback;
+        return Promise.resolve();
+      },
+    );
+    setupChrome();
+    await loadBackground();
+    await flushWorker();
+    // The sweep leaves both to the resume.
+    expect(recent.entries.map(({ state }) => state)).toEqual([
+      "running",
+      "running",
+    ]);
+
+    const operation = {
+      accountId: "account-fixture-1",
+      sessionId: "session-fixture-1",
+      createdAt: "2026-10-14T20:00:00.000Z",
+    };
+    await onEnded?.(
+      { ...operation, operationId: OPERATION_ID, activityId: settled },
+      {
+        operationId: OPERATION_ID,
+        action: "download",
+        state: "failed",
+        segment: null,
+        envelope: null,
+        error: { code: "telegram_failed", message: "Telegram refused it." },
+      },
+    );
+    await onEnded?.(
+      { ...operation, operationId: OPERATION_ID, activityId: discarded },
+      null,
+    );
+    expect(recent.entries).toEqual([
+      expect.objectContaining({
+        state: "failed",
+        message: "Telegram refused it.",
+        operationId: OPERATION_ID,
+      }),
+      expect.objectContaining({ state: "failed", message: STOPPED }),
+    ]);
+  });
+
+  it("cancels a check whose disclosure tab closes unacknowledged, and not one acknowledged", async () => {
+    const DISCLOSURE_TAB_ID = 99;
+    const chromeState = setupChrome();
+    chromeState.setBadgeText.mockResolvedValue(undefined);
+    chromeState.executeScript.mockResolvedValue([
+      { frameId: 0, documentId: DOCUMENT_ID },
+    ]);
+    const create = chromeState.api.tabs.create as ReturnType<typeof vi.fn>;
+    create.mockResolvedValue({ id: DISCLOSURE_TAB_ID });
+    mocks.setSynthIdDisclosureVersion.mockImplementation((version: number) => {
+      mocks.getSynthIdDisclosureVersion.mockResolvedValue(version);
+      return Promise.resolve();
+    });
+    await loadBackground();
+    const onRemoved = (
+      chrome.tabs.onRemoved.addListener as ReturnType<typeof vi.fn>
+    ).mock.calls[0]?.[0] as (tabId: number) => void;
+
+    // Acknowledged: the page closes its own tab, and the pick goes on.
+    start(chromeState, SYNTHID_ACTION_ID);
+    await waitForCall(create, 1);
+    await flushWorker();
+    const [created] =
+      (create.mock.calls[0] as [chrome.tabs.CreateProperties] | undefined) ??
+      [];
+    listenerOf(chromeState)(
+      {
+        type: "resume-permission",
+        pendingId: new URL(created?.url ?? "").searchParams.get("pending"),
+        verificationMode: "synthid",
+      },
+      extensionPageSender("disclosure.html"),
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "picker-start")).toHaveLength(1),
+    );
+    onRemoved(DISCLOSURE_TAB_ID);
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    await onlyEntry({ state: "running" });
+
+    // Closed without the acknowledgement: cancelled.
+    recent.entries = [];
+    mocks.getSynthIdDisclosureVersion.mockResolvedValue(null);
+    start(chromeState, SYNTHID_ACTION_ID);
+    await waitForCall(create, 2);
+    await flushWorker();
+    onRemoved(DISCLOSURE_TAB_ID);
+    await vi.waitFor(
+      () =>
+        expect(recent.entries).toEqual([
+          expect.objectContaining({
+            title: "Check with Google SynthID",
+            state: "cancelled",
+            message: "The disclosure was closed before it was acknowledged.",
+          }),
+        ]),
+      { timeout: 3_000 },
+    );
+  });
+
+  it("starts a check acknowledged as its disclosure tab closes after a restart", async () => {
+    const [disclosed] = ENTRY_IDS;
+    const pendingId = "623e4567-e89b-42d3-a456-426614174000";
+    recent.entries = [leftRunning(disclosed, "Check with Google SynthID")];
+    const chromeState = setupChrome();
+    chromeState.setBadgeText.mockResolvedValue(undefined);
+    chromeState.executeScript.mockResolvedValue([
+      { frameId: 0, documentId: DOCUMENT_ID },
+    ]);
+    // The disclosure a stopped worker opened, as session storage keeps it.
+    const stored: Record<string, unknown> = {
+      "provenanceLens.pendingDisclosures": {
+        [pendingId]: {
+          id: pendingId,
+          actionId: SYNTHID_ACTION_ID,
+          tabId: TAB_ID,
+          frameId: 0,
+          trigger: "popup",
+          verificationMode: "synthid",
+          selection: null,
+          pageTarget: null,
+          activityId: disclosed,
+          disclosureTabId: 99,
+        },
+      },
+    };
+    chromeState.sessionGet.mockImplementation((key: string) =>
+      Promise.resolve(
+        key in stored ? { [key]: structuredClone(stored[key]) } : {},
+      ),
+    );
+    chromeState.sessionSet.mockImplementation(
+      (values: Record<string, unknown>) => {
+        Object.assign(stored, structuredClone(values));
+        return Promise.resolve();
+      },
+    );
+    mocks.setSynthIdDisclosureVersion.mockImplementation((version: number) => {
+      mocks.getSynthIdDisclosureVersion.mockResolvedValue(version);
+      return Promise.resolve();
+    });
+    await loadBackground();
+    const onRemoved = (
+      chrome.tabs.onRemoved.addListener as ReturnType<typeof vi.fn>
+    ).mock.calls[0]?.[0] as (tabId: number) => void;
+
+    // The page acknowledges and closes its tab; the worker hears both.
+    onRemoved(99);
+    listenerOf(chromeState)(
+      { type: "resume-permission", pendingId, verificationMode: "synthid" },
+      extensionPageSender("disclosure.html"),
+    );
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "picker-start")).toHaveLength(1),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    await onlyEntry({ id: disclosed, state: "running" });
+  });
+
+  it("ends the oldest pending disclosure's entry when a ninth drops it", async () => {
+    const chromeState = setupChrome();
+    const stored: Record<string, unknown> = {};
+    chromeState.sessionGet.mockImplementation((key: string) =>
+      Promise.resolve(key in stored ? { [key]: stored[key] } : {}),
+    );
+    chromeState.sessionSet.mockImplementation(
+      (values: Record<string, unknown>) => {
+        Object.assign(stored, structuredClone(values));
+        return Promise.resolve();
+      },
+    );
+    const create = chromeState.api.tabs.create as ReturnType<typeof vi.fn>;
+    await loadBackground();
+
+    for (let index = 1; index <= 9; index += 1) {
+      start(chromeState, SYNTHID_ACTION_ID);
+      await waitForCall(create, index);
+      await flushWorker();
+    }
+
+    await vi.waitFor(() =>
+      expect(recent.entries.at(-1)).toMatchObject({
+        state: "failed",
+        message: STOPPED,
+      }),
+    );
+    expect(
+      recent.entries.filter(({ state }) => state === "running"),
+    ).toHaveLength(8);
   });
 
   function flushWorker(): Promise<void> {

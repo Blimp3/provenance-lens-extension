@@ -46,6 +46,10 @@ const YOUTU_BE_PATH = /^\/([A-Za-z0-9_-]{11})\/?$/u;
 const YOUTUBE_EMBED_HOST = /(^|\.)youtube(-nocookie)?\.com$/u;
 const YOUTUBE_EMBED_PATH = /^\/embed\/([A-Za-z0-9_-]{11})\/?$/u;
 const VIMEO_PLAYER_PATH = /^\/video\/(\d{1,12})\/?$/u;
+// An unlisted Vimeo video's player carries its hash as ?h=.
+const VIMEO_HASH = /^[0-9a-f]{6,40}$/iu;
+// YouTube embeds whose 11-character name is not a video id.
+const YOUTUBE_EMBED_NAMES = new Set(["videoseries", "live_stream"]);
 /** X home, search, explore, or a profile and its media, replies or likes tab. */
 const X_LISTING_PATH =
   /^\/(?:home|search|explore(?:\/.*)?|[A-Za-z0-9_]{1,15}(?:\/(?:media|with_replies|likes|highlights))?)?\/?$/u;
@@ -153,7 +157,9 @@ export function videoLinkFor(video: Element, base: string): string | null {
  * The page of the video a YouTube or Vimeo embed plays, or null for any
  * other frame: `youtube.com/embed/<id>` and `youtube-nocookie.com/embed/<id>`
  * as `https://www.youtube.com/watch?v=<id>`, `player.vimeo.com/video/<id>`
- * as `https://vimeo.com/<id>`.
+ * as `https://vimeo.com/<id>`, with an unlisted video's `?h=<hash>` as
+ * `https://vimeo.com/<id>/<hash>`. A playlist or a channel's live stream
+ * embed names no video.
  */
 export function embedVideoUrl(src: string, base: string): string | null {
   const url = resolveHttpUrl(src, base);
@@ -161,14 +167,18 @@ export function embedVideoUrl(src: string, base: string): string | null {
   const host = hostOf(url);
   if (YOUTUBE_EMBED_HOST.test(host)) {
     const id = YOUTUBE_EMBED_PATH.exec(url.pathname)?.[1];
-    // A playlist embed is /embed/videoseries, an 11-character name too.
-    return id === undefined || id === "videoseries"
+    // /embed/videoseries?list= and /embed/live_stream?channel= look like ids.
+    return id === undefined || YOUTUBE_EMBED_NAMES.has(id)
       ? null
       : `https://www.youtube.com/watch?v=${id}`;
   }
   if (host === "player.vimeo.com") {
     const id = VIMEO_PLAYER_PATH.exec(url.pathname)?.[1];
-    return id === undefined ? null : `https://vimeo.com/${id}`;
+    if (id === undefined) return null;
+    const hash = url.searchParams.get("h") ?? "";
+    return VIMEO_HASH.test(hash)
+      ? `https://vimeo.com/${id}/${hash.toLowerCase()}`
+      : `https://vimeo.com/${id}`;
   }
   return null;
 }
@@ -290,12 +300,23 @@ function xPhotoPlace(link: Element, post: XPost, base: string): number {
  * out. A photo link names its place among all of them (`/photo/<k>`), so
  * the videos take the places the photo links leave free, in document order;
  * when the photo links do not fit, the place is the document order. null
- * past four.
+ * past four, and null when the post shows a photo without its link: its
+ * place is then unknown, so the plain status goes out and DigiBot refuses
+ * it as a playlist rather than send another video.
  */
 function xMediaPlace(post: XPost, video: Element, base: string): number | null {
   const media = xPostMedia(post, base).filter(
     (element) => cardOf(element) === post.card,
   );
+  const unnamedPhoto = Array.from(post.card.querySelectorAll("img")).some(
+    (image) =>
+      cardOf(image) === post.card &&
+      isXPhoto(image, base) &&
+      !media.some(
+        (element) => element.localName !== "video" && element.contains(image),
+      ),
+  );
+  if (unnamedPhoto) return null;
   const videos = media.filter((element) => element.localName === "video");
   const taken = new Set(
     media
@@ -307,6 +328,16 @@ function xMediaPlace(post: XPost, video: Element, base: string): number | null {
     taken.size === media.length - videos.length && free.length >= videos.length;
   const place = fits ? free[videos.indexOf(video)] : media.indexOf(video) + 1;
   return place !== undefined && place >= 1 && place <= 4 ? place : null;
+}
+
+/** A post's photo, not an avatar, an emoji or a video's poster. */
+function isXPhoto(image: Element, base: string): boolean {
+  const url = resolveHttpUrl(image.getAttribute("src") ?? "", base);
+  return (
+    url !== null &&
+    hostOf(url) === "pbs.twimg.com" &&
+    url.pathname.startsWith("/media/")
+  );
 }
 
 function cardOf(element: Element | null): Element | null {

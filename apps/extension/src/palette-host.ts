@@ -12,6 +12,14 @@ export type PaletteHostResult = { status: PaletteHostStatus };
 export const PALETTE_READY_TIMEOUT_MS = 1_500;
 const PORT_PREFIX = "lens-palette:";
 
+/** The frame's question over its port before a run, and the host's answer. */
+export type PaletteHostCheck = { lens: "check"; nonce: string };
+export type PaletteHostAnswer = {
+  lens: "intact";
+  nonce: string;
+  intact: boolean;
+};
+
 /** The port a host opens; the token keeps two palettes apart. */
 export function palettePortName(token: string): string {
   return `${PORT_PREFIX}${token}`;
@@ -43,6 +51,8 @@ export function mountPaletteHost(
 ): Promise<PaletteHostResult> {
   type LiveHost = { close: () => void; isConnected: () => boolean };
   const HOST_KEY = "__provenanceLensPaletteHost";
+  // A hidden tab throttles animation frames; this timer still checks.
+  const WATCHDOG_INTERVAL_MS = 100;
   const FULLSCREEN_MEDIA_ELEMENTS = new Set([
     "video",
     "img",
@@ -215,6 +225,8 @@ export function mountPaletteHost(
 
     // True while mountOnTop hides and shows the host to stack it on top.
     let restacking = false;
+    // The parent mountOnTop put the host in.
+    let mountedParent: Node | null = null;
 
     /**
      * Mounts the host by the mount rule. Moving an attached host goes through
@@ -232,6 +244,7 @@ export function mountPaletteHost(
           parent.moveBefore(root, null);
         else parent.append(root);
       }
+      mountedParent = parent;
       watchMountParent(root, parent);
       if (typeof root.showPopover !== "function") return;
       restacking = true;
@@ -257,6 +270,68 @@ export function mountPaletteHost(
         return false;
       }
     }
+
+    /**
+     * Whether the host stands as mountOnTop left it: in the top layer, in the
+     * parent it was mounted in, with its own inline style. A page can stop
+     * any event the host listens for, but not this check, which the
+     * watchdog and each run's question ask.
+     */
+    function hostIntact(): boolean {
+      if (root.parentNode !== mountedParent) return false;
+      if (typeof root.showPopover === "function" && !isOpenPopover(root))
+        return false;
+      const now = inlineStyle();
+      return (
+        now.size === hostStyle.size &&
+        [...now].every(([name, value]) => hostStyle.get(name) === value)
+      );
+    }
+
+    let watchdogFrame = 0;
+    let watchdogTimer: ReturnType<typeof setInterval> | undefined;
+
+    /**
+     * Closes the palette on the first frame, or timer tick, that finds the
+     * host moved, hidden or restyled outside mountOnTop.
+     */
+    function startWatchdog(): void {
+      const check = (): void => {
+        if (!closed && !restacking && !hostIntact()) close("closed");
+      };
+      const onFrame = (): void => {
+        check();
+        if (!closed) watchdogFrame = requestAnimationFrame(onFrame);
+      };
+      if (typeof requestAnimationFrame === "function")
+        watchdogFrame = requestAnimationFrame(onFrame);
+      watchdogTimer = setInterval(check, WATCHDOG_INTERVAL_MS);
+    }
+
+    function stopWatchdog(): void {
+      clearInterval(watchdogTimer);
+      if (typeof cancelAnimationFrame === "function")
+        cancelAnimationFrame(watchdogFrame);
+    }
+
+    /** Answers the frame's question before a run; a broken host closes. */
+    const onPortMessage = (message: unknown): void => {
+      if (typeof message !== "object" || message === null) return;
+      const { lens, nonce } = message as { lens?: unknown; nonce?: unknown };
+      if (lens !== "check" || typeof nonce !== "string" || nonce.length > 64)
+        return;
+      const intact = !closed && hostIntact();
+      try {
+        port?.postMessage({
+          lens: "intact",
+          nonce,
+          intact,
+        } satisfies PaletteHostAnswer);
+      } catch {
+        // The port is gone; the frame then runs nothing.
+      }
+      if (!intact) close("closed");
+    };
 
     // Whether this host asked for a keyboard lock on Escape.
     let escapeLocked = false;
@@ -393,6 +468,7 @@ export function mountPaletteHost(
         port = chrome.runtime.connect({ name: `lens-palette:${token}` });
         // An extension reload ends the port; the frame must not stay behind.
         port.onDisconnect.addListener(() => close("closed"));
+        port.onMessage.addListener(onPortMessage);
       } catch {
         close("failed");
         return;
@@ -459,6 +535,7 @@ export function mountPaletteHost(
       if (closed) return;
       closed = true;
       clearTimeout(timer);
+      stopWatchdog();
       styleWatch.disconnect();
       root.removeEventListener("beforetoggle", onBeforeToggle);
       if (scope[HOST_KEY] === host) delete scope[HOST_KEY];
@@ -553,6 +630,7 @@ export function mountPaletteHost(
       document.addEventListener("visibilitychange", onVisibility, true);
       scope[HOST_KEY] = host;
       mountOnTop(root);
+      if (!closed) startWatchdog();
     } catch {
       close("failed");
     }

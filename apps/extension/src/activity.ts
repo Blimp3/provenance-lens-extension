@@ -5,12 +5,14 @@ import {
   LINK_ACTION_ID,
   PICK_VIDEO_ACTION_ID,
   SYNTHID_ACTION_ID,
+  resultLabel,
   sanitizeDisplayText,
   type ActionId,
   type ActivityEntry,
   type ActivityKind,
   type ActivityState,
   type ErrorCode,
+  type IntegrationOperationStatus,
   type LinkDownloadOptions,
 } from "@provenance-lens/shared";
 
@@ -25,7 +27,8 @@ import { PALETTE_COMMANDS, type IconName } from "./ui/palette-commands.js";
 /**
  * Recent's entries: one per action the user starts from the palette, a key,
  * a right-click item or a toast button. The worker writes the entry when the
- * action starts and its state when it ends.
+ * action starts and its state when it ends; the audio page does both for its
+ * own checks.
  */
 
 /** Recent's entry for a run; null when history keeps nothing. */
@@ -44,6 +47,15 @@ const FALLBACK_TITLES: Readonly<Record<ActionId, string>> = {
 /** How many entries Recent shows. */
 export const RECENT_LIMIT = 8;
 
+/** How an entry ends when Lens stopped before the action did. */
+export const STOPPED_MESSAGE = "Lens stopped before this action ended.";
+
+/** No action runs this long; Recent shows an older running entry as ended. */
+export const STALE_ACTIVITY_MS = 10 * 60 * 1_000;
+
+/** An extension page holds this lock while an entry it runs is running. */
+const ACTIVITY_LOCK_PREFIX = "provenance-lens.activity:";
+
 const KIND_ICONS: Readonly<Record<ActivityKind, IconName>> = {
   image: "image",
   video: "film",
@@ -60,6 +72,7 @@ const STATE_LABELS: Readonly<Record<ActivityState, string>> = {
   done: "Done",
   failed: "Failed",
   refused: "Refused",
+  cancelled: "Cancelled",
 };
 
 /** What ↵ on a Recent entry opens; null when it left nothing to open. */
@@ -108,22 +121,19 @@ export function activityTitle(
 }
 
 /**
- * The kind a link send ends as: its clip or audio output, else the video,
- * which is "page-link" when the tab's own address goes out.
+ * What Telegram gets from a link send, whichever address went out: the clip,
+ * the voice note, the audio file or the video.
  */
-export function linkActivityKind(
-  options: LinkDownloadOptions,
-  video: "video" | "page-link",
-): ActivityKind {
+export function linkActivityKind(options: LinkDownloadOptions): ActivityKind {
   if (options.startSeconds !== undefined) return "clip";
   if (options.output === "voice") return "voice";
   if (options.output === "m4a" || options.output === "mp3") return "audio-file";
-  return video;
+  return "video";
 }
 
 /**
- * The kind an action starts as. The download pick starts as an image and
- * becomes a video or a page link when the click picks one.
+ * The kind an action starts as. The download pick's output is not known
+ * until its click picks an image or a video.
  */
 export function startActivityKind(
   actionId: ActionId,
@@ -131,11 +141,10 @@ export function startActivityKind(
 ): ActivityKind {
   switch (actionId) {
     case LINK_ACTION_ID:
-      return linkActivityKind(options, "page-link");
     case PICK_VIDEO_ACTION_ID:
-      return linkActivityKind(options, "video");
+      return linkActivityKind(options);
     case DOWNLOAD_ACTION_ID:
-      return "image";
+      return "page-link";
     default:
       return "verify";
   }
@@ -147,22 +156,41 @@ export function refusalState(code: ErrorCode): ActivityState {
 }
 
 /**
- * An address as Recent keeps it: http(s) only, without a fragment or
- * credentials, which can carry tokens; null for anything else.
+ * The address a link send sent, as Recent keeps it to open it again: http(s)
+ * only, its query included, without a fragment or credentials; null for
+ * anything else.
  */
 export function activityAddress(url: string | undefined): string | null {
+  const parsed = httpAddress(url);
+  if (!parsed) return null;
+  parsed.username = "";
+  parsed.password = "";
+  parsed.hash = "";
+  const address = parsed.toString();
+  return address.length <= 2_048 ? address : null;
+}
+
+/**
+ * The page an action ran on, as Recent keeps it: only the origin and the
+ * path, since a query can hold a code, a reset token or a signed link.
+ */
+export function pageAddress(url: string | undefined): string | null {
+  const parsed = httpAddress(url);
+  if (!parsed) return null;
+  const address = `${parsed.origin}${parsed.pathname}`;
+  return address.length <= 2_048 ? address : null;
+}
+
+function httpAddress(url: string | undefined): URL | null {
   let parsed: URL;
   try {
     parsed = new URL(url ?? "");
   } catch {
     return null;
   }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-  parsed.username = "";
-  parsed.password = "";
-  parsed.hash = "";
-  const address = parsed.toString();
-  return address.length <= 2_048 ? address : null;
+  return parsed.protocol === "http:" || parsed.protocol === "https:"
+    ? parsed
+    : null;
 }
 
 /** A new running entry; the page title only when history keeps titles. */
@@ -177,7 +205,7 @@ export function activityEntry(start: {
     tab?.id !== undefined && Number.isSafeInteger(tab.id) && tab.id >= 0
       ? tab.id
       : null;
-  const pageUrl = activityAddress(tab?.url);
+  const pageUrl = pageAddress(tab?.url);
   return {
     id: crypto.randomUUID(),
     title: sanitizeDisplayText(start.title, 80) || "Lens action",
@@ -197,11 +225,20 @@ export function activityEntry(start: {
   };
 }
 
-/** Writes Recent's entry for an action that starts; null when none is kept. */
+/** This page's held entries, each with its lock's release. */
+const heldEntries = new Map<string, () => void>();
+
+/**
+ * Writes Recent's entry for an action that starts; null when none is kept.
+ * An extension page that runs the action itself (the audio page) holds the
+ * entry with a lock until it ends, so the worker's start-up sweep leaves it
+ * running; the browser drops the lock when the page closes.
+ */
 export async function beginActivity(
   title: string,
   kind: ActivityKind,
   tab?: Pick<chrome.tabs.Tab, "id" | "url" | "title"> | null,
+  options: { held?: boolean } = {},
 ): Promise<ActivityId> {
   try {
     const settings = await getSettings();
@@ -211,8 +248,11 @@ export async function beginActivity(
       tab,
       includePageTitle: settings.includePageTitle,
     });
+    const kept = settings.historyRetention !== 0;
+    if (kept && options.held) await holdEntry(entry.id);
+    // With history off this clears the list instead.
     await startActivity(entry, settings.historyRetention);
-    return settings.historyRetention === 0 ? null : entry.id;
+    return kept ? entry.id : null;
   } catch {
     // Recent is a record of what ran; the action itself still runs.
     return null;
@@ -226,31 +266,115 @@ export async function noteActivity(
 ): Promise<void> {
   if (id === null) return;
   await updateActivity(id, update).catch(() => undefined);
+  if (update.state !== undefined && update.state !== "running") {
+    heldEntries.get(id)?.();
+    heldEntries.delete(id);
+  }
+}
+
+/** Resolves once this page holds the entry's lock, or at once without one. */
+async function holdEntry(id: string): Promise<void> {
+  try {
+    await new Promise<void>((granted, refused) => {
+      navigator.locks
+        .request(
+          `${ACTIVITY_LOCK_PREFIX}${id}`,
+          () =>
+            new Promise<void>((release) => {
+              heldEntries.set(id, release);
+              granted();
+            }),
+        )
+        .catch(refused);
+    });
+  } catch {
+    // Without Web Locks the sweep may end the entry early; it still runs.
+  }
+}
+
+/** The entries an extension page holds while it runs them. */
+export async function heldActivityIds(): Promise<ReadonlySet<string>> {
+  try {
+    const { held = [] } = await navigator.locks.query();
+    return new Set(
+      held.flatMap(({ name }) =>
+        name?.startsWith(ACTIVITY_LOCK_PREFIX)
+          ? [name.slice(ACTIVITY_LOCK_PREFIX.length)]
+          : [],
+      ),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+/** How a DigiBot operation ended or stands, as Recent shows it. */
+export function operationUpdate(
+  status: IntegrationOperationStatus,
+  mediaKind: "image" | "audio",
+): ActivityUpdate {
+  const evidence = status.envelope?.result?.evidence;
+  const audio = mediaKind === "audio";
+  if (evidence)
+    return {
+      state: "done",
+      message: resultLabel(evidence, mediaKind),
+      operationId: status.operationId,
+    };
+  if (status.state === "failed")
+    return {
+      state: "failed",
+      message:
+        status.error?.message ??
+        (audio
+          ? "The audio could not be checked."
+          : "DigiBot could not finish this action."),
+      operationId: status.operationId,
+    };
+  return {
+    state: "sent",
+    message:
+      status.error?.message ??
+      (audio
+        ? "The audio check is still processing."
+        : status.action === "download"
+          ? "The image was sent to your DigiBot chat."
+          : "The connected check is still processing in DigiBot."),
+    operationId: status.operationId,
+  };
 }
 
 /**
  * Recent's row for an entry. ↵ opens a Verify result's details while history
- * keeps its record (a connected check's in Result history), Result history
- * for a DigiBot send, and the address a page link sent.
+ * keeps its record (a connected check's in Result history), the address a
+ * link send sent, and Result history for another DigiBot send. A running
+ * entry older than STALE_ACTIVITY_MS shows as stopped.
  */
 export function recentRow(
   entry: ActivityEntry,
   savedRecordIds: ReadonlySet<string>,
   when: string,
+  now = Date.now(),
 ): RecentRow {
-  // A sent entry's message only repeats its state; an ended one says why.
-  const ended = entry.state !== "running" && entry.state !== "sent";
+  const shown =
+    entry.state === "running" &&
+    now - Date.parse(entry.startedAt) > STALE_ACTIVITY_MS
+      ? { ...entry, state: "failed" as const, message: STOPPED_MESSAGE }
+      : entry;
+  // A sent or cancelled entry's message only repeats its state; an ended
+  // one says why.
+  const ended = !["running", "sent", "cancelled"].includes(shown.state);
   const place =
-    entry.pageTitle ?? hostOf(entry.linkUrl ?? entry.pageUrl) ?? "This device";
+    shown.pageTitle ?? hostOf(shown.linkUrl ?? shown.pageUrl) ?? "This device";
   return {
-    title: entry.title,
-    subtitle: [ended ? entry.message : null, place, when]
+    title: shown.title,
+    subtitle: [ended ? shown.message : null, place, when]
       .filter(Boolean)
       .join(" · "),
-    icon: KIND_ICONS[entry.kind],
-    state: STATE_LABELS[entry.state],
-    warn: entry.state === "failed" || entry.state === "refused",
-    open: recentOpen(entry, savedRecordIds),
+    icon: KIND_ICONS[shown.kind],
+    state: STATE_LABELS[shown.state],
+    warn: shown.state === "failed" || shown.state === "refused",
+    open: recentOpen(shown, savedRecordIds),
   };
 }
 
@@ -263,11 +387,10 @@ function recentOpen(
       return { page: "details", recordId: entry.recordId };
     return entry.operationId === null ? null : { page: "history" };
   }
-  if (entry.kind === "page-link") {
-    const url = activityAddress(entry.linkUrl ?? entry.pageUrl ?? undefined);
-    return url === null ? null : { page: "address", url };
-  }
-  return { page: "history" };
+  // A link send opens the address it sent, whatever Telegram got from it.
+  const url = activityAddress(entry.linkUrl ?? undefined);
+  if (url !== null) return { page: "address", url };
+  return entry.kind === "page-link" ? null : { page: "history" };
 }
 
 function hostOf(address: string | null): string | null {

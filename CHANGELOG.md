@@ -26,8 +26,13 @@ and the picker runtime is 0.9.0.
   page, though a page's own capture listener on window can still see that
   keyup. Over a fullscreen element, Lens holds Esc with Keyboard Lock while the
   palette is open, so Esc steps back in the palette; press and hold Esc to
-  leave fullscreen. Known limit: closing the palette also ends a keyboard lock
-  the page held.
+  leave fullscreen. Known limits: while the palette is open its Esc lock
+  replaces a wider keyboard lock the page held, and closing the palette ends
+  that lock; Keyboard Lock exists only on secure (https) pages, so on an http
+  page Esc still leaves fullscreen. The palette also closes when the page
+  hides, moves or restyles its host behind a stopped event: the host checks
+  its own state on every frame, and the palette asks the host to confirm it
+  before each run.
 - Ten browser commands: **Open or close the Lens palette** (suggested
   Alt+Shift+Space), **Pick an image for OpenAI provenance review** (Alt+Shift+V,
   unchanged), and, with no key until you set one, send this page's video, voice
@@ -41,9 +46,13 @@ and the picker runtime is 0.9.0.
   video**. On X a post with two or more videos, a quoted post's counted, sends
   the clicked one as `https://x.com/<user>/status/<id>/video/<n>`, and any
   other post its plain address. Known limit: a GIF in a post with two or more
-  videos cannot be sent alone. A YouTube or Vimeo embed sends its video's own
-  page, and a video with no post or video link sends the page, as **Send
-  video** does. It replaces the two picks
+  videos cannot be sent alone, and a post that shows a photo without its
+  `/photo/<k>` link goes as its plain address, which DigiBot refuses as a
+  playlist when the post holds two or more videos. A YouTube or Vimeo embed
+  sends its video's own page (an unlisted Vimeo video with its hash, as
+  `https://vimeo.com/<id>/<hash>`); a YouTube channel's live stream embed
+  and a video with no post or video link send the page, as **Send video**
+  does. It replaces the two picks
   **Pick a post → video…** and **Pick an image → Telegram…**: a shortcut set
   for either old command is gone, so set it again for **Pick an image or a
   video and send it to Telegram**. A Last used entry of either old pick shows
@@ -55,15 +64,24 @@ and the picker runtime is 0.9.0.
   history**. One shared menu rebuild serves install, startup and worker start.
 - **Recent** lists your last actions, not only saved Verify results: one entry
   for each action you start from the palette, a key, a right-click item or a
-  toast button, with its command title, kind (image, video, audio file, voice
-  note, page link, Verify or clip), page title and address, start time, final
-  state (sent, done, failed or refused, with its short message) and the DigiBot
+  toast button, with its command title, kind (what Telegram gets: image,
+  video, audio file, voice note or clip; Verify; a page link only for a
+  download pick before its click), page title, the page's origin and path,
+  the full link a link send sent, start time, final state (sent, done,
+  failed, refused or cancelled, with its short message) and the DigiBot
   operation id when there is one. It shows the newest eight with a kind icon
-  and a state label. ↵ opens a Verify entry's details, a DigiBot entry's Result
-  history or a page link's address, and **Result history** stays under More.
-  The list stays in local storage, keeps as many entries as History retention
-  (none with history off), keeps the page title only when history saves titles,
-  and **Clear history** clears it.
+  and a state label; a download pick's entry becomes **Sent video** or **Sent
+  image** at the click, and a cancel shows **Cancelled** in the neutral tone.
+  ↵ opens a Verify entry's details, a link send's address or a DigiBot
+  entry's Result history, and **Result history** stays under More. An entry
+  the browser stopped Lens before finishing ends as failed with "Lens stopped
+  before this action ended." at Lens's next start, a resumed DigiBot
+  operation ends its own entry, a disclosure tab closed unacknowledged
+  cancels its action, and an entry still running after ten minutes shows as
+  stopped. The list stays in local storage, keeps as many entries as History
+  retention (none with history off, applied as soon as the setting changes),
+  keeps the page title only when history saves titles, and **Clear history**
+  or the History page's **Clear all** clears it.
 - Audio sends: **Send voice note** posts an OGG/Opus voice note and **Send
   audio file** an M4A with its title and music player, for this page or, with
   **Pick a post → voice note…** and **Pick a post → audio file…**, for a post

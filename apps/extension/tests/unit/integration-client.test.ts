@@ -1023,6 +1023,64 @@ describe("connected integration request contract", () => {
     expect(outbox?.bytes?.size).toBe(4);
   });
 
+  it("hands Recent each resumed operation's entry and status before the record goes", async () => {
+    const { local } = installChrome();
+    const entryId = "523e4567-e89b-42d3-a456-426614174000";
+    const otherId = "223e4567-e89b-42d3-a456-426614174000";
+    await local.set({
+      [sessionKey]: session,
+      [pendingOperationsKey]: [
+        {
+          accountId: session.accountId,
+          sessionId: session.sessionId,
+          operationId,
+          createdAt: "2026-09-16T10:01:02.000Z",
+          activityId: entryId,
+        },
+        // Another device session's operation is discarded.
+        {
+          accountId: session.accountId,
+          sessionId: "different-device-session",
+          operationId: otherId,
+          createdAt: "2026-09-16T10:01:02.000Z",
+          activityId: otherId,
+        },
+      ],
+    });
+    const failed = {
+      ...awaitingUpload,
+      state: "failed",
+      error: { code: "telegram_failed", message: "Telegram refused it." },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => response(failed)),
+    );
+    const client = await import("../../src/integration-client.js");
+    await expect(client.pendingIntegrationActivityIds()).resolves.toEqual([
+      entryId,
+      otherId,
+    ]);
+    const ended: [string | undefined, string | null, boolean][] = [];
+    await client.resumePendingIntegrationOperations(
+      async (operation, status) => {
+        // The record is still there when Recent hears of it.
+        const pending = await client.pendingIntegrationActivityIds();
+        ended.push([
+          operation.activityId,
+          status?.state ?? null,
+          pending.includes(operation.activityId ?? ""),
+        ]);
+      },
+    );
+
+    expect(ended).toEqual([
+      [entryId, "failed", true],
+      [otherId, null, true],
+    ]);
+    expect(local.values[pendingOperationsKey]).toEqual([]);
+  });
+
   it("discards outbox bytes created by a different device session", async () => {
     const { local } = installChrome();
     await local.set({

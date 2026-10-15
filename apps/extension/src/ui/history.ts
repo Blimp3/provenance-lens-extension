@@ -243,6 +243,8 @@ async function deleteOne(id: string): Promise<void> {
 async function clearAll(): Promise<void> {
   if (await getIntegrationSession().catch(() => null)) {
     const selectedPeriod = parsePeriod(period.value);
+    // The local history and Recent's list go too, even if DigiBot's fails.
+    await clearHistory();
     try {
       const history = await getAllIntegrationHistory(selectedPeriod);
       for (const operation of history.operations)

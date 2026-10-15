@@ -8,10 +8,10 @@ import {
 } from "@provenance-lens/shared";
 
 import {
-  activityAddress,
   activityTitle,
   beginActivity,
   noteActivity,
+  operationUpdate,
   type ActivityId,
 } from "../activity.js";
 import {
@@ -82,8 +82,10 @@ async function check(): Promise<void> {
       activityId = await beginActivity(
         activityTitle(AUDIO_ACTION_ID),
         "verify",
+        null,
+        { held: true },
       );
-      const outcome = await runIntegratedAudioFileAction(file);
+      const outcome = await runIntegratedAudioFileAction(file, activityId);
       await noteIntegratedCheck(activityId, outcome.status);
       renderIntegratedResult(outcome.status);
       status.textContent = outcome.status.envelope?.result
@@ -115,7 +117,12 @@ async function check(): Promise<void> {
       });
       renderAuthorization(settings);
     }
-    activityId = await beginActivity(activityTitle(AUDIO_ACTION_ID), "verify");
+    activityId = await beginActivity(
+      activityTitle(AUDIO_ACTION_ID),
+      "verify",
+      null,
+      { held: true },
+    );
     const outcome = await verifyAudioFile(file, settings);
     const record = createAudioHistoryRecord(outcome);
     await appendHistory(record, settings.historyRetention);
@@ -149,17 +156,7 @@ async function noteIntegratedCheck(
   activityId: ActivityId,
   operation: IntegrationOperationStatus,
 ): Promise<void> {
-  const evidence = operation.envelope?.result?.evidence;
-  await noteActivity(activityId, {
-    state: evidence ? "done" : operation.state === "failed" ? "failed" : "sent",
-    message: evidence
-      ? resultLabel(evidence, "audio")
-      : (operation.error?.message ??
-        (operation.state === "failed"
-          ? "The audio could not be checked."
-          : "The audio check is still processing.")),
-    operationId: operation.operationId,
-  });
+  await noteActivity(activityId, operationUpdate(operation, "audio"));
 }
 
 async function checkVideoSegment(): Promise<void> {
@@ -182,10 +179,18 @@ async function checkVideoSegment(): Promise<void> {
       );
       return;
     }
-    activityId = await beginActivity("Verify a video's audio", "verify", {
-      url: activityAddress(source) ?? undefined,
-    });
-    const outcome = await runIntegratedAudioSegmentAction(source, start, end);
+    activityId = await beginActivity(
+      "Verify a video's audio",
+      "verify",
+      { url: source },
+      { held: true },
+    );
+    const outcome = await runIntegratedAudioSegmentAction(
+      source,
+      start,
+      end,
+      activityId,
+    );
     await noteIntegratedCheck(activityId, outcome.status);
     renderIntegratedResult(outcome.status);
     status.textContent = outcome.status.envelope?.result

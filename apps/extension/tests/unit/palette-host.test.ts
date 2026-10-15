@@ -15,7 +15,9 @@ const FRAME_URL = `${ORIGIN}/palette.html#t=${TOKEN}`;
 type FakePort = {
   name: string;
   disconnect: ReturnType<typeof vi.fn>;
+  postMessage: ReturnType<typeof vi.fn>;
   onDisconnect: { addListener: ReturnType<typeof vi.fn> };
+  onMessage: { addListener: ReturnType<typeof vi.fn> };
 };
 
 let ports: FakePort[];
@@ -86,7 +88,9 @@ beforeEach(() => {
           const port: FakePort = {
             name,
             disconnect: vi.fn(),
+            postMessage: vi.fn(),
             onDisconnect: { addListener: vi.fn() },
+            onMessage: { addListener: vi.fn() },
           };
           ports.push(port);
           return port;
@@ -623,6 +627,64 @@ describe("the palette host's mount rule", () => {
 
     hostRoot()?.hidePopover();
     await Promise.resolve();
+    expect(hostRoot()).toBeNull();
+  });
+
+  it("closes on its watchdog's next check when the page stops the closing beforetoggle and hides or moves the host", async () => {
+    stubPopovers();
+    const stopToggle = (event: Event): void => event.stopImmediatePropagation();
+    window.addEventListener("beforetoggle", stopToggle, true);
+    try {
+      for (const change of ["hide", "move"] as const) {
+        const opened = mountPaletteHost(FRAME_URL, TOKEN, 1_500);
+        post({ lens: "ready" });
+        await opened;
+        const root = hostRoot();
+        if (change === "hide") root?.hidePopover();
+        else if (root) document.body.append(root);
+        await Promise.resolve();
+        // The host's own listener never heard of it.
+        expect(hostRoot()).not.toBeNull();
+        await vi.waitFor(() => expect(hostRoot()).toBeNull());
+      }
+    } finally {
+      window.removeEventListener("beforetoggle", stopToggle, true);
+    }
+  });
+
+  it("answers the frame's check over its port, and closes when the host is not as it mounted", async () => {
+    stubPopovers();
+    const opened = mountPaletteHost(FRAME_URL, TOKEN, 1_500);
+    post({ lens: "ready" });
+    await opened;
+    const port = ports.at(-1);
+    const ask = port?.onMessage.addListener.mock.calls[0]?.[0] as (
+      message: unknown,
+    ) => void;
+    ask({ lens: "check", nonce: "first" });
+    expect(port?.postMessage).toHaveBeenLastCalledWith({
+      lens: "intact",
+      nonce: "first",
+      intact: true,
+    });
+    // Only the frame's question gets an answer.
+    ask({ lens: "close" });
+    ask("check");
+    expect(port?.postMessage).toHaveBeenCalledTimes(1);
+
+    const stopToggle = (event: Event): void => event.stopImmediatePropagation();
+    window.addEventListener("beforetoggle", stopToggle, true);
+    try {
+      hostRoot()?.hidePopover();
+      ask({ lens: "check", nonce: "second" });
+    } finally {
+      window.removeEventListener("beforetoggle", stopToggle, true);
+    }
+    expect(port?.postMessage).toHaveBeenLastCalledWith({
+      lens: "intact",
+      nonce: "second",
+      intact: false,
+    });
     expect(hostRoot()).toBeNull();
   });
 

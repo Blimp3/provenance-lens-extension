@@ -463,6 +463,51 @@ describe("download pick addresses", () => {
     );
   });
 
+  it("sends the plain status when the post shows a photo without its link", () => {
+    /** A photo as X shows it, here without its /photo/<k> link. */
+    const shownPhoto = (): HTMLImageElement => {
+      const image = element("img");
+      image.src = "https://pbs.twimg.com/media/abc123?format=jpg";
+      return image;
+    };
+    const first = element("video");
+    const second = element("video");
+    xPostWith(shownPhoto(), first, second);
+    expect(videoLinkFor(first, X_PAGE)).toBe("https://x.com/alice/status/1");
+    expect(videoLinkFor(second, X_PAGE)).toBe("https://x.com/alice/status/1");
+    document.body.replaceChildren();
+
+    // A quote card with its own permalink, the same.
+    const quote = quoteCard();
+    const quotedFirst = element("video");
+    const quotedSecond = element("video");
+    quote.append(
+      link("https://x.com/bob/status/9", true),
+      shownPhoto(),
+      quotedFirst,
+      quotedSecond,
+    );
+    xPostWith(quote);
+    expect(videoLinkFor(quotedSecond, X_PAGE)).toBe(
+      "https://x.com/bob/status/9",
+    );
+    document.body.replaceChildren();
+
+    // A photo inside its link, an avatar and a poster keep the places.
+    const named = photo(1);
+    named.querySelector("img")?.setAttribute("src", shownPhoto().src);
+    const avatar = element("img");
+    avatar.src = "https://pbs.twimg.com/profile_images/1/avatar.jpg";
+    const poster = element("img");
+    poster.src = "https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/a.jpg";
+    const lead = element("video");
+    const last = element("video");
+    xPostWith(avatar, named, poster, lead, last);
+    expect(videoLinkFor(last, X_PAGE)).toBe(
+      "https://x.com/alice/status/1/video/3",
+    );
+  });
+
   it("sends the outer post for a video in a quote card without its own permalink", () => {
     const quote = quoteCard();
     const quotedVideo = element("video");
@@ -485,7 +530,9 @@ describe("download pick addresses", () => {
         "https://www.youtube-nocookie.com/embed/abcdefghijk",
         "//youtube.com/embed/abcdefghijk/",
         "https://player.vimeo.com/video/76979871?h=8272103f6e",
+        "https://player.vimeo.com/video/76979871?h=not-a-hash",
         "https://www.youtube.com/embed/videoseries?list=PL1",
+        "https://www.youtube.com/embed/live_stream?channel=UC1234567890",
         "https://vimeo.com/76979871",
         "https://www.youtube.com.evil.example/embed/abcdefghijk",
         "https://ads.example/frame",
@@ -495,7 +542,11 @@ describe("download pick addresses", () => {
       "https://www.youtube.com/watch?v=abcdefghijk",
       "https://www.youtube.com/watch?v=abcdefghijk",
       "https://www.youtube.com/watch?v=abcdefghijk",
+      // An unlisted video plays only with its hash.
+      "https://vimeo.com/76979871/8272103f6e",
       "https://vimeo.com/76979871",
+      null,
+      // A channel's live stream names no video: the page goes out.
       null,
       null,
       null,

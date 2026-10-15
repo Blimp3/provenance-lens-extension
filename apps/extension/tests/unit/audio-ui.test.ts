@@ -238,6 +238,13 @@ describe("audio check authorization", () => {
     // A form the page refused never ran, so Recent lists nothing.
     expect(mocks.startActivity).not.toHaveBeenCalled();
   });
+  /** The id of the entry the page started for its check. */
+  function startedEntryId(): string | undefined {
+    return (
+      mocks.startActivity.mock.calls[0]?.[0] as { id: string } | undefined
+    )?.id;
+  }
+
   it("shows the connected check as complete once its verdict is saved", async () => {
     mocks.getSettings.mockResolvedValue(apiSettings);
     mocks.getIntegrationSession.mockResolvedValue({
@@ -263,7 +270,10 @@ describe("audio check authorization", () => {
       ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 
     await vi.waitFor(() =>
-      expect(mocks.runIntegratedAudioFileAction).toHaveBeenCalledWith(file),
+      expect(mocks.runIntegratedAudioFileAction).toHaveBeenCalledWith(
+        file,
+        startedEntryId(),
+      ),
     );
     const status = document.getElementById("audio-status");
     await vi.waitFor(() =>
@@ -306,11 +316,13 @@ describe("audio check authorization", () => {
       .getElementById("audio-form")
       ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 
+    // The pending operation keeps the entry, so a resume can end it.
     await vi.waitFor(() =>
       expect(mocks.runIntegratedAudioSegmentAction).toHaveBeenCalledWith(
         "https://video.example/watch?v=fixture",
         5,
         20,
+        startedEntryId(),
       ),
     );
     const status = document.getElementById("audio-status");
@@ -329,7 +341,8 @@ describe("audio check authorization", () => {
       expect.objectContaining({
         title: "Verify a video's audio",
         kind: "verify",
-        pageUrl: "https://video.example/watch?v=fixture",
+        // Only the origin and the path: a query can hold a token.
+        pageUrl: "https://video.example/watch",
       }),
       20,
     );

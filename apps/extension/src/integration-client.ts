@@ -1,4 +1,5 @@
 import {
+  ActivityEntrySchema,
   IntegrationApiErrorSchema,
   IntegrationDeleteResponseSchema,
   IntegrationHistoryResponseSchema,
@@ -78,6 +79,8 @@ export type IntegrationPendingOperation = {
   sessionId: string;
   operationId: string;
   createdAt: string;
+  // Recent's entry for the action, which a resume after a restart ends.
+  activityId?: string;
 };
 
 export type IntegrationOutboxEntry = {
@@ -711,24 +714,45 @@ export async function listPendingIntegrationOperations(): Promise<
   );
 }
 
+/** Recent's entries that a pending operation will end when it resumes. */
+export async function pendingIntegrationActivityIds(): Promise<string[]> {
+  const values = await chrome.storage.local.get(STORAGE_KEYS.pendingOperations);
+  return readPendingOperations(values[STORAGE_KEYS.pendingOperations]).flatMap(
+    ({ activityId }) => (activityId === undefined ? [] : [activityId]),
+  );
+}
+
 /**
  * Resume only durable connected-operation state after a service-worker restart.
  * The outbox is bounded and account-scoped; once media is accepted, only the
- * operation id remains and this path performs a single status read.
+ * operation id remains and this path performs a single status read. onEnded
+ * hears each operation that settles, with its status, or that is discarded,
+ * with null, before the pending record goes.
  */
-export async function resumePendingIntegrationOperations(): Promise<void> {
+export async function resumePendingIntegrationOperations(
+  onEnded: (
+    operation: IntegrationPendingOperation,
+    status: IntegrationOperationStatus | null,
+  ) => Promise<void> = () => Promise.resolve(),
+): Promise<void> {
   if (typeof indexedDB !== "undefined") await sweepIntegrationOutbox();
   const session = await getIntegrationSession();
   if (!session) return;
   const expected: IntegrationSessionExpectation = sessionExpectation(session);
   const values = await chrome.storage.local.get(STORAGE_KEYS.pendingOperations);
   const pending = readPendingOperations(values[STORAGE_KEYS.pendingOperations]);
+  const discard = async (
+    operation: IntegrationPendingOperation,
+  ): Promise<void> => {
+    await onEnded(operation, null).catch(() => undefined);
+    await discardPendingIntegrationOperation(operation);
+  };
   for (const operation of pending) {
     if (
       operation.accountId !== expected.accountId ||
       operation.sessionId !== expected.sessionId
     ) {
-      await discardPendingIntegrationOperation(operation);
+      await discard(operation);
       continue;
     }
     const operationExpected: IntegrationSessionExpectation = {
@@ -743,7 +767,7 @@ export async function resumePendingIntegrationOperations(): Promise<void> {
       let status: IntegrationOperationStatus;
       if (outbox?.bytes) {
         if (outbox.sessionId !== operationExpected.sessionId) {
-          await discardPendingIntegrationOperation(operation);
+          await discard(operation);
           continue;
         }
         status = await createIntegrationOperation(
@@ -771,7 +795,7 @@ export async function resumePendingIntegrationOperations(): Promise<void> {
         );
         if (segment) {
           if (segment.sessionId !== operationExpected.sessionId) {
-            await discardPendingIntegrationOperation(operation);
+            await discard(operation);
             continue;
           }
           status = await createAudioSegmentOperation(
@@ -794,6 +818,7 @@ export async function resumePendingIntegrationOperations(): Promise<void> {
         }
       }
       if (isIntegrationOperationSettled(status)) {
+        await onEnded(operation, status).catch(() => undefined);
         await removePendingIntegrationOperation(
           operation.accountId,
           operation.operationId,
@@ -811,7 +836,7 @@ export async function resumePendingIntegrationOperations(): Promise<void> {
       // Retryable transport/provider failures remain pending for the next
       // startup. Permanent tombstone/auth errors cannot make progress.
       if (error instanceof IntegrationClientError && !error.retryable) {
-        await discardPendingIntegrationOperation(operation);
+        await discard(operation);
       }
     }
   }
@@ -1283,6 +1308,9 @@ function readPendingOperations(value: unknown): IntegrationPendingOperation[] {
     if (typeof item !== "object" || item === null || Array.isArray(item))
       return [];
     const candidate = item as Record<string, unknown>;
+    const activityId = ActivityEntrySchema.shape.id.safeParse(
+      candidate["activityId"],
+    );
     return typeof candidate["accountId"] === "string" &&
       typeof candidate["operationId"] === "string" &&
       typeof candidate["createdAt"] === "string" &&
@@ -1293,6 +1321,7 @@ function readPendingOperations(value: unknown): IntegrationPendingOperation[] {
             sessionId: candidate["sessionId"],
             operationId: candidate["operationId"],
             createdAt: candidate["createdAt"],
+            ...(activityId.success ? { activityId: activityId.data } : {}),
           },
         ]
       : [];

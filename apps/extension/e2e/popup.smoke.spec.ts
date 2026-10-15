@@ -391,10 +391,12 @@ test("Recent lists the newest eight actions and opens what each left", async () 
         state: "sent",
         operationId,
       }),
+      // Started after the worker, so its start-up sweep keeps it running.
       entry(7, {
         title: "Check with Google SynthID",
         kind: "verify",
         state: "running",
+        startedAt: new Date().toISOString(),
       }),
       entry(8, { title: "Oldest action", kind: "verify", state: "done" }),
     ];

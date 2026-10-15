@@ -11,7 +11,11 @@ import {
 
 import { RECENT_LIMIT, recentRow } from "../activity.js";
 import { isIntegrationConnected } from "../integration-client.js";
-import { isOwnPalettePort } from "../palette-host.js";
+import {
+  isOwnPalettePort,
+  type PaletteHostAnswer,
+  type PaletteHostCheck,
+} from "../palette-host.js";
 import {
   getActivity,
   getHistory,
@@ -137,6 +141,8 @@ const KEY_VISIBLE_MS = 250;
 const POINTER_VISIBLE_MS = 500;
 /** A key pressed this soon after the frame is ready may wait for the panel. */
 const EARLY_KEY_MS = 1_000;
+/** How long the host has to answer before a run; no answer runs nothing. */
+const HOST_CHECK_MS = 500;
 
 const paletteRoot = required<HTMLElement>("palette");
 const scrim = required<HTMLElement>("scrim");
@@ -289,7 +295,8 @@ async function loadData(): Promise<FrameData> {
     shortcuts,
     workflow,
     history,
-    activity,
+    // History retention as it is now, also before the next start trims.
+    activity: activity.slice(0, settings?.historyRetention ?? 0),
   };
 }
 
@@ -407,7 +414,7 @@ function gated(source: InputSource, run: () => Promise<void>): void {
   if (inputAllowed(source)) {
     clearHeld();
     clearCovered();
-    void run();
+    runChecked(run);
     return;
   }
   if (
@@ -438,10 +445,56 @@ function runHeldWhenAllowed(): void {
       }
       heldRun = null;
       clearCovered();
-      void run();
+      runChecked(run);
     },
     Math.max(0, Math.ceil(wait)),
   );
+}
+
+/**
+ * Runs input the gate let through once the host answers over this frame's
+ * own port that it still stands as it mounted: in the top layer, in its
+ * parent, with its own inline style. A page can stop the host's events but
+ * not this answer, and with no port or no answer in time nothing runs. The
+ * popup and the tab run at once.
+ */
+function runChecked(run: () => Promise<void>): void {
+  if (!embedded) {
+    void run();
+    return;
+  }
+  void hostIntact().then((intact) => {
+    if (intact && panelVisible) void run();
+    else showCovered();
+  });
+}
+
+function hostIntact(): Promise<boolean> {
+  const port = ownPort;
+  if (!port) return Promise.resolve(false);
+  const nonce = crypto.randomUUID();
+  return new Promise((resolve) => {
+    const done = (intact: boolean): void => {
+      clearTimeout(timer);
+      port.onMessage.removeListener(onAnswer);
+      port.onDisconnect.removeListener(onGone);
+      resolve(intact);
+    };
+    const onAnswer = (message: unknown): void => {
+      const answer = message as Partial<PaletteHostAnswer> | null;
+      if (answer?.lens === "intact" && answer.nonce === nonce)
+        done(answer.intact === true);
+    };
+    const onGone = (): void => done(false);
+    const timer = setTimeout(() => done(false), HOST_CHECK_MS);
+    port.onMessage.addListener(onAnswer);
+    port.onDisconnect.addListener(onGone);
+    try {
+      port.postMessage({ lens: "check", nonce } satisfies PaletteHostCheck);
+    } catch {
+      done(false);
+    }
+  });
 }
 
 /** A waiting key the panel hid from, or that waited a second, is dropped. */
