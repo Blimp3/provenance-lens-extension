@@ -4,15 +4,15 @@ a6b98ea7cb6d61ed8d430dd0dffa46c87012b5cf859d4ce7207898954951fdcd  ./.editorconfi
 7151cf397def0c2cb0ab65643701d27d335a72c90f775675b5f826bc7005818a  ./.npmrc
 5b9d0e73029969ae9000117cb877f17bb9841c1279bfe8024e294acfcf017800  ./.nvmrc
 e9ee6ed217f073ec0a13b0b1c9068e1336f108f2c78f72bb2bbde46281efb973  ./.prettierignore
-db458e3a9713c994abd0c92ac7a016bfb1fc9c6c2a5276e8e9c08ab8efdb19d9  ./CHANGELOG.md
+e65ca47178431ad7e8777f34203283f6d29619ab61c5d2388572049b826c17fc  ./CHANGELOG.md
 c4ca45404313d3f20d849f9392093b708068d16fdbfb052013a4c1429673cc7d  ./CLAUDE.md
 b7d35f9202a9e47d4a747744631daa208068daf8432c143c1866bca2c21b0336  ./LICENSE
-5a4114f09f124ea35ad7330973823a783e81300b640979450fe46b9f8229ae30  ./README.md
+117416ccbbb73c0531a15dc4386efda3b3c11c85efe7678860cb6813495c9141  ./README.md
 3f93cdacdf0732307a2e61ad47b356f2553e3d62c8d88c397261e2733a1c3a6e  ./SOURCE_PROVENANCE.md
 d59ab9ac18d67216ba20c2ee57b755947361ff64ea1a766192895ca4cb608341  ./THIRD_PARTY_NOTICES.txt
 19107acd399942e99a6928aed963cb033e00a766c9a2bb231a85f6fbd179f514  ./apps/extension/e2e/integration.smoke.spec.ts
 54fde47505530b57a18337ffaf7aea6a00578ef938372c39dce36f2b1c87e301  ./apps/extension/e2e/media.smoke.spec.ts
-2f3cdf67d22a08c873055e784039398ff08d16351742562c18f29de45954df99  ./apps/extension/e2e/palette.smoke.spec.ts
+256b5ab2f0232eec82dbb7fdabc7c458045a3a4053e42139eedcd5bb818a7e05  ./apps/extension/e2e/palette.smoke.spec.ts
 e5b50b41c8b8b926d8f3deac6f9efccc93678dfb4e2bac8befc7f9e2abf297cb  ./apps/extension/e2e/picker-runtime.smoke.spec.ts
 50f8ad878dd00bf5801e346a4868b2193af99fe5c936aafc2b92ac5fc4256c30  ./apps/extension/e2e/popup.smoke.spec.ts
 907431da3a3f496a825ade47fcf8c520cc4e9223c97d039d2f574f65161d3e2c  ./apps/extension/manifest.json
@@ -58,7 +58,7 @@ a52995bf52bda995609e1a8fdde7d8084364e94474f36a042f02ef3b36d0a3b1  ./apps/extensi
 f8027d0f661d426b57fe52b8177e25b601b480dd749c37e34302ca96f9c36066  ./apps/extension/src/routing.ts
 27d10af97e653a26360c6ad50b3621c30636b9669faf0610ebfc055a014b2087  ./apps/extension/src/screenshot-binding.ts
 c3b475fe7ea60ed7f8468c9a741d9e94063b2882a748bf682b7ea549e383dd95  ./apps/extension/src/screenshot-guard.ts
-a29de1ec5e3cbe693ce96f0939bbf5f3e9c6e903750206cb40b9452c75e39d66  ./apps/extension/src/storage.ts
+ec9cee4f1b07052595086261cdd0070775f789c378898ce36984e2a784109254  ./apps/extension/src/storage.ts
 b013e6ee73bdec6c0c6d1ca4c1e826a34dc90eaeb4e523a2f69596e316a681eb  ./apps/extension/src/ui/audio.ts
 265f94926c1cd7e3edda81b7a6c51d497aa8edd929e9c0967be31b0e4a6eb45c  ./apps/extension/src/ui/details.ts
 6303fffc190c8888b3317680347ffebf8037a0d7501e512379e6fd15ac559e44  ./apps/extension/src/ui/disclosure.ts
@@ -80,7 +80,7 @@ eb7ca5ba8cb3ec772729babff925c68f2f35369d6f92f772129e79581da9f2e1  ./apps/extensi
 b5c63216007e4b4362581eabbaa757bda0ad4f3f08641ce9d93cb2f68b0de7a7  ./apps/extension/tests/unit/audio-action.test.ts
 9eeb467dcb4ea5fc739cdb8de4db76d7e58f054a632bb5fab6bfd1f1dcf617d9  ./apps/extension/tests/unit/audio-ui.test.ts
 1cf69662a6e99d07eaaeeabf72078d080a0ca2f7f806ea243821729e3a80462c  ./apps/extension/tests/unit/background-bootstrap.test.ts
-f3d53c4ed7654645d2d8d24dacaefd516e64a68ce57cc4e67c136e6d0da34bf3  ./apps/extension/tests/unit/background-workflow.test.ts
+9046b5917db210fa4f2e6d1878de75c7a634c39383b01e4b0c5226ab0ae3a415  ./apps/extension/tests/unit/background-workflow.test.ts
 f69c23a3a7077cb87cb5a75b35a0664465ea5952914c8e9e8a82c912ff95768c  ./apps/extension/tests/unit/bounded-response.test.ts
 66e3a8ba65bcca2a2cefd7736627a682771839b9ca1e8b78afa5fae66530dc9e  ./apps/extension/tests/unit/bundled-client.test.ts
 1bb556ae3d26068fe4615817c6a5d94a1a5cbab333008ad718217b4904f5c5be  ./apps/extension/tests/unit/cache-contract.test.ts
@@ -108,7 +108,7 @@ d99ff2b34ccf50da689db0a0c79009cbbd060556893cfc0be42b6cab7803b26d  ./apps/extensi
 166d624ba4c183d462136d81078d36ec1c37acc763be3d7052b14d560c0e19b6  ./apps/extension/tests/unit/screenshot-binding.test.ts
 90476d198a57f72bb8f5f197971aacf6ffb52dc86e71fcbdc288714b9de652a9  ./apps/extension/tests/unit/screenshot-guard.test.ts
 a7f088d7112b2b94b32dc7afaa76a670caf3ceae08e7fd36478ed082d49d7d58  ./apps/extension/tests/unit/settings.test.ts
-b81eaa53e8051477a7bb3be92be7b0d77a7c9b730a64bf06190acad75b8e1341  ./apps/extension/tests/unit/storage.test.ts
+17bdae08aa12a03adb07b50268970b7ac4702d67cd6593a73be2fb3a75887b77  ./apps/extension/tests/unit/storage.test.ts
 322a57690ff1430ca38cd29f18f8c825370ec47f047290d9f5b8977cdeecdb59  ./apps/extension/tests/unit/verification-runs.test.ts
 fc74a409ba47dbcc3be899ae008a842a7a1d6762f640b501038a32598cc17d88  ./apps/extension/tests/unit/website-action.test.ts
 c9b5e93b7440339a4c6a9fc52b693bf096e552fb9bb0e2f14d488af9b5da542d  ./apps/extension/tsconfig.json

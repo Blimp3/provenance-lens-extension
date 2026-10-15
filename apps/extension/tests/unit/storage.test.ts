@@ -15,6 +15,7 @@ import {
   STORAGE_KEYS,
   saveSettings,
   startActivity,
+  trimActivity,
   updateActivity,
 } from "../../src/storage.js";
 
@@ -389,9 +390,27 @@ describe("Recent's activity list", () => {
     expect((await getActivity()).map(({ id }) => id)).toEqual(
       Array.from({ length: 10 }, (_, offset) => started(11 - offset).id),
     );
+    // The two older entries leave storage, so a higher retention later does
+    // not bring them back.
+    expect(currentLocal.values[STORAGE_KEYS.activity]).toHaveLength(10);
+    await saveSettings({ ...defaultSettings, historyRetention: 20 });
+    expect(await getActivity()).toHaveLength(10);
     await saveSettings({ ...defaultSettings, historyRetention: 0 });
     await expect(getActivity()).resolves.toEqual([]);
     expect(currentLocal.values[STORAGE_KEYS.activity]).toBeUndefined();
+  });
+
+  it("trims to the retention it is given, also before that is saved", async () => {
+    for (let index = 0; index < 12; index += 1)
+      await startActivity(started(index), 20);
+    await trimActivity(10);
+    expect(
+      (currentLocal.values[STORAGE_KEYS.activity] as ActivityEntry[]).map(
+        ({ id }) => id,
+      ),
+    ).toEqual(
+      Array.from({ length: 10 }, (_, offset) => started(11 - offset).id),
+    );
   });
 
   it("changes an entry only while it runs", async () => {
@@ -481,6 +500,23 @@ describe("Recent's activity list", () => {
         message:
           "DigiBot could not fetch https://cdn.example/v.mp4. See (https://page.example/help).",
       },
+    ]);
+  });
+
+  it("drops a user name and password, and cuts an address without a scheme too", async () => {
+    currentLocal.values[STORAGE_KEYS.activity] = [
+      {
+        ...started(0),
+        state: "failed",
+        message:
+          "Sign in at https://user:pa55@a.example/p?x=1, then open www.example.com/reset?token=abc, example.com/?code=1 or https://blog.example/@alice/post?s=2; v2.0 and e.g. stay.",
+      },
+    ];
+    expect(await getActivity()).toEqual([
+      expect.objectContaining({
+        message:
+          "Sign in at https://a.example/p, then open www.example.com/reset, example.com/ or https://blog.example/@alice/post; v2.0 and e.g. stay.",
+      }),
     ]);
   });
 

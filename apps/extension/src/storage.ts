@@ -158,8 +158,9 @@ export async function clearHistory(): Promise<void> {
 /**
  * Recent's list, newest first, as many entries as history retention keeps
  * now, also before the next start trims. Entries come back with their page
- * address and their message free of any query or fragment, so an entry an
- * earlier version stored is saved clean at the next write.
+ * address and their message free of any query, fragment, user name or
+ * password, so an entry an earlier version stored is saved clean at the next
+ * write.
  */
 export async function getActivity(): Promise<ActivityEntry[]> {
   const [values, settings] = await Promise.all([
@@ -188,21 +189,29 @@ function cleanActivity(entry: ActivityEntry): ActivityEntry {
     ...entry,
     pageUrl: entry.pageUrl === null ? null : pageAddress(entry.pageUrl),
     message:
-      entry.message === null ? null : withoutUrlQueries(entry.message) || null,
+      entry.message === null ? null : cleanAddresses(entry.message) || null,
   };
 }
 
 /**
- * A message with every address in it cut at its query or fragment, keeping
- * the punctuation after it; a message from DigiBot may quote a signed link.
+ * A message with every address in it, with or without a scheme, cut at its
+ * query or fragment and without a user name and password, keeping the
+ * punctuation after it; a message from DigiBot may quote a signed link.
  */
-function withoutUrlQueries(message: string): string {
+function cleanAddresses(message: string): string {
   return message
-    .replace(/\b[a-z][a-z\d+.-]*:\/\/\S+/giu, (address) => {
-      const [, body = address, tail = ""] =
-        /^(.*?)([.,;:!?)\]'"]*)$/su.exec(address) ?? [];
-      return body.replace(/[?#].*$/su, "") + tail;
-    })
+    .replace(
+      /\b[a-z][a-z\d+.-]*:\/\/\S+|\b(?:[a-z\d-]+\.)+[a-z]{2,}(?::\d+)?[/?#]\S*/giu,
+      (address) => {
+        const [, body = address, tail = ""] =
+          /^(.*?)([.,;:!?)\]'"]*)$/su.exec(address) ?? [];
+        return (
+          body
+            .replace(/^([a-z][a-z\d+.-]*:\/\/)[^/?#]*@/iu, "$1")
+            .replace(/[?#].*$/su, "") + tail
+        );
+      },
+    )
     .trim();
 }
 
@@ -213,11 +222,12 @@ export async function trimActivity(retention: HistoryRetention): Promise<void> {
       await chrome.storage.local.remove(STORAGE_KEYS.activity);
       return;
     }
+    // Written back whatever its length: getActivity already drops what the
+    // saved retention no longer keeps, so a length compare would miss it.
     const existing = await getActivity();
-    if (existing.length > retention)
-      await chrome.storage.local.set({
-        [STORAGE_KEYS.activity]: existing.slice(0, retention),
-      });
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.activity]: existing.slice(0, retention),
+    });
   });
 }
 
@@ -229,7 +239,7 @@ export async function startActivity(
   entry: ActivityEntry,
   retention: HistoryRetention,
 ): Promise<void> {
-  const parsed = cleanActivity(ActivityEntrySchema.parse(entry));
+  const parsed = ActivityEntrySchema.parse(entry);
   await withStorageMutationLock(async () => {
     const existing = await getActivity();
     const next = [parsed, ...existing.filter(({ id }) => id !== parsed.id)];

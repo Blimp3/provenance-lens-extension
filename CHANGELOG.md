@@ -34,8 +34,8 @@ and the picker runtime is 0.9.0.
   a click on a row does nothing and Esc does not close the palette. The
   palette also closes when the page hides, moves or restyles its host behind
   a stopped event or cleared timers: the host checks itself whenever the page
-  changes it, and the palette asks the host to confirm it every 100 ms and
-  before each run.
+  moves or restyles it, and the palette asks the host to confirm it every
+  100 ms and before each run.
 - Ten browser commands: **Open or close the Lens palette** (suggested
   Alt+Shift+Space), **Pick an image for OpenAI provenance review** (Alt+Shift+V,
   unchanged), and, with no key until you set one, send this page's video, voice
@@ -72,7 +72,8 @@ and the picker runtime is 0.9.0.
   download pick before its click), page title, the page's origin and path,
   the full link a link send sent, start time, final state (sent, done,
   failed, refused or cancelled, with its short message, any address in it cut
-  at its query or fragment) and the DigiBot operation id when there is one.
+  at its query or fragment and without a user name and password) and the
+  DigiBot operation id when there is one.
   It shows the newest eight with a kind icon and a state label; a download
   pick's entry becomes **Sent video** or **Sent image** at the click, and a
   cancel shows **Cancelled** in the neutral tone.

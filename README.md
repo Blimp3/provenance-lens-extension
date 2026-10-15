@@ -429,12 +429,12 @@ For local review, load `apps/extension/dist` as an unpacked extension.
   entry keeps the command's title, its kind, the page address as its origin
   and path only (no query or fragment), the full link that a link send sent,
   the start time, the final state with its short message (any address in it
-  cut at its query or fragment), and the DigiBot operation id or History
-  record id when there is one. Addresses are http(s)
-  only, without the fragment after `#` or a user name and password. A sent
-  link keeps its query, because Lens sent it and opens it. Lens keeps the page
-  title only when **Save a sanitized page title with history** is on. The list
-  keeps as many entries as History retention keeps results, and none when
+  cut at its query or fragment and without a user name and password), and the
+  DigiBot operation id or History record id when there is one. Addresses are
+  http(s) only, without the fragment after `#` or a user name and password. A
+  sent link keeps its query, because Lens sent it and opens it. Lens keeps the
+  page title only when **Save a sanitized page title with history** is on. The
+  list keeps as many entries as History retention keeps results, and none when
   retention is **Disabled**. A lower retention or **Disabled** applies to the
   list as soon as you save it. **Clear history** in Settings or **Clear all**
   on the History page removes the list, while DigiBot is connected too. Lens

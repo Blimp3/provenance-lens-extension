@@ -1532,8 +1532,8 @@ test("a page that hides the host only while it paints gets no run", async () => 
       .then(() => query.press("Enter", { timeout: 2_000 }))
       .catch(() => undefined);
     await page.waitForTimeout(500);
-    expect(await pageHides(page)).toBeGreaterThan(40);
     expect(await startActions(lens)).toEqual([]);
+    expect(await pageHides(page)).toBeGreaterThan(40);
   } finally {
     await lens.close();
   }

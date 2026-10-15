@@ -3874,16 +3874,20 @@ describe("Recent's activity list", () => {
   });
 
   it("ends a stored DigiBot operation's entry when the restarted worker resumes it", async () => {
-    const [settled, discarded, audioFile] = ENTRY_IDS;
+    const [settled, discarded, audioFile, oldSegment, oldEnvelope] = ENTRY_IDS;
     recent.entries = [
       leftRunning(settled, "Send this image to Telegram"),
       leftRunning(discarded, "Verify an audio file"),
       leftRunning(audioFile, "Verify an audio file"),
+      leftRunning(oldSegment, "Verify audio of this page"),
+      leftRunning(oldEnvelope, "Verify an audio file"),
     ];
     mocks.pendingIntegrationActivityIds.mockResolvedValue([
       settled,
       discarded,
       audioFile,
+      oldSegment,
+      oldEnvelope,
     ]);
     let onEnded:
       ((operation: unknown, status: unknown) => Promise<void>) | undefined;
@@ -3898,6 +3902,8 @@ describe("Recent's activity list", () => {
     await flushWorker();
     // The sweep leaves them to the resume.
     expect(recent.entries.map(({ state }) => state)).toEqual([
+      "running",
+      "running",
       "running",
       "running",
       "running",
@@ -3941,6 +3947,27 @@ describe("Recent's activity list", () => {
         error: null,
       },
     );
+    // An operation an earlier build stored has no kind; a segment or an audio
+    // envelope still gives the audio wording.
+    const failedCheck = {
+      operationId: OPERATION_ID,
+      action: "check",
+      state: "failed",
+      segment: null,
+      envelope: null,
+      error: null,
+    };
+    await onEnded?.(
+      { ...operation, operationId: OPERATION_ID, activityId: oldSegment },
+      { ...failedCheck, segment: { startSeconds: 0, endSeconds: 60 } },
+    );
+    await onEnded?.(
+      { ...operation, operationId: OPERATION_ID, activityId: oldEnvelope },
+      {
+        ...failedCheck,
+        envelope: { media: { mimeType: "audio/mpeg" }, result: null },
+      },
+    );
     expect(recent.entries).toEqual([
       expect.objectContaining({
         state: "failed",
@@ -3948,6 +3975,14 @@ describe("Recent's activity list", () => {
         operationId: OPERATION_ID,
       }),
       expect.objectContaining({ state: "failed", message: STOPPED }),
+      expect.objectContaining({
+        state: "failed",
+        message: "The audio could not be checked.",
+      }),
+      expect.objectContaining({
+        state: "failed",
+        message: "The audio could not be checked.",
+      }),
       expect.objectContaining({
         state: "failed",
         message: "The audio could not be checked.",
