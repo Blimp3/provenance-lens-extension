@@ -144,7 +144,7 @@ type ObservedMessage = {
 };
 
 async function launchLens(
-  options: { downloads?: boolean } = {},
+  options: { downloads?: boolean; pairing?: boolean } = {},
 ): Promise<Lens> {
   const image = await readFile(
     resolve(process.cwd(), "tests/fixtures/image-fixture.png"),
@@ -155,7 +155,14 @@ async function launchLens(
       response.end(image);
       return;
     }
-    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      // A page that keeps the Clipboard API to itself, so a frame inside it
+      // cannot write to the clipboard.
+      ...(request.url?.startsWith("/clipboard")
+        ? { "permissions-policy": "clipboard-write=(self)" }
+        : {}),
+    });
     response.end(
       request.url?.startsWith("/embed")
         ? EMBED_HTML
@@ -199,12 +206,27 @@ async function launchLens(
   const { context, worker } = await launchWithWorker(
     extensionPath,
     temporaryRoot,
-    // Every web request is recorded; only the fixture server answers.
+    // Every web request is recorded; only the fixture server answers, and
+    // with pairing on, DigiBot's pairing route.
     (launched) =>
       launched.route(/^https?:\/\//u, async (route) => {
         const url = route.request().url();
         requests.push(url);
         if (url.startsWith(`${origin}/`)) await route.continue();
+        else if (
+          options.pairing &&
+          route.request().method() === "POST" &&
+          new URL(url).pathname === "/api/integration/pairings"
+        )
+          await route.fulfill({
+            status: 201,
+            contentType: "application/json",
+            body: JSON.stringify({
+              pairId: "pair-e2e",
+              confirmationCode: "482731",
+              expiresAt: new Date(Date.now() + 300_000).toISOString(),
+            }),
+          });
         else await route.abort();
       }),
   );
@@ -436,6 +458,13 @@ async function toastText(page: Page): Promise<string> {
   } finally {
     await cdp.detach();
   }
+}
+
+function localValue(lens: Lens, key: string): Promise<unknown> {
+  return lens.worker.evaluate(async (name) => {
+    const values = await chrome.storage.local.get(name);
+    return values[name] ?? null;
+  }, key);
 }
 
 /** The worker's workflow state, which lives in local storage. */
@@ -1687,6 +1716,120 @@ test("the Now row names the pick that runs", async () => {
       await pressClosing(page, "Escape");
       await expect.poll(() => hostCount(page)).toBe(0);
     }
+  } finally {
+    await lens.close();
+  }
+});
+
+test("a page that keeps the Clipboard API to itself still gets /link copied through the worker", async () => {
+  const lens = await launchLens({ pairing: true });
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/clipboard.html`);
+    const frame = await openPalette(lens, page);
+    // The page's Permissions Policy refuses the frame's own write.
+    expect(
+      await frame.evaluate(() =>
+        navigator.clipboard.writeText("from the frame").then(
+          () => "written",
+          (error: unknown) => (error as Error).name,
+        ),
+      ),
+    ).toBe("NotAllowedError");
+
+    await frame.getByRole("option", { name: /^Connect DigiBot/u }).click();
+    await expect(frame.locator("#detail h2")).toHaveText("Connect DigiBot");
+    lens.requests.length = 0;
+    await frame
+      .getByRole("option", { name: /^Start pairing and copy \/link/u })
+      .click();
+
+    await expect(frame.locator("#pair-command")).toHaveText("/link pair-e2e");
+    await expect(frame.locator("#status-text")).toHaveText("Copied /link");
+    const tabId = await tabIdOf(lens, page);
+    const copies = (await observed(lens)).filter(
+      ({ message }) => message["type"] === "copy-text",
+    );
+    expect(copies).toHaveLength(1);
+    expect(copies[0]?.message).toEqual({
+      type: "copy-text",
+      text: "/link pair-e2e",
+    });
+    expect(copies[0]?.tabId).toBe(tabId);
+    expect(copies[0]?.frameId).not.toBe(0);
+    expect(lens.requests[0]).toMatch(/\/api\/integration\/pairings$/u);
+
+    // The frame cannot ask the offscreen document itself.
+    expect(
+      await frame.evaluate(() =>
+        chrome.runtime
+          .sendMessage({
+            target: "lens-offscreen",
+            type: "copy",
+            text: "from the frame",
+          })
+          .catch(() => "refused"),
+      ),
+    ).not.toBe(true);
+
+    // The worker's offscreen document put the command on the clipboard.
+    const reader = await lens.context.newPage();
+    await lens.context.grantPermissions(["clipboard-read"], {
+      origin: lens.origin,
+    });
+    await reader.goto(`${lens.origin}/page.html`);
+    await reader.bringToFront();
+    expect(await reader.evaluate(() => navigator.clipboard.readText())).toBe(
+      "/link pair-e2e",
+    );
+  } finally {
+    await lens.close();
+  }
+});
+
+test("a synthetic click or key on a settings row changes nothing", async () => {
+  const lens = await launchLens();
+  try {
+    const page = await lens.context.newPage();
+    await page.goto(`${lens.origin}/page.html`);
+    const frame = await openPalette(lens, page);
+    await frame.locator("#query").fill("Save page title");
+    const row = frame.getByRole("option", { name: /^Save page title/u });
+    await expect(row).toHaveAttribute("aria-selected", "true");
+    const before = await localValue(lens, "provenanceLens.settings");
+
+    await row.evaluate((element: HTMLElement) => {
+      element.click();
+      element.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true }),
+      );
+      for (const type of ["keydown", "keyup"])
+        document.dispatchEvent(
+          new KeyboardEvent(type, {
+            key: "Enter",
+            code: "Enter",
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+    });
+    await page.waitForTimeout(600);
+    expect(await localValue(lens, "provenanceLens.settings")).toEqual(before);
+    await expect(frame.locator("#status-text")).not.toHaveText("Saved");
+
+    // The same row runs for a real click.
+    await row.click();
+    await expect(frame.locator("#status-text")).toHaveText("Saved");
+    await expect
+      .poll(
+        async () =>
+          (
+            (await localValue(lens, "provenanceLens.settings")) as {
+              includePageTitle?: boolean;
+            } | null
+          )?.includePageTitle,
+      )
+      .toBe(false);
   } finally {
     await lens.close();
   }

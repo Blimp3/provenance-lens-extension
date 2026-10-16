@@ -2237,10 +2237,51 @@ describe("background verification workflow boundaries", () => {
   /** A page whose frame 0 accepts the picker script, with real session storage. */
   function boundPage(chromeState: ReturnType<typeof setupChrome>) {
     chromeState.setBadgeText.mockResolvedValue(undefined);
-    chromeState.executeScript.mockResolvedValue([
-      { frameId: 0, documentId: DOCUMENT_ID },
-    ]);
+    // The palette's host answers ready; every other injection binds the page.
+    chromeState.executeScript.mockImplementation(
+      (injection: { func?: () => unknown }) =>
+        Promise.resolve(
+          injection.func?.name === "mountPaletteHost"
+            ? [
+                {
+                  frameId: 0,
+                  documentId: DOCUMENT_ID,
+                  result: { status: "ready" },
+                },
+              ]
+            : [{ frameId: 0, documentId: DOCUMENT_ID }],
+        ),
+    );
     return sessionStorageOf(chromeState);
+  }
+
+  /**
+   * The palette mounted on the page at the view, with the host ready, and no
+   * Settings page opened instead.
+   */
+  async function expectPaletteAt(
+    chromeState: ReturnType<typeof setupChrome>,
+    store: Map<string, unknown>,
+    view: string,
+  ): Promise<void> {
+    await vi.waitFor(() =>
+      expect(store.get("provenanceLens.paletteOpen")).toMatchObject({
+        tabId: TAB_ID,
+        view,
+        host: "page",
+      }),
+    );
+    const mount = chromeState.executeScript.mock.calls
+      .map(
+        ([injection]) =>
+          injection as { func?: () => unknown; args?: unknown[] },
+      )
+      .filter((injection) => injection.func?.name === "mountPaletteHost")
+      .at(-1);
+    expect(mount?.args?.[0]).toBe(
+      `chrome-extension://test/palette.html#t=${(store.get("provenanceLens.paletteOpen") as { token: string }).token}`,
+    );
+    expect(chromeState.api.tabs.create).not.toHaveBeenCalled();
   }
 
   function boundToken(chromeState: ReturnType<typeof setupChrome>): string {
@@ -2350,7 +2391,7 @@ describe("background verification workflow boundaries", () => {
 
   it("offers Connect DigiBot when a page link needs the connection", async () => {
     const chromeState = setupChrome();
-    boundPage(chromeState);
+    const store = boundPage(chromeState);
     pageLinkAction();
     await loadBackground();
     // The class the freshly loaded worker checks against.
@@ -2378,11 +2419,7 @@ describe("background verification workflow boundaries", () => {
       },
       pickerSender(),
     );
-    await vi.waitFor(() =>
-      expect(chromeState.api.tabs.create).toHaveBeenCalledWith({
-        url: "chrome-extension://test/settings.html#integration-heading",
-      }),
-    );
+    await expectPaletteAt(chromeState, store, "connect");
   });
 
   it("shows a progress toast with Cancel while an image verifies, and Cancel stops it", async () => {
@@ -2676,7 +2713,7 @@ describe("background verification workflow boundaries", () => {
 
   it("shows a picked handoff's failure with its button and opens Extension access from it", async () => {
     const chromeState = setupChrome();
-    boundPage(chromeState);
+    const store = boundPage(chromeState);
     mocks.getSynthIdDisclosureVersion.mockResolvedValue(1);
     mocks.actionHandler.mockResolvedValueOnce({
       kind: "website",
@@ -2722,16 +2759,12 @@ describe("background verification workflow boundaries", () => {
       { type: "toast-action", sessionToken, action: "grant-access" },
       pickerSender(),
     );
-    await vi.waitFor(() =>
-      expect(chromeState.api.tabs.create).toHaveBeenCalledWith({
-        url: "chrome-extension://test/settings.html#permissions-heading",
-      }),
-    );
+    await expectPaletteAt(chromeState, store, "access");
   });
 
   it("opens Extension access instead of the SynthID picker without download access", async () => {
     const chromeState = setupChrome();
-    boundPage(chromeState);
+    const store = boundPage(chromeState);
     (
       chromeState.api.permissions.contains as ReturnType<typeof vi.fn>
     ).mockResolvedValue(false);
@@ -2742,13 +2775,49 @@ describe("background verification workflow boundaries", () => {
       { type: "start-action", actionId: SYNTHID_ACTION_ID, trigger: "popup" },
       extensionPageSender("palette.html"),
     );
-    await vi.waitFor(() =>
-      expect(chromeState.api.tabs.create).toHaveBeenCalledWith({
-        url: "chrome-extension://test/settings.html#permissions-heading",
-      }),
-    );
-    expect(chromeState.executeScript).not.toHaveBeenCalled();
+    await expectPaletteAt(chromeState, store, "access");
+    // Only the palette's host was injected, never the picker.
+    expect(
+      chromeState.executeScript.mock.calls.map(
+        ([injection]) => (injection as { func?: () => unknown }).func?.name,
+      ),
+    ).toEqual(["mountPaletteHost"]);
     expect(mocks.actionHandler).not.toHaveBeenCalled();
+  });
+
+  it("opens the palette on the toast's page at the view of each settings button", async () => {
+    const chromeState = setupChrome();
+    const store = boundPage(chromeState);
+    const buttons = [
+      ["connect-digibot", "connect"],
+      ["grant-access", "access"],
+      ["switch-to-api", "verification-mode"],
+    ] as const;
+    store.set(
+      TOAST_BINDINGS_KEY,
+      buttons.map(([action], index) => ({
+        resultId: null,
+        sessionToken: `00000000-0000-4000-8000-00000000000${index}`,
+        tabId: TAB_ID,
+        frameId: 0,
+        documentId: DOCUMENT_ID,
+        actions: [action],
+      })),
+    );
+    await loadBackground();
+
+    for (const [index, [action, view]] of buttons.entries()) {
+      messageListenerOf(chromeState)(
+        {
+          type: "toast-action",
+          sessionToken: `00000000-0000-4000-8000-00000000000${index}`,
+          action,
+        },
+        pickerSender(),
+      );
+      await expectPaletteAt(chromeState, store, view);
+    }
+    expect(chromeState.api.tabs.get).toHaveBeenCalledWith(TAB_ID);
   });
 });
 
@@ -3069,6 +3138,149 @@ describe("the Lens palette in the worker", () => {
     });
     // A browser page gets no injection.
     expect(chromeState.executeScript).not.toHaveBeenCalled();
+  });
+
+  it("opens the palette at Settings from the toolbar's right-click Settings…", async () => {
+    const chromeState = setupChrome();
+    const store = storeOf(chromeState);
+    hostReady(chromeState);
+    await loadBackground();
+
+    listenerOf<
+      (info: chrome.contextMenus.OnClickData, tab: chrome.tabs.Tab) => void
+    >(chromeState.onContextMenuClicked)(
+      { menuItemId: "lens-act-settings" } as chrome.contextMenus.OnClickData,
+      { id: TAB_ID, url: PAGE_URL, windowId: WINDOW_ID } as chrome.tabs.Tab,
+    );
+
+    await waitForCall(chromeState.executeScript, 1);
+    const token = (
+      chromeState.executeScript.mock.calls[0]?.[0] as { args: string[] }
+    ).args[1];
+    expect(store.get(OPEN_KEY)).toEqual({
+      token,
+      tabId: TAB_ID,
+      view: "settings",
+      host: "page",
+      page: "web",
+      hostname: "page.example",
+      scope: "page",
+      needsPick: false,
+    });
+    expect(chromeState.api.tabs.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps a Settings view when the palette falls back to a tab", async () => {
+    const chromeState = setupChrome();
+    const store = storeOf(chromeState);
+    (
+      chromeState.api.action as unknown as ActionStub
+    ).openPopup.mockRejectedValue(
+      new Error("Cannot show popup for an inactive window"),
+    );
+    await loadBackground();
+
+    listenerOf<
+      (info: chrome.contextMenus.OnClickData, tab: chrome.tabs.Tab) => void
+    >(chromeState.onContextMenuClicked)(
+      { menuItemId: "lens-act-settings" } as chrome.contextMenus.OnClickData,
+      {
+        id: TAB_ID,
+        url: "chrome://newtab/",
+        windowId: WINDOW_ID,
+      } as chrome.tabs.Tab,
+    );
+
+    await waitForCall(
+      chromeState.api.tabs.create as ReturnType<typeof vi.fn>,
+      1,
+    );
+    expect(store.get(OPEN_KEY)).toMatchObject({
+      view: "settings",
+      host: "tab",
+    });
+  });
+
+  it("copies text only for the palette frame it mounted, through one offscreen document", async () => {
+    const chromeState = setupChrome();
+    storeOf(chromeState);
+    hostReady(chromeState);
+    const createDocument = vi.fn().mockResolvedValue(undefined);
+    const offscreenSend = vi.fn().mockResolvedValue(true);
+    Object.assign(chromeState.api.runtime, {
+      getContexts: vi.fn().mockResolvedValue([]),
+      sendMessage: offscreenSend,
+    });
+    Object.assign(chromeState.api, { offscreen: { createDocument } });
+    const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await loadBackground();
+    const send = messageListenerOf(chromeState);
+    const copy = { type: "copy-text", text: "/link 7F3K9Q" };
+    const answer = async (
+      message: unknown,
+      sender: chrome.runtime.MessageSender,
+    ): Promise<unknown> => {
+      const respond = vi.fn();
+      const async = send(message, sender, respond);
+      await flush();
+      await flush();
+      return async === true ? respond.mock.calls[0]?.[0] : "refused at once";
+    };
+
+    // No palette is mounted yet.
+    expect(await answer(copy, paletteFrame())).toBe(false);
+    clickToolbar(chromeState);
+    await waitForCall(chromeState.executeScript, 1);
+    const token = (
+      chromeState.executeScript.mock.calls[0]?.[0] as { args: string[] }
+    ).args[1];
+    await flush();
+
+    // Another tab, another palette frame in the same tab, an inactive tab.
+    expect(await answer(copy, paletteFrame({ tabId: 8, token }))).toBe(false);
+    expect(
+      await answer(
+        copy,
+        paletteFrame({ token: "00000000-0000-4000-8000-000000000000" }),
+      ),
+    ).toBe(false);
+    expect(await answer(copy, paletteFrame({ token, active: false }))).toBe(
+      false,
+    );
+    // The page itself, the popup and a tab copy on their own.
+    expect(
+      await answer(copy, { ...paletteFrame({ token }), url: PAGE_URL }),
+    ).toBe("refused at once");
+    expect(
+      await answer(copy, extensionPageSender(`palette.html#t=${token}`)),
+    ).toBe("refused at once");
+    // Not a string, or too long.
+    expect(
+      await answer({ type: "copy-text", text: 42 }, paletteFrame({ token })),
+    ).toBe("refused at once");
+    expect(
+      await answer(
+        { type: "copy-text", text: "x".repeat(513) },
+        paletteFrame({ token }),
+      ),
+    ).toBe("refused at once");
+    expect(createDocument).not.toHaveBeenCalled();
+    expect(offscreenSend).not.toHaveBeenCalled();
+
+    expect(await answer(copy, paletteFrame({ token }))).toBe(true);
+    expect(await answer(copy, paletteFrame({ token }))).toBe(true);
+    expect(createDocument).toHaveBeenCalledTimes(1);
+    expect(createDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "offscreen.html",
+        reasons: ["CLIPBOARD"],
+      }),
+    );
+    expect(offscreenSend).toHaveBeenCalledWith({
+      target: "lens-offscreen",
+      type: "copy",
+      text: "/link 7F3K9Q",
+    });
   });
 
   it("closes an open palette on the second press and opens nothing else", async () => {

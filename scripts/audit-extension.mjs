@@ -6,9 +6,13 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifestPath = resolve(root, "apps/extension/dist/manifest.json");
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 
+// clipboardWrite and offscreen: the worker's offscreen document copies the
+// palette's /link command when the page blocks the frame's Clipboard API.
 const expectedPermissions = [
   "activeTab",
+  "clipboardWrite",
   "contextMenus",
+  "offscreen",
   "scripting",
   "storage",
 ].sort();

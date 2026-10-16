@@ -48,30 +48,37 @@ The first view shows these rows:
 - **Settings**
 - up to three commands that you ran recently, under **Last used**
 
-If the browser did not assign the palette key, the row **Choose a palette
-shortcut** opens the browser's shortcuts page. Type to search all commands. An
-alias puts its command first. For example, `d` finds **Send video** and `v`
-finds **Pick an image to verify…**. Use **Actions ⌘K** to set or clear an
-alias.
+**Finish setup** rows show until each step is done:
 
-Until a later release, these rows and buttons open the Settings page in a tab:
+- **Connect DigiBot**, or **Complete DigiBot pairing** while a pairing waits
+  for your approval
+- **Grant optional access**
+- **Choose a palette shortcut**, if the browser did not assign the palette key.
+  It opens the browser's shortcuts page.
+
+Type to search all commands and settings. An alias puts its command first. For
+example, `d` finds **Send video** and `v` finds **Pick an image to verify…**.
+Use **Actions ⌘K** to set or clear an alias.
+
+These rows and buttons open the matching Settings view in the palette, on the
+current page or in the popup on a browser page:
 
 - the **Settings**, **Connect DigiBot** and **Needs download access** rows
 - the toast buttons **Connect DigiBot**, **Grant access** and **Switch to API**
 
 ### Keys in the palette
 
-| Key                                | Does                                                                               |
-| ---------------------------------- | ---------------------------------------------------------------------------------- |
-| Typing                             | Filters the list                                                                   |
-| ↑ / ↓, Ctrl+P / Ctrl+N             | Move the active row                                                                |
-| ⌘↑ / ⌘↓                            | First or last row                                                                  |
-| Enter                              | Run the row or open its view                                                       |
-| Alt+1 … Alt+9 (⌥1 … ⌥9 on a Mac)   | Run or open row 1 to 9                                                             |
-| ⌘K (Ctrl+K)                        | Open or close the action panel: Run, Set alias…, Clear alias, Set hotkey…          |
-| Esc                                | Close the action panel, clear the search, go back one view, then close the palette |
-| Backspace in an empty search field | Go back one view                                                                   |
-| Tab / Shift+Tab                    | Move between the search field and **Actions ⌘K**; focus stays in the palette       |
+| Key                                | Does                                                                                                         |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Typing                             | Filters the list                                                                                             |
+| ↑ / ↓, Ctrl+P / Ctrl+N             | Move the active row                                                                                          |
+| ⌘↑ / ⌘↓                            | First or last row                                                                                            |
+| Enter                              | Run the row or open its view                                                                                 |
+| Alt+1 … Alt+9 (⌥1 … ⌥9 on a Mac)   | Run or open row 1 to 9                                                                                       |
+| ⌘K (Ctrl+K)                        | Open or close the action panel: Run, Set alias…, Clear alias, Set hotkey…, and Reset to default on a setting |
+| Esc                                | Close the action panel, clear the search, go back one view, then close the palette                           |
+| Backspace in an empty search field | Go back one view                                                                                             |
+| Tab / Shift+Tab                    | Move between the search field and **Actions ⌘K**; focus stays in the palette                                 |
 
 These keys reach only the palette. The page under it does not get them. When
 the palette closes, focus goes back to the page element that had it.
@@ -87,6 +94,51 @@ asks you to press and hold Esc to leave fullscreen. Known limits:
   the page itself held, and when the palette closes, that lock ends.
 - Keyboard Lock exists only on secure (https) pages. On an http page, Esc
   still leaves fullscreen.
+
+### Settings in the palette
+
+**Settings** holds every setting that can change inside the palette. Each of
+its rows is also a search result on the first view. A change saves at once.
+**⌘K › Reset to default** puts a setting back.
+
+| Group               | Rows                                                                                                                            |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| DigiBot             | Connect or disconnect DigiBot                                                                                                   |
+| Verification        | **Verification mode** and **Screenshot copy fallback**                                                                          |
+| History and privacy | **Keep history**, **Local cache**, **Save page title**, **Debug details**, **Clear history…** and **Clear verification cache…** |
+| Access              | **Optional access**, **Allow one site…** and **Granted sites**                                                                  |
+| Keys                | **Palette shortcut**, **Command hotkeys** and **Aliases**                                                                       |
+| About               | The version, **What a result means** and the line "Lens never scans pages."                                                     |
+
+**Settings › DigiBot** pairs the browser with DigiBot:
+
+1. It shows the consent text and **Provider processing details**.
+2. **Start pairing and copy /link** creates a short-lived pairing. It shows the
+   `/link` command and its confirmation code, and copies the command.
+3. Send the command to your private DigiBot chat, and approve the matching
+   code there.
+4. Lens checks for your approval every 3 seconds for the first 30 seconds,
+   then every 30 seconds, for at most 5 minutes. This stays within DigiBot's
+   limit of 20 checks in 10 minutes.
+5. After 5 minutes, Lens shows "The pairing was not approved yet or has
+   expired. Start again after approving it in DigiBot." and **Start again**.
+
+While a pairing waits, the first view shows **Complete DigiBot pairing**, which
+checks again. **Disconnect DigiBot…**, **Clear history…**, **Clear
+verification cache…** and **Reset aliases…** ask first, with **Cancel** as the
+first choice. A switch of **Verification mode** only saves the mode. The first
+verification in a mode still shows its disclosure.
+
+The last row, **Advanced settings ↗** (Backend URL, client token, connection
+test), opens the Settings page in a tab. The API connection settings stay
+there. The palette never shows or uses the client token. The browser's
+**Options** entry for Lens opens the same page.
+
+Over a page, the palette copies the `/link` command through the Lens worker,
+so a page that keeps the clipboard from its frames does not stop the copy. In
+the popup or a tab, the palette uses the browser's Clipboard API. If the copy
+fails, the palette selects the command and asks you to press ⌘C (Ctrl+C
+outside a Mac).
 
 ### Browser commands
 
@@ -119,12 +171,12 @@ the browser puts them under one **Provenance Lens** item.
 | Right-click on                             | Item                                                                         | Does                                                                                                                 |
 | ------------------------------------------ | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | An image                                   | **Verify this image**                                                        | Checks that image, as **Check OpenAI provenance** did                                                                |
-| An image                                   | **Send this image to Telegram**                                              | Sends the original file through DigiBot, or opens Settings to connect DigiBot                                        |
+| An image                                   | **Send this image to Telegram**                                              | Sends the original file through DigiBot, or opens the palette at **Settings › DigiBot**                              |
 | An image, a page, a frame or selected text | **Open Lens palette**                                                        | Opens the palette                                                                                                    |
 | A link                                     | **Send link to Telegram as video**, **…as voice note** or **…as audio file** | Sends that link through DigiBot. On X, right-click the post's timestamp                                              |
 | A video or audio player                    | **Send this video to Telegram**                                              | Sends the page link, or starts the post picker on an X or YouTube listing page such as a timeline, channel or search |
 | A video or audio player                    | **Lens palette for this video…**                                             | Opens the Download view for this page                                                                                |
-| The toolbar icon                           | **Settings…**, **Recent actions…** or **Result history**                     | Opens Settings, the palette at Recent, or the History page                                                           |
+| The toolbar icon                           | **Settings…**, **Recent actions…** or **Result history**                     | Opens the palette at Settings or Recent, or the History page                                                         |
 
 ### Restricted pages
 
@@ -200,7 +252,7 @@ Pairing still needs an admitted DigiBot account.
 ### Palette rows that need DigiBot
 
 Until you pair the browser, these rows show **Needs DigiBot** and open
-Settings:
+**Settings › DigiBot**:
 
 - **Download › Send video**, **Send voice note**, **Send audio file** and
   **Send clip…**
@@ -367,7 +419,7 @@ npm run package:public
 ```
 
 `npm run package:public` creates
-`artifacts/provenance-lens-extension-v2.0.0-public.zip`.
+`artifacts/provenance-lens-extension-v2.1.0-public.zip`.
 
 The synthetic browser tests intercept the DigiBot gateway. They do not call
 OpenAI, Telegram, DigiBot, or a production verification backend. See
@@ -392,6 +444,16 @@ For local review, load `apps/extension/dist` as an unpacked extension.
   the page.
 - Because of these uses of `activeTab` and `scripting`, the link features add
   no permission.
+- `clipboardWrite` and `offscreen` copy the DigiBot `/link` command when you
+  choose **Start pairing and copy /link** in the palette over a page. The
+  palette's frame never writes to the clipboard there. It asks the Lens
+  worker, which copies through one offscreen document, because the page's
+  Permissions Policy can block a frame's Clipboard API. `offscreen` lets the
+  worker open that document, and `clipboardWrite` lets the document copy
+  without a click inside it.
+- A packed or store install shows the warning "Modify data you copy and
+  paste." for `clipboardWrite`. `offscreen` shows no warning, and an unpacked
+  load shows no permission prompt.
 - The only required host permission is the DigiBot gateway. It gives no access
   to other sites.
 - The optional `downloads` permission saves the exact selected file in Website
@@ -399,10 +461,13 @@ For local review, load `apps/extension/dist` as an unpacked extension.
   Google SynthID…** handoff.
 - The optional `http://*/*` and `https://*/*` permissions let Lens get an image
   that you select from its host.
-- **Grant optional access**, in Settings, asks the browser for site access and
-  downloads at the same time.
-- As an alternative, Settings can grant one exact origin, such as an image host
-  or a backend that you control.
+- **Settings › Optional access** in the palette, or **Grant optional access**
+  on the Settings page, asks the browser for site access and downloads at the
+  same time. The **Needs download access** rows and the **Grant access** toast
+  button open that row.
+- As an alternative, **Settings › Allow one site…** in the palette, or the
+  Settings page, can grant one exact origin, such as an image host or a
+  backend that you control.
 - `web_accessible_resources` lists only `palette.html`, for `http` and `https`
   pages. It is not a permission. See
   [Why `palette.html` is web-accessible](#why-palettehtml-is-web-accessible).

@@ -69,6 +69,7 @@ import {
   palettePortName,
   type PaletteHostStatus,
 } from "./palette-host.js";
+import { copyThroughOffscreen } from "./offscreen-copy.js";
 import {
   commandRoute,
   MEDIA_PICK_MESSAGE,
@@ -366,20 +367,30 @@ const PAGE_FRAME_MESSAGE_TYPES: ReadonlySet<ExtensionMessage["type"]> = new Set(
   ["start-action", "cancel-active"],
 );
 
-chrome.runtime.onMessage.addListener((message: unknown, sender) => {
-  const parsed = ExtensionMessageSchema.safeParse(message);
-  if (!parsed.success) return false;
-  if (EXTENSION_PAGE_MESSAGE_TYPES.has(parsed.data.type)) {
-    if (!isExtensionPageSender(sender)) return false;
-    if (isPageFrameSender(sender)) {
-      if (!PAGE_FRAME_MESSAGE_TYPES.has(parsed.data.type)) return false;
-      void handlePageFrameMessage(parsed.data, sender);
-      return false;
+chrome.runtime.onMessage.addListener(
+  (message: unknown, sender, sendResponse) => {
+    const parsed = ExtensionMessageSchema.safeParse(message);
+    if (!parsed.success) return false;
+    if (parsed.data.type === "copy-text") {
+      // Only a palette frame inside a page copies through the worker; the
+      // popup and the tab copy with the Clipboard API.
+      if (!isExtensionPageSender(sender) || !isPageFrameSender(sender))
+        return false;
+      void copyForPageFrame(parsed.data.text, sender).then(sendResponse);
+      return true;
     }
-  }
-  void handleExtensionMessage(parsed.data, sender);
-  return false;
-});
+    if (EXTENSION_PAGE_MESSAGE_TYPES.has(parsed.data.type)) {
+      if (!isExtensionPageSender(sender)) return false;
+      if (isPageFrameSender(sender)) {
+        if (!PAGE_FRAME_MESSAGE_TYPES.has(parsed.data.type)) return false;
+        void handlePageFrameMessage(parsed.data, sender);
+        return false;
+      }
+    }
+    void handleExtensionMessage(parsed.data, sender);
+    return false;
+  },
+);
 
 function isExtensionPageSender(sender: chrome.runtime.MessageSender): boolean {
   return sender.url?.startsWith(chrome.runtime.getURL("")) === true;
@@ -399,15 +410,29 @@ async function handlePageFrameMessage(
   message: ExtensionMessage,
   sender: chrome.runtime.MessageSender,
 ): Promise<void> {
+  if (await isMountedPaletteFrame(sender))
+    await handleExtensionMessage(message, sender);
+}
+
+async function isMountedPaletteFrame(
+  sender: chrome.runtime.MessageSender,
+): Promise<boolean> {
   const tabId = sender.tab?.id;
-  if (tabId === undefined || sender.tab?.active !== true) return;
+  if (tabId === undefined || sender.tab?.active !== true) return false;
   const token = await paletteMountToken(tabId);
-  if (
-    token === null ||
-    sender.url !== chrome.runtime.getURL(`palette.html#t=${token}`)
-  )
-    return;
-  await handleExtensionMessage(message, sender);
+  return (
+    token !== null &&
+    sender.url === chrome.runtime.getURL(`palette.html#t=${token}`)
+  );
+}
+
+/** The same check as start-action: the frame the worker mounted, for its tab. */
+async function copyForPageFrame(
+  text: string,
+  sender: chrome.runtime.MessageSender,
+): Promise<boolean> {
+  if (!(await isMountedPaletteFrame(sender))) return false;
+  return copyThroughOffscreen(text);
 }
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -3175,13 +3200,12 @@ async function handleMenuClick(
     case MENU_IDS.sendImage: {
       if (!tab || tabId === undefined) return;
       const activityId = await beginMenuActivity(info.menuItemId, "image", tab);
-      // Until the palette has a Connect view, Settings shows the pairing.
       if (!(await isIntegrationConnected())) {
         await noteActivity(activityId, {
           state: "refused",
           message: "Connect Provenance Lens to DigiBot in Settings first.",
         });
-        await openSettingsAt("integration-heading");
+        await openPalette(tab, "connect");
         return;
       }
       await handleContextMenu(info, tab, DOWNLOAD_ACTION_ID, activityId);
@@ -3222,7 +3246,7 @@ async function handleMenuClick(
       await openPalette(tab, "root");
       return;
     case MENU_IDS.settings:
-      await chrome.tabs.create({ url: chrome.runtime.getURL("settings.html") });
+      await openPalette(tab, "settings");
       return;
     case MENU_IDS.recent:
       await openPalette(tab, "recent");
@@ -3751,7 +3775,7 @@ async function openResultDetails(
 /**
  * A toast button other than Details, from the page and document that show
  * the toast. Its binding says which buttons that toast has; Retry and Cancel
- * act once. The settings buttons open settings.html.
+ * act once. The settings buttons open the palette on that page at their view.
  */
 async function handleToastAction(
   message: Extract<ExtensionMessage, { type: "toast-action" }>,
@@ -3809,13 +3833,13 @@ async function handleToastAction(
       return;
     }
     case "connect-digibot":
-      await openSettingsAt("integration-heading");
+      await openPalette(await toastTab(binding.tabId), "connect");
       return;
     case "grant-access":
-      await openSettingsAt("permissions-heading");
+      await openPalette(await toastTab(binding.tabId), "access");
       return;
     case "switch-to-api":
-      await openSettingsAt("verification-mode-heading");
+      await openPalette(await toastTab(binding.tabId), "verification-mode");
       return;
     case "check-synthid":
       await startSynthIdPick(
@@ -3832,10 +3856,8 @@ async function handleToastAction(
   }
 }
 
-async function openSettingsAt(heading: string): Promise<void> {
-  await chrome.tabs.create({
-    url: `${chrome.runtime.getURL("settings.html")}#${heading}`,
-  });
+function toastTab(tabId: number): Promise<chrome.tabs.Tab | undefined> {
+  return chrome.tabs.get(tabId).catch(() => undefined);
 }
 
 async function hasDownloadsPermission(): Promise<boolean> {
@@ -3892,7 +3914,7 @@ async function startSynthIdPick(
       state: "refused",
       message: "Allow download access in Settings first.",
     });
-    await openSettingsAt("permissions-heading");
+    await openPalette(tab, "access");
     return;
   }
   if (!hasSynthIdAcknowledgement(await getSynthIdDisclosureVersion())) {
@@ -4097,6 +4119,13 @@ async function openPalette(
   });
 }
 
+const SETTINGS_OPEN_VIEWS: ReadonlySet<OpenView> = new Set([
+  "settings",
+  "connect",
+  "access",
+  "verification-mode",
+]);
+
 /** What the frame may know about the page: its host name, never its address. */
 function paletteRecord(
   tab: chrome.tabs.Tab,
@@ -4150,12 +4179,15 @@ async function openFallbackPopup(
   }
 }
 
-/** The palette in a tab, with its own record and no page to act on. */
+/**
+ * The palette in a tab, with its own record and no page to act on. A
+ * Settings view stays; page views open at the root.
+ */
 async function openPaletteTab(from: PaletteOpenRecord): Promise<void> {
   const record: PaletteOpenRecord = {
     ...from,
     token: crypto.randomUUID(),
-    view: "root",
+    view: SETTINGS_OPEN_VIEWS.has(from.view) ? from.view : "root",
     host: "tab",
     page: "none",
     hostname: "",

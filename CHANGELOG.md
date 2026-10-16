@@ -1,5 +1,84 @@
 # Changelog
 
+## [2.1.0] - not yet released
+
+Moves every setting that can change inside the palette into it. Every version
+field is 2.1.0, a minor version for the two new permissions, with no tag or
+release yet.
+
+### Added
+
+- **Settings** in the Lens palette, in the groups DigiBot, Verification,
+  History and privacy, Access, Keys and About. Every row is also a search
+  result on the first view, every change saves at once, and **⌘K** offers
+  **Reset to default** on each setting row. The last row, **Advanced
+  settings ↗** (Backend URL, client token, connection test), opens the
+  Settings page in a tab: the API connection settings stay there, and the
+  palette never shows or uses the client token. The Settings page stays the
+  browser's Options page and does not change.
+- **Settings › DigiBot** pairs DigiBot inside the palette: the consent text,
+  **Provider processing details ↗** and **Start pairing and copy /link**,
+  which creates the pairing, shows the `/link` command and its confirmation
+  code, and copies the command. Lens then checks for the approval every 3 s
+  for the first 30 s and every 30 s after that, for at most 5 minutes, within
+  DigiBot's limit of 20 checks per 10 minutes, and then shows the timeout
+  message and **Start again**. While a pairing waits, the first view shows
+  **Complete DigiBot pairing**. When connected, **Disconnect DigiBot…** asks
+  first.
+- The other settings rows: **Verification mode**, with the two mode
+  disclosures as its hint, and **Screenshot copy fallback**; **Keep
+  history**, **Local cache**, **Save page title**, **Debug details**, **Clear
+  history…** and **Clear verification cache…**; **Optional access**, **Allow
+  one site…** and **Granted sites**; **Palette shortcut ↗**, **Command
+  hotkeys** and **Aliases** with **Reset aliases…**; the version, **What a
+  result means** and the line "Lens never scans pages." Switching the mode
+  only saves it: the first verification in a mode still shows its disclosure.
+  Each clear, **Disconnect DigiBot…** and **Reset aliases…** ask first, with
+  **Cancel** as the first choice.
+- **Finish setup** rows on the first view for **Connect DigiBot** (or
+  **Complete DigiBot pairing**) and **Grant optional access**, next to
+  **Choose a palette shortcut**, each shown until it is done.
+
+### Changed
+
+- **Settings**, the toolbar's right-click **Settings…**, the rows **Connect
+  DigiBot** and **Needs download access**, the toast buttons **Connect
+  DigiBot**, **Grant access** and **Switch to API**, and **Also check with
+  Google ↗** without download access open the palette at Settings, Settings ›
+  DigiBot, Settings › Access or Settings › Verification mode, on the current
+  page or in the popup on a browser page, instead of the Settings page in a
+  tab. History and the browser's shortcuts page still open in a tab.
+- One copy path for the `/link` command: in the popup or a tab the palette
+  uses the Clipboard API; over a page it asks Lens's worker, which copies
+  through one offscreen document, so a page whose Permissions Policy blocks
+  its frames from the clipboard does not stop the copy. If that fails, the
+  palette selects the command and asks you to press ⌘C (Ctrl+C outside a
+  Mac).
+
+### Security and privacy
+
+- New permissions `clipboardWrite` (install warning "Modify data you copy and
+  paste.") and `offscreen`, for the worker's copy. The worker copies only for
+  a palette frame it mounted on that tab, and only a string of at most 512
+  characters; a palette frame inside a page never writes to the clipboard
+  itself, and the offscreen document copies only for the worker.
+- Every settings change, Run, form submit and confirmation goes through the
+  palette's input gate (trusted input only, the 250 ms and 500 ms visibility
+  rule, the host check), so a page cannot change a setting, start or stop
+  pairing, grant access or clear data with synthetic input or a covered
+  frame. Opening the palette or its Settings view starts no check and sends
+  no request; a pairing request starts only from **Start pairing and copy
+  /link**.
+
+### Tests
+
+- Unit tests for the palette Settings rows, saves, validation messages,
+  confirmations, the pairing checks, copy routing and the single offscreen
+  document; worker tests for the palette view each button opens and for
+  refused copy requests; browser tests for the copy on a page whose
+  Permissions Policy blocks the frame's clipboard, and for a synthetic click
+  or key on a settings row.
+
 ## [Unreleased]
 
 Adds the pick banner and result toasts, and the Lens palette, which replaces

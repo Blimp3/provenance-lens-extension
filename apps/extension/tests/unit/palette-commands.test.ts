@@ -381,14 +381,14 @@ describe("palette gating", () => {
     ).toEqual({
       reason: "Needs DigiBot",
       disabled: false,
-      fix: { kind: "tab", page: "connect" },
+      fix: { kind: "view", view: "connect" },
     });
     expect(
       commandGate(entry("check-synthid"), context({ downloadAccess: false })),
     ).toEqual({
       reason: "Needs download access",
       disabled: false,
-      fix: { kind: "tab", page: "access" },
+      fix: { kind: "view", view: "access" },
     });
     expect(commandGate(entry("send-clip"), context())).toEqual({
       reason: "Enter a range first",

@@ -10,7 +10,11 @@ import {
 } from "@provenance-lens/shared";
 
 import { RECENT_LIMIT, recentRow } from "../activity.js";
-import { isIntegrationConnected } from "../integration-client.js";
+import {
+  createPairing,
+  getPendingPairing,
+  isIntegrationConnected,
+} from "../integration-client.js";
 import {
   isOwnPalettePort,
   type PaletteHostAnswer,
@@ -18,15 +22,21 @@ import {
   type PaletteHostClose,
 } from "../palette-host.js";
 import {
+  defaultSettings,
   getActivity,
   getHistory,
   getSettings,
   getWorkflowState,
 } from "../storage.js";
 import {
+  getOptionalAccessState,
+  type OptionalAccessState,
+} from "./optional-access.js";
+import {
   ALIAS_RULE,
   checkAlias,
   commandGate,
+  DECLARED_COMMAND_IDS,
   effectiveAliases,
   fitsAudioCheck,
   formatClock,
@@ -56,6 +66,47 @@ import {
   type PaletteView,
   type TabPage,
 } from "./palette-commands.js";
+import {
+  allowSite,
+  checkSiteOrigin,
+  choicesFor,
+  clearSavedCache,
+  clearSavedHistory,
+  CONNECT_CONSENT,
+  CONNECT_INTRO,
+  confirmFor,
+  COPY_HINT_MAC,
+  COPY_HINT_OTHER,
+  copyText,
+  defaultFor,
+  disconnectDigiBot,
+  finishSetupItems,
+  formatPairingCode,
+  grantOptionalAccess,
+  MODE_DISCLOSURES,
+  openTabPage,
+  PAIR_INSTRUCTION,
+  PAIRING_TEXT,
+  pairingStartedAt,
+  pickPaletteSettings,
+  pollPairing,
+  PROVIDER_DETAILS_URL,
+  readGrantedSites,
+  RESULT_MEANINGS,
+  saveSetting,
+  settingsItems,
+  SITE_RULE,
+  type ChoiceView,
+  type ConfirmView,
+  type Outcome,
+  type PairingPoll,
+  type PaletteSettings,
+  type SettingKey,
+  type SettingsItem,
+  type SettingsRun,
+  type SettingUpdate,
+  type SiteCheck,
+} from "./palette-settings.js";
 
 /**
  * The Lens palette frame. Inside a page it renders only with the single-use
@@ -80,7 +131,13 @@ type Row = {
   verb: string;
   commandId?: string;
   record?: HistoryRecord;
-  run?: () => Promise<void>;
+  /** The value setting ⌘K › Reset to default restores. */
+  setting?: SettingKey;
+  /** A Choice row's current value: an accent check. */
+  check?: boolean;
+  /** A Confirm view's danger action. */
+  danger?: boolean;
+  run?: () => void | Promise<void>;
 };
 type ActionItem = {
   title: string;
@@ -89,7 +146,25 @@ type ActionItem = {
 };
 type Hint = { text: string; error: boolean };
 type InputSource = "key" | "pointer";
-type BuiltView = { rows: Row[]; hint?: Hint; notes?: string[]; empty?: string };
+/** Text above a Detail or Confirm view's rows, outside the listbox. */
+type Detail = {
+  heading?: string;
+  status?: Hint;
+  pair?: { command: string; code: string };
+  paragraphs: readonly string[];
+};
+type BuiltView = {
+  rows: Row[];
+  hint?: Hint;
+  notes?: string[];
+  empty?: string;
+  detail?: Detail;
+};
+type PendingPairing = {
+  pairId: string;
+  confirmationCode: string;
+  expiresAt: string;
+};
 type FrameData = {
   context: PaletteContext;
   prefs: PalettePrefs;
@@ -97,6 +172,11 @@ type FrameData = {
   workflow: WorkflowState | null;
   history: readonly HistoryRecord[];
   activity: readonly ActivityEntry[];
+  /** Only the settings the palette shows: never the backend or its token. */
+  settings: PaletteSettings;
+  pending: PendingPairing | null;
+  optionalAccess: OptionalAccessState | null;
+  grantedSites: readonly string[] | null;
 };
 
 /** A job or footer message older than this is stale. */
@@ -109,14 +189,7 @@ const RUNNING: ReadonlySet<WorkflowState["status"]> = new Set([
   "sending",
 ]);
 const IS_MAC = /Mac/u.test(navigator.userAgent);
-/** Settings stays a page for now; these rows open it in a tab. */
-const TAB_URLS: Readonly<Record<TabPage, string>> = {
-  settings: "settings.html",
-  connect: "settings.html#integration-heading",
-  access: "settings.html#permissions-heading",
-  history: "history.html",
-  shortcuts: "chrome://extensions/shortcuts",
-};
+const COPY_HINT = IS_MAC ? COPY_HINT_MAC : COPY_HINT_OTHER;
 const VIEW_LABELS: Readonly<Record<PaletteView, string>> = {
   root: "",
   download: "Download",
@@ -125,6 +198,41 @@ const VIEW_LABELS: Readonly<Record<PaletteView, string>> = {
   recent: "Recent",
   "audio-range": "Verify › Audio of this page",
   alias: "Set alias",
+  settings: "Settings",
+  connect: "Settings › DigiBot",
+  disconnect: "Settings › DigiBot",
+  "verification-mode": "Settings › Verification mode",
+  "history-retention": "Settings › Keep history",
+  "cache-limit": "Settings › Local cache",
+  "clear-history": "Settings › Clear history",
+  "clear-cache": "Settings › Clear verification cache",
+  access: "Settings › Access",
+  "allow-site": "Settings › Allow one site",
+  "granted-sites": "Settings › Granted sites",
+  "command-hotkeys": "Settings › Command hotkeys",
+  aliases: "Settings › Aliases",
+  "reset-aliases": "Settings › Reset aliases",
+  "about-results": "Settings › What a result means",
+};
+/** Views whose input is a field, not a search. */
+const FORM_VIEWS: ReadonlySet<PaletteView> = new Set([
+  "clip",
+  "audio-range",
+  "alias",
+  "allow-site",
+]);
+/** Views the worker opens with Settings one step back. */
+const UNDER_SETTINGS: ReadonlySet<PaletteView> = new Set([
+  "connect",
+  "access",
+  "verification-mode",
+]);
+const RUN_VERBS: Readonly<Record<SettingsRun["kind"], string>> = {
+  view: "Open",
+  toggle: "Toggle",
+  tab: "Open",
+  "optional-access": "Run",
+  none: "Open",
 };
 const LENS_ROWS = [
   "view-download",
@@ -152,6 +260,7 @@ const HOST_WATCH_LIMIT_MS = 2_000;
 const RESAMPLE_MS = 40;
 
 const paletteRoot = required<HTMLElement>("palette");
+const panelElement = required<HTMLElement>("panel");
 const scrim = required<HTMLElement>("scrim");
 const backButton = required<HTMLButtonElement>("back");
 const chip = required<HTMLButtonElement>("chip");
@@ -159,6 +268,7 @@ const input = required<HTMLInputElement>("query");
 const accessory = required<HTMLElement>("accessory");
 const spinner = required<HTMLElement>("spinner");
 const hintElement = required<HTMLElement>("hint");
+const detailElement = required<HTMLElement>("detail");
 const list = required<HTMLElement>("list");
 const live = required<HTMLElement>("live");
 const statusDot = required<HTMLElement>("status-dot");
@@ -192,7 +302,18 @@ let actionItems: ActionItem[] = [];
 let shownActions: ActionItem[] = [];
 let actionActive = 0;
 let savedUntil = 0;
+let savedText = "Saved";
 let footerError: string | null = null;
+/** A setting's result message, in the hint row until the next view or input. */
+let notice: Hint | null = null;
+/** The Connect view's status while it creates, times out or disconnects. */
+let connectStatus: Hint | null = null;
+/** The pairing this frame asks DigiBot about; it ends with the frame. */
+let pairingPoll: PairingPoll | null = null;
+/** The /link copy fell back to a selection for a keyboard copy. */
+let copySelected = false;
+/** The Detail on screen, so a render that changes nothing keeps a selection. */
+let detailKey = "";
 /** The panel's latest IntersectionObserver v2 visibility; none yet is hidden. */
 let panelVisible = false;
 let panelVisibleSince = 0;
@@ -226,7 +347,12 @@ async function start(): Promise<void> {
   }
   document.documentElement.classList.add(`host-${hostKind}`);
   const view = record?.view ?? "root";
-  stack = view === "root" ? ["root"] : ["root", view];
+  stack =
+    view === "root"
+      ? ["root"]
+      : UNDER_SETTINGS.has(view)
+        ? ["root", "settings", view]
+        : ["root", view];
   data = await loadData();
   wireEvents();
   paletteRoot.hidden = false;
@@ -265,9 +391,14 @@ async function loadData(): Promise<FrameData> {
     activity,
     prefs,
     commands,
+    pending,
+    optionalAccess,
+    grantedSites,
   ] = await Promise.all([
     isIntegrationConnected().catch(() => false),
-    getSettings().catch(() => null),
+    getSettings()
+      .then(pickPaletteSettings)
+      .catch(() => pickPaletteSettings(defaultSettings)),
     chrome.permissions
       .contains({ permissions: ["downloads"] })
       .catch(() => false),
@@ -279,6 +410,9 @@ async function loadData(): Promise<FrameData> {
       .then((values) => values[PALETTE_PREFS_KEY])
       .catch(() => undefined),
     chrome.commands.getAll().catch(() => [] as chrome.commands.Command[]),
+    getPendingPairing().catch(() => null),
+    getOptionalAccessState().catch(() => null),
+    readGrantedSites(),
   ]);
   const shortcuts = new Map<string, string>();
   for (const entry of commands)
@@ -292,11 +426,7 @@ async function loadData(): Promise<FrameData> {
       needsPick: record?.needsPick ?? false,
       connected,
       downloadAccess,
-      verifyMode: connected
-        ? "DigiBot check"
-        : settings?.verificationMode === "api"
-          ? "API check"
-          : "OpenAI Verify site",
+      verifyMode: verifyModeText(connected, settings),
       range: null,
     },
     prefs: parsePalettePrefs(prefs),
@@ -304,7 +434,30 @@ async function loadData(): Promise<FrameData> {
     workflow,
     history,
     activity,
+    settings,
+    pending: pending
+      ? {
+          pairId: pending.pairId,
+          confirmationCode: pending.confirmationCode,
+          expiresAt: pending.expiresAt,
+        }
+      : null,
+    optionalAccess,
+    grantedSites,
   };
+}
+
+function verifyModeText(connected: boolean, settings: PaletteSettings): string {
+  return connected
+    ? "DigiBot check"
+    : settings.verificationMode === "api"
+      ? "API check"
+      : "OpenAI Verify site";
+}
+
+async function reload(): Promise<void> {
+  data = await loadData();
+  render();
 }
 
 function wireEvents(): void {
@@ -326,6 +479,7 @@ function wireEvents(): void {
   input.addEventListener("input", () => {
     active = 0;
     footerError = null;
+    notice = null;
     clearHeld();
     render();
   });
@@ -340,11 +494,10 @@ function wireEvents(): void {
   actionsButton.addEventListener("click", () => toggleActions());
   chrome.storage.onChanged.addListener((_changes, areaName) => {
     if (areaName !== "local" && areaName !== "session") return;
-    void loadData().then((next) => {
-      data = next;
-      render();
-    });
+    void reload();
   });
+  chrome.permissions.onAdded.addListener(() => void reload());
+  chrome.permissions.onRemoved.addListener(() => void reload());
 }
 
 /**
@@ -588,6 +741,34 @@ function buildView(view: PaletteView): BuiltView {
       return recentView();
     case "alias":
       return aliasView();
+    case "settings":
+      return filtered(settingsRows());
+    case "access":
+      return filtered(settingsRows("Access"));
+    case "verification-mode":
+    case "history-retention":
+    case "cache-limit":
+      return choiceView(view);
+    case "disconnect":
+    case "clear-history":
+    case "clear-cache":
+    case "reset-aliases":
+      return confirmView(view);
+    case "connect":
+      return connectView();
+    case "allow-site":
+      return allowSiteView();
+    case "granted-sites":
+      return grantedSitesView();
+    case "command-hotkeys":
+      return filtered(hotkeyRows());
+    case "aliases":
+      return filtered(aliasRows());
+    case "about-results":
+      return {
+        rows: [],
+        detail: { heading: "What a result means", paragraphs: RESULT_MEANINGS },
+      };
   }
 }
 
@@ -628,6 +809,11 @@ function searchView(query: string): BuiltView {
       ...(alias ? { alias } : {}),
     };
   });
+  const settings = currentSettingsItems().map((item) => ({
+    id: item.id,
+    title: item.title,
+    item,
+  }));
   const results = recentActivity().map((entry) => ({
     id: entry.id,
     title: [entry.title, entry.message].filter(Boolean).join(" · "),
@@ -637,6 +823,7 @@ function searchView(query: string): BuiltView {
     ...rankRows(query, commands, prefs.lastUsed).map(({ entry }) =>
       commandRow(entry, "Commands"),
     ),
+    ...rankRows(query, settings, []).map(({ item }) => settingRow(item, true)),
     ...rankRows(query, results, []).map(({ entry }) =>
       activityRow(entry, "Recent"),
     ),
@@ -709,19 +896,41 @@ function nowRows(): Row[] {
 }
 
 function setupRows(): Row[] {
-  // An empty shortcut means another extension or the browser holds ⌥⇧Space.
-  if (data?.shortcuts.get("open-palette") !== "") return [];
-  return [
-    {
+  if (!data) return [];
+  return finishSetupItems({
+    connected: data.context.connected,
+    pairingPending: data.pending !== null,
+    optionalAccess: data.optionalAccess,
+    // An empty shortcut means another extension or the browser holds ⌥⇧Space.
+    paletteShortcut: data.shortcuts.get("open-palette"),
+  }).map((item): Row => {
+    const row: Row = {
       group: "Finish setup",
-      title: "Choose a palette shortcut",
-      subtitle: "⌥⇧Space is taken",
-      icon: "keyboard",
-      trailing: "↗",
+      title: item.title,
+      subtitle: item.subtitle,
       verb: "Open",
-      run: () => openTab("shortcuts"),
-    },
-  ];
+    };
+    switch (item.id) {
+      case "connect":
+        return {
+          ...row,
+          icon: "plug",
+          trailing: "›",
+          run: () => openView("connect"),
+        };
+      case "complete-pairing":
+        return { ...row, icon: "plug", verb: "Run", run: completePairing };
+      case "optional-access":
+        return { ...row, icon: "lock", verb: "Run", run: runOptionalAccess };
+      case "palette-shortcut":
+        return {
+          ...row,
+          icon: "keyboard",
+          trailing: "↗",
+          run: () => openTab("shortcuts"),
+        };
+    }
+  });
 }
 
 function downloadRows(): Row[] {
@@ -733,9 +942,9 @@ function downloadRows(): Row[] {
       title: "Connect DigiBot",
       subtitle: "Needed for Download and Clip",
       icon: "plug",
-      trailing: "↗",
+      trailing: "›",
       verb: "Open",
-      run: () => openTab("connect"),
+      run: () => openView("connect"),
     });
   const target = page.hostname || "no page";
   const pageGroup =
@@ -869,6 +1078,343 @@ function aliasView(): BuiltView {
       ? { text: ALIAS_RULE, error: false }
       : { text: check.message, error: true },
   });
+}
+
+// Settings -------------------------------------------------------------------
+
+function currentSettingsItems(): SettingsItem[] {
+  if (!data) return [];
+  const shortcut = data.shortcuts.get("open-palette") ?? "";
+  return settingsItems({
+    settings: data.settings,
+    connected: data.context.connected,
+    optionalAccess: data.optionalAccess,
+    grantedSites: data.grantedSites,
+    paletteShortcut: shortcutKeys(shortcut),
+    version: chrome.runtime.getManifest().version,
+  });
+}
+
+/** The Settings view's rows, or one group's. */
+function settingsRows(group?: SettingsItem["group"]): Row[] {
+  return currentSettingsItems()
+    .filter((item) => group === undefined || item.group === group)
+    .map((item) => settingRow(item, false));
+}
+
+/** A Settings row; in search it shows its place as "Settings › {group}". */
+function settingRow(item: SettingsItem, search: boolean): Row {
+  const subtitle = item.subtitle ?? (search ? `Settings › ${item.group}` : "");
+  const row: Row = {
+    group: search ? "Settings" : item.group,
+    title: item.title,
+    subtitle,
+    icon: item.icon,
+    verb: RUN_VERBS[item.run.kind],
+  };
+  if (item.value) row.value = item.value;
+  if (item.keys) row.keys = item.keys;
+  if (item.setting) row.setting = item.setting;
+  const run = item.run;
+  switch (run.kind) {
+    case "view":
+      row.trailing = "›";
+      row.run = () => openView(run.view);
+      break;
+    case "toggle":
+      row.run = () => toggleSetting(run.setting);
+      break;
+    case "tab":
+      row.trailing = "↗";
+      row.run = () => openTab(run.page);
+      break;
+    case "optional-access":
+      row.run = runOptionalAccess;
+      break;
+    case "none":
+      break;
+  }
+  return row;
+}
+
+function choiceView(view: ChoiceView): BuiltView {
+  if (!data) return { rows: [] };
+  const rows = choicesFor(view, data.settings).map((choice): Row => ({
+    group: VIEW_LABELS[view].replace("Settings › ", ""),
+    title: choice.title,
+    subtitle: "",
+    check: choice.current,
+    verb: "Choose",
+    run: async () => {
+      if (await applySetting(choice.update)) back();
+    },
+  }));
+  const built = filtered(rows);
+  return view === "verification-mode"
+    ? { ...built, hint: { text: MODE_DISCLOSURES.join("\n"), error: false } }
+    : built;
+}
+
+/** A message, then Cancel (selected) and the danger action. */
+function confirmView(view: ConfirmView): BuiltView {
+  const { message, choices } = confirmFor(view, data?.history.length ?? 0);
+  const [cancel, danger] = choices;
+  return numbered({
+    rows: [
+      {
+        group: "Confirm",
+        title: cancel.title,
+        subtitle: "",
+        icon: "x",
+        verb: "Run",
+        run: back,
+      },
+      {
+        group: "Confirm",
+        title: danger.title,
+        subtitle: "",
+        icon: "alert-triangle",
+        danger: true,
+        verb: "Run",
+        run: () => confirmed(view),
+      },
+    ],
+    detail: { paragraphs: [message] },
+  });
+}
+
+async function confirmed(view: ConfirmView): Promise<void> {
+  switch (view) {
+    case "disconnect": {
+      stopPairing();
+      back();
+      connectStatus = { text: PAIRING_TEXT.disconnecting, error: false };
+      render();
+      const outcome = await disconnectDigiBot();
+      connectStatus = outcome.ok
+        ? null
+        : { text: outcome.message, error: true };
+      await reload();
+      return;
+    }
+    case "clear-history":
+      await finish(clearSavedHistory, "The history could not be cleared.");
+      return;
+    case "clear-cache":
+      await finish(
+        clearSavedCache,
+        "The local verification cache could not be cleared.",
+      );
+      return;
+    case "reset-aliases":
+      if (data) await savePrefs({ ...data.prefs, aliases: {} });
+      back();
+      showSaved();
+      return;
+  }
+}
+
+/** Runs a Confirm's action, goes back and shows its message. */
+async function finish(
+  action: () => Promise<Outcome>,
+  failure: string,
+): Promise<void> {
+  const outcome = await action().catch((): Outcome => ({
+    ok: false,
+    message: failure,
+  }));
+  back();
+  showNotice(outcome);
+}
+
+function connectView(): BuiltView {
+  if (!data) return { rows: [] };
+  const { connected } = data.context;
+  const pending = connected ? null : data.pending;
+  const waiting = pairingPoll !== null;
+  const status: Hint = connectStatus ?? {
+    text: connected
+      ? PAIRING_TEXT.connected
+      : waiting
+        ? PAIRING_TEXT.waiting
+        : pending
+          ? PAIRING_TEXT.ready
+          : PAIRING_TEXT.notConnected,
+    error: false,
+  };
+  const row = (
+    title: string,
+    subtitle: string,
+    run: () => void | Promise<void>,
+  ): Row => ({
+    group: "DigiBot",
+    title,
+    subtitle,
+    icon: "plug",
+    verb: "Run",
+    run,
+  });
+  const command = pending ? `/link ${pending.pairId}` : "";
+  const rows: Row[] = [];
+  if (connected)
+    rows.push({
+      ...row("Disconnect DigiBot…", "This browser only", () =>
+        openView("disconnect"),
+      ),
+      icon: "x",
+      trailing: "›",
+      verb: "Open",
+    });
+  else if (pending && !waiting)
+    rows.push(
+      row(
+        "Complete DigiBot pairing",
+        "Check whether you approved it",
+        completePairing,
+      ),
+      {
+        ...row("Copy /link", command, () => copyPairCommand(command)),
+        icon: "copy",
+      },
+      row("Start again", "A new pairing request", startPairing),
+    );
+  else if (pending)
+    rows.push({
+      ...row("Copy /link", command, () => copyPairCommand(command)),
+      icon: "copy",
+    });
+  else
+    rows.push(
+      row(
+        connectStatus?.text === PAIRING_TEXT.timeout
+          ? "Start again"
+          : "Start pairing and copy /link",
+        "Then approve the code in DigiBot",
+        startPairing,
+      ),
+    );
+  rows.push({
+    group: "DigiBot",
+    title: "Provider processing details",
+    subtitle: "OpenAI content provenance",
+    icon: "external",
+    trailing: "↗",
+    verb: "Open",
+    run: () => openAddress(PROVIDER_DETAILS_URL),
+  });
+  const built = filtered(rows);
+  return {
+    ...built,
+    ...(copySelected ? { hint: { text: COPY_HINT, error: false } } : {}),
+    detail: {
+      heading: "Connect DigiBot",
+      status,
+      ...(pending
+        ? {
+            pair: {
+              command,
+              code: formatPairingCode(pending.confirmationCode),
+            },
+          }
+        : {}),
+      paragraphs: [CONNECT_INTRO, CONNECT_CONSENT],
+    },
+  };
+}
+
+function allowSiteView(): BuiltView {
+  const text = input.value.trim();
+  const check: SiteCheck | null = text ? checkSiteOrigin(text) : null;
+  return numbered({
+    rows: [
+      {
+        group: "Allow one site",
+        title: "Request host access",
+        subtitle:
+          check === null
+            ? "Type an origin, such as https://images.example"
+            : check.ok
+              ? check.origin
+              : check.message,
+        warn: check !== null && !check.ok,
+        icon: "link",
+        verb: "Run",
+        ...(check?.ok ? { run: () => requestSite(check) } : {}),
+      },
+    ],
+    hint:
+      check !== null && !check.ok
+        ? { text: check.message, error: true }
+        : { text: SITE_RULE, error: false },
+  });
+}
+
+function grantedSitesView(): BuiltView {
+  const sites = data?.grantedSites ?? null;
+  return numbered({
+    rows: (sites ?? []).map((site) => ({
+      group: "Granted sites",
+      title: site,
+      subtitle: "",
+      icon: "check",
+      verb: "Open",
+    })),
+    notes:
+      sites === null
+        ? ["Permission status is unavailable."]
+        : sites.length === 0
+          ? ["No optional image-host access granted."]
+          : [],
+  });
+}
+
+/** The 10 browser commands, each with its key; ↵ opens the shortcuts page. */
+function hotkeyRows(): Row[] {
+  return DECLARED_COMMAND_IDS.map((id): Row => {
+    const shortcut = data?.shortcuts.get(id) ?? "";
+    const row: Row = {
+      group: "Command hotkeys",
+      title: paletteCommand(id)?.title ?? "Open Lens palette",
+      subtitle: "",
+      icon: paletteCommand(id)?.icon ?? "keyboard",
+      trailing: "↗",
+      verb: "Open",
+      run: () => openTab("shortcuts"),
+    };
+    if (shortcut) row.keys = shortcutKeys(shortcut);
+    else row.value = "Not set";
+    return row;
+  });
+}
+
+/** Every command with its alias; ↵ edits it in the alias Form. */
+function aliasRows(): Row[] {
+  const aliases = data ? effectiveAliases(data.prefs) : {};
+  const rows = PALETTE_COMMANDS.map((entry): Row => {
+    const alias = aliases[entry.id];
+    const row: Row = {
+      group: "Aliases",
+      title: entry.title,
+      subtitle: entry.path,
+      icon: entry.icon,
+      trailing: "›",
+      verb: "Open",
+      run: () => editAlias(entry.id),
+    };
+    if (alias) row.alias = alias;
+    else row.value = "No alias";
+    return row;
+  });
+  rows.push({
+    group: "Reset",
+    title: "Reset aliases…",
+    subtitle: "Back to the default aliases",
+    icon: "x",
+    trailing: "›",
+    verb: "Open",
+    run: () => openView("reset-aliases"),
+  });
+  return rows;
 }
 
 /** A view's rows filtered by the typed text, numbered by position. */
@@ -1047,12 +1593,8 @@ async function sendThenClose(message: ExtensionMessage): Promise<void> {
 }
 
 async function openTab(page: TabPage): Promise<void> {
-  const target = TAB_URLS[page];
-  const url = target.startsWith("chrome://")
-    ? target
-    : chrome.runtime.getURL(target);
   try {
-    await chrome.tabs.create({ url });
+    await openTabPage(page);
   } catch {
     footerError = "The page could not be opened.";
     renderFooter();
@@ -1101,10 +1643,152 @@ async function saveAlias(
 ): Promise<void> {
   if (!data) return;
   await savePrefs(withAlias(data.prefs, commandId, alias));
-  savedUntil = Date.now() + SAVED_NOTE_MS;
-  setTimeout(renderFooter, SAVED_NOTE_MS + 50);
+  showSaved();
   if (currentView() === "alias") back();
   else render();
+}
+
+function editAlias(commandId: string): void {
+  aliasTarget = commandId;
+  pushView("alias");
+  input.value = data ? (effectiveAliases(data.prefs)[commandId] ?? "") : "";
+  render();
+}
+
+/** Saves one setting at once; the footer says "Saved" for 2.5 s. */
+async function applySetting(update: SettingUpdate): Promise<boolean> {
+  try {
+    const settings = await saveSetting(update);
+    if (data)
+      data = {
+        ...data,
+        settings,
+        context: {
+          ...data.context,
+          verifyMode: verifyModeText(data.context.connected, settings),
+        },
+      };
+  } catch {
+    footerError = "The setting could not be saved.";
+    renderFooter();
+    return false;
+  }
+  showSaved();
+  render();
+  return true;
+}
+
+async function toggleSetting(key: SettingKey): Promise<void> {
+  const value = data?.settings[key];
+  if (typeof value === "boolean") await applySetting({ [key]: !value });
+}
+
+function showSaved(text = "Saved"): void {
+  savedText = text;
+  savedUntil = Date.now() + SAVED_NOTE_MS;
+  setTimeout(renderFooter, SAVED_NOTE_MS + 50);
+  renderFooter();
+}
+
+function showNotice(outcome: Outcome): void {
+  notice = { text: outcome.message, error: !outcome.ok };
+  render();
+}
+
+/** The browser's request is the first await of the row's run. */
+async function runOptionalAccess(): Promise<void> {
+  const outcome = await grantOptionalAccess();
+  await reload();
+  showNotice(outcome);
+}
+
+/** The browser's request is the first await of the Form's run. */
+async function requestSite(
+  site: Extract<SiteCheck, { ok: true }>,
+): Promise<void> {
+  const outcome = await allowSite(site);
+  const grantedSites = await readGrantedSites();
+  if (data) data = { ...data, grantedSites };
+  if (outcome.ok) back();
+  showNotice(outcome);
+}
+
+/** Granted sites are read each time the view opens. */
+async function openView(view: PaletteView): Promise<void> {
+  if (view === "granted-sites" && data)
+    data = { ...data, grantedSites: await readGrantedSites() };
+  pushView(view);
+}
+
+// Pairing ------------------------------------------------------------------
+
+/** Start pairing and Start again: a new pairing, its /link copied. */
+async function startPairing(): Promise<void> {
+  stopPairing();
+  copySelected = false;
+  connectStatus = { text: PAIRING_TEXT.creating, error: false };
+  render();
+  let pairing: Awaited<ReturnType<typeof createPairing>>;
+  try {
+    pairing = await createPairing();
+  } catch {
+    connectStatus = { text: PAIRING_TEXT.createFailed, error: true };
+    render();
+    return;
+  }
+  connectStatus = null;
+  if (data)
+    data = {
+      ...data,
+      pending: {
+        pairId: pairing.pairId,
+        confirmationCode: pairing.confirmationCode,
+        expiresAt: pairing.expiresAt,
+      },
+    };
+  watchPairing(Date.now(), false);
+  render();
+  await copyPairCommand(`/link ${pairing.pairId}`);
+}
+
+/** Complete DigiBot pairing: asks at once, then on the same schedule. */
+function completePairing(): void {
+  const pending = data?.pending;
+  if (!pending) return;
+  connectStatus = null;
+  if (currentView() !== "connect") pushView("connect");
+  watchPairing(pairingStartedAt(pending.expiresAt), true);
+  render();
+}
+
+function watchPairing(startedAt: number, immediate: boolean): void {
+  pairingPoll?.stop();
+  const poll = pollPairing({ startedAt, immediate });
+  pairingPoll = poll;
+  void poll.done.then((outcome) => {
+    if (pairingPoll !== poll) return;
+    pairingPoll = null;
+    if (outcome === "timeout")
+      connectStatus = { text: PAIRING_TEXT.timeout, error: true };
+    void reload();
+  });
+}
+
+function stopPairing(): void {
+  const poll = pairingPoll;
+  pairingPoll = null;
+  poll?.stop();
+}
+
+async function copyPairCommand(command: string): Promise<void> {
+  const result = await copyText(
+    command,
+    hostKind,
+    document.getElementById("pair-command"),
+  );
+  copySelected = result === "selected";
+  if (result === "copied") showSaved("Copied /link");
+  render();
 }
 
 function pushView(view: PaletteView): void {
@@ -1112,6 +1796,8 @@ function pushView(view: PaletteView): void {
   stack.push(view);
   input.value = "";
   active = 0;
+  notice = null;
+  copySelected = false;
   render();
 }
 
@@ -1121,6 +1807,8 @@ function back(): void {
   if (stack.pop() === "alias") aliasTarget = null;
   input.value = "";
   active = 0;
+  notice = null;
+  copySelected = false;
   render();
 }
 
@@ -1271,15 +1959,18 @@ function actionsFor(row: Row): ActionItem[] {
   const items: ActionItem[] = row.run
     ? [{ title: "Run", keys: ["↵"], run }]
     : [];
+  const setting = row.setting;
+  if (setting)
+    items.push({
+      title: "Reset to default",
+      run: async () => {
+        await applySetting(defaultFor(setting));
+      },
+    });
   if (!entry) return items;
   items.push({
     title: "Set alias…",
-    run: () => {
-      aliasTarget = entry.id;
-      pushView("alias");
-      input.value = row.alias ?? "";
-      render();
-    },
+    run: () => editAlias(entry.id),
   });
   if (row.alias)
     items.push({ title: "Clear alias", run: () => saveAlias(entry.id, null) });
@@ -1326,7 +2017,10 @@ function renderActions(): void {
       option.addEventListener("mousemove", () => {
         if (actionActive !== index) setActionActive(index);
       });
-      option.addEventListener("click", () => runAction(index, "pointer"));
+      // Only a real click: a script's click() runs nothing.
+      option.addEventListener("click", (event) => {
+        if (event.isTrusted) runAction(index, "pointer");
+      });
       return option;
     }),
   );
@@ -1348,12 +2042,13 @@ function render(): void {
   rows = built.rows;
   active = Math.min(active, Math.max(0, rows.length - 1));
   renderSearchBar(view);
-  renderHint(built.hint);
+  renderHint(built.hint ?? notice ?? undefined);
+  renderDetail(built.detail);
   renderList(built);
   renderFooter();
   const query = input.value.trim();
   live.textContent =
-    query && view !== "clip" && view !== "audio-range" && view !== "alias"
+    query && !FORM_VIEWS.has(view)
       ? `${rows.length} ${rows.length === 1 ? "result" : "results"}`
       : "";
 }
@@ -1373,7 +2068,9 @@ function renderSearchBar(view: PaletteView): void {
           ? "Start-end, 1 to 60 s, e.g. 0:30-1:00"
           : view === "alias"
             ? `Alias for ${aliasTarget ? (paletteCommand(aliasTarget)?.title ?? "") : ""}`
-            : `Search ${VIEW_LABELS[view]}`;
+            : view === "allow-site"
+              ? "https://images.example"
+              : `Search ${VIEW_LABELS[view].split(" › ").at(-1) ?? ""}`;
   const label =
     view === "clip"
       ? "Clip range"
@@ -1381,7 +2078,9 @@ function renderSearchBar(view: PaletteView): void {
         ? "Audio range"
         : view === "alias"
           ? "Alias"
-          : null;
+          : view === "allow-site"
+            ? "Site origin"
+            : null;
   if (label) input.setAttribute("aria-label", label);
   else input.removeAttribute("aria-label");
   accessory.replaceChildren();
@@ -1405,6 +2104,57 @@ function renderHint(hint: Hint | undefined): void {
     hintElement.removeAttribute("role");
     input.removeAttribute("aria-invalid");
   }
+}
+
+/**
+ * A Detail or Confirm view's text, above its rows. It is rebuilt only when
+ * it changes, so a /link selected for a keyboard copy stays selected.
+ */
+function renderDetail(detail: Detail | undefined): void {
+  panelElement.classList.toggle("has-detail", detail !== undefined);
+  detailElement.hidden = detail === undefined;
+  if (detail) input.setAttribute("aria-describedby", "detail");
+  else input.removeAttribute("aria-describedby");
+  const key = detail ? JSON.stringify(detail) : "";
+  if (key === detailKey) return;
+  detailKey = key;
+  const children: HTMLElement[] = [];
+  if (detail?.heading) {
+    const heading = document.createElement("h2");
+    heading.textContent = detail.heading;
+    children.push(heading);
+  }
+  if (detail?.status) {
+    const status = document.createElement("p");
+    status.className = detail.status.error
+      ? "detail-status error"
+      : "detail-status";
+    status.setAttribute("role", "status");
+    status.textContent = detail.status.text;
+    children.push(status);
+  }
+  if (detail?.pair) {
+    const pair = document.createElement("div");
+    pair.className = "pair";
+    const instruction = document.createElement("p");
+    instruction.textContent = PAIR_INSTRUCTION;
+    const command = document.createElement("code");
+    command.id = "pair-command";
+    command.className = "pair-command";
+    command.tabIndex = -1;
+    command.textContent = detail.pair.command;
+    const code = document.createElement("p");
+    code.className = "pair-code";
+    code.textContent = `Confirmation code ${detail.pair.code}`;
+    pair.append(instruction, command, code);
+    children.push(pair);
+  }
+  for (const text of detail?.paragraphs ?? []) {
+    const paragraph = document.createElement("p");
+    paragraph.textContent = text;
+    children.push(paragraph);
+  }
+  detailElement.replaceChildren(...children);
 }
 
 function renderList(built: BuiltView): void {
@@ -1445,7 +2195,7 @@ function renderList(built: BuiltView): void {
 
 function rowElements(row: Row, index: number): HTMLElement[] {
   const option = document.createElement("div");
-  option.className = "row";
+  option.className = row.danger ? "row danger" : "row";
   option.id = `row-${index}`;
   option.setAttribute("role", "option");
   if (!row.run) option.setAttribute("aria-disabled", "true");
@@ -1469,6 +2219,12 @@ function rowElements(row: Row, index: number): HTMLElement[] {
   text.append(title, subtitle);
   const right = document.createElement("span");
   right.className = "row-right";
+  if (row.check) {
+    const check = icon("check");
+    check.classList.add("current");
+    right.append(check);
+    option.setAttribute("aria-current", "true");
+  }
   if (row.value) right.append(row.value);
   if (row.alias) {
     const alias = document.createElement("span");
@@ -1494,7 +2250,10 @@ function rowElements(row: Row, index: number): HTMLElement[] {
   option.addEventListener("mousemove", () => {
     if (active !== index) setActive(index);
   });
-  option.addEventListener("click", () => runRow(index, "pointer"));
+  // Only a real click: a script's click() runs nothing.
+  option.addEventListener("click", (event) => {
+    if (event.isTrusted) runRow(index, "pointer");
+  });
   option.addEventListener("contextmenu", (event) => {
     event.preventDefault();
     setActive(index);
@@ -1539,7 +2298,7 @@ function renderFooter(): void {
     text = footerError;
     tone = "danger";
   } else if (Date.now() < savedUntil) {
-    text = "Saved";
+    text = savedText;
     tone = "ok";
   } else if (
     workflow &&
