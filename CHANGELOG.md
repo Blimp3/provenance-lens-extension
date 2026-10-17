@@ -199,6 +199,9 @@ and the picker runtime is 0.9.0.
   stay unchanged. Only a legacy settings record with exactly
   `http://127.0.0.1:8787` and no client token changes to the default backend
   URL.
+- An audio check that starts while Lens's worker wakes up stays **Started** in
+  Recent. The worker's start-up sweep could mark it "Lens stopped before this
+  action ended." while it still ran.
 
 ### Security and privacy
 
