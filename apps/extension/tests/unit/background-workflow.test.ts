@@ -3820,6 +3820,62 @@ describe("Recent's activity list", () => {
     expect(recent.entries[0]).toMatchObject({ message: STOPPED });
   });
 
+  it("keeps running an entry a page holds and writes while the start-up sweep reads", async () => {
+    const [stale, held] = ENTRY_IDS;
+    recent.entries = [leftRunning(stale, "Pick an image to verify")];
+    // The audio page takes its entry's lock, then writes the entry. It does
+    // both right after the sweep's first read, whichever read that is.
+    let lockHeld = false;
+    let pageStarted = false;
+    const pageStarts = (): void => {
+      if (pageStarted) return;
+      pageStarted = true;
+      lockHeld = true;
+      recent.entries = [
+        leftRunning(held, "Verify an audio file"),
+        ...recent.entries,
+      ];
+    };
+    Object.defineProperty(navigator, "locks", {
+      configurable: true,
+      value: {
+        query: () => {
+          const answer = Promise.resolve({
+            held: lockHeld
+              ? [{ name: `provenance-lens.activity:${held}` }]
+              : [],
+          });
+          pageStarts();
+          return answer;
+        },
+      },
+    });
+    onTestFinished(() => {
+      Reflect.deleteProperty(navigator, "locks");
+    });
+    mocks.getActivity.mockImplementation(() => {
+      const answer = Promise.resolve(recent.entries);
+      pageStarts();
+      return answer;
+    });
+    setupChrome();
+    await loadBackground();
+
+    await vi.waitFor(() =>
+      expect(recent.entries[1]).toMatchObject({
+        state: "failed",
+        message: STOPPED,
+      }),
+    );
+    await flushWorker();
+    expect(pageStarted).toBe(true);
+    expect(recent.entries[0]).toMatchObject({
+      id: held,
+      state: "running",
+      message: null,
+    });
+  });
+
   it("keeps running an action this worker starts while its start-up sweep runs, whatever the clock says", async () => {
     let release: (ids: string[]) => void = () => undefined;
     mocks.pendingIntegrationActivityIds.mockReturnValue(
