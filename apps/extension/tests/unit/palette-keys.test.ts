@@ -22,6 +22,7 @@ function key(
     isComposing: false,
     keyCode: 0,
     isTrusted: true,
+    repeat: false,
     ...overrides,
   };
 }
@@ -46,6 +47,19 @@ describe("palette keys", () => {
       "none",
     );
     expect(paletteKey(key("1", "Digit1"), ROOT).type).toBe("none");
+  });
+
+  it("runs a held ↵ or ⌥digit once, never for its auto-repeat", () => {
+    expect(paletteKey(key("Enter", "Enter", { repeat: true }), ROOT)).toEqual({
+      type: "repeat",
+    });
+    expect(
+      paletteKey(key("¡", "Digit1", { altKey: true, repeat: true }), ROOT),
+    ).toEqual({ type: "repeat" });
+    // A held arrow keeps moving.
+    expect(
+      paletteKey(key("ArrowDown", "ArrowDown", { repeat: true }), ROOT),
+    ).toEqual({ type: "move", delta: 1 });
   });
 
   it("leaves ⌥digit with Shift, Ctrl or Meta alone", () => {

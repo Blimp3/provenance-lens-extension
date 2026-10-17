@@ -44,8 +44,33 @@ export const DECLARED_COMMAND_IDS = [
 export type DeclaredCommandId = (typeof DECLARED_COMMAND_IDS)[number];
 
 /** Views the worker opens the palette at. */
-export type OpenView = "root" | "download" | "clip" | "recent";
-export type PaletteView = OpenView | "verify" | "audio-range" | "alias";
+export type OpenView =
+  | "root"
+  | "download"
+  | "clip"
+  | "recent"
+  | "settings"
+  | "connect"
+  | "access"
+  | "verification-mode";
+/** The views under Settings, which open with Settings one step back. */
+type SettingsView =
+  | "connect"
+  | "disconnect"
+  | "verification-mode"
+  | "history-retention"
+  | "cache-limit"
+  | "clear-history"
+  | "clear-cache"
+  | "access"
+  | "allow-site"
+  | "granted-sites"
+  | "command-hotkeys"
+  | "aliases"
+  | "reset-aliases"
+  | "about-results";
+export type PaletteView =
+  OpenView | SettingsView | "verify" | "audio-range" | "alias";
 
 type StartRoute = {
   kind: "start";
@@ -110,7 +135,16 @@ export type PaletteOpenRecord = {
   needsPick: boolean;
 };
 
-const OPEN_VIEWS: readonly string[] = ["root", "download", "clip", "recent"];
+const OPEN_VIEWS: readonly string[] = [
+  "root",
+  "download",
+  "clip",
+  "recent",
+  "settings",
+  "connect",
+  "access",
+  "verification-mode",
+];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
 export function parsePaletteOpenRecord(
@@ -171,9 +205,17 @@ export type IconName =
   | "lock"
   | "copy";
 
-/** Extension pages a row opens in a tab; Settings stays a page for now. */
-export type TabPage =
-  "settings" | "connect" | "access" | "history" | "shortcuts";
+/**
+ * Pages a row opens in a tab. "advanced" is the Settings page, which keeps
+ * the backend settings the palette never shows.
+ */
+export type TabPage = "advanced" | "history" | "shortcuts";
+
+export const TAB_PAGE_URLS: Readonly<Record<TabPage, string>> = {
+  advanced: "settings.html",
+  history: "history.html",
+  shortcuts: "chrome://extensions/shortcuts",
+};
 
 export type CommandRun =
   | { kind: "view"; view: PaletteView }
@@ -257,7 +299,7 @@ export const PALETTE_COMMANDS: readonly PaletteCommand[] = Object.freeze([
     title: "Settings",
     subtitle: "DigiBot, verification, privacy, keys",
     icon: "sliders",
-    run: { kind: "tab", page: "settings" },
+    run: { kind: "view", view: "settings" },
     path: "Lens",
     verb: "Open",
   }),
@@ -694,13 +736,13 @@ export function commandGate(
     return {
       reason: "Needs DigiBot",
       disabled: false,
-      fix: { kind: "tab", page: "connect" },
+      fix: { kind: "view", view: "connect" },
     };
   if (needs.includes("downloads") && !context.downloadAccess)
     return {
       reason: "Needs download access",
       disabled: false,
-      fix: { kind: "tab", page: "access" },
+      fix: { kind: "view", view: "access" },
     };
   if (needs.includes("range") && context.range?.ok !== true)
     return { reason: "Enter a range first", disabled: true };
@@ -761,6 +803,7 @@ export type PaletteKeyEvent = {
   isComposing: boolean;
   keyCode: number;
   isTrusted: boolean;
+  repeat: boolean;
 };
 
 export type PaletteKeyState = {
@@ -775,6 +818,7 @@ export type PaletteKey =
   | { type: "edge"; edge: "first" | "last" }
   | { type: "run" }
   | { type: "digit"; index: number }
+  | { type: "repeat" }
   | { type: "actions" }
   | {
       type: "escape";
@@ -788,7 +832,9 @@ const DIGIT_CODE = /^(?:Digit|Numpad)([1-9])$/u;
 /**
  * What one key does in the palette. Untrusted events do nothing, and
  * while an IME composes only Tab stays trapped; "none" leaves the key to the
- * input. Every other result is handled with preventDefault().
+ * input. Every other result is handled with preventDefault(). A held ↵ or
+ * ⌥digit runs once: its auto-repeats are "repeat", which runs nothing, so a
+ * page that asks for a held key cannot run a row the user has not seen.
  */
 export function paletteKey(
   event: PaletteKeyEvent,
@@ -803,7 +849,9 @@ export function paletteKey(
   const digit = DIGIT_CODE.exec(event.code)?.[1];
   // ⌥1–⌥9 by the physical key, so the layout's character is never typed.
   if (digit !== undefined && altKey && !ctrlKey && !metaKey && !shiftKey)
-    return { type: "digit", index: Number(digit) - 1 };
+    return event.repeat
+      ? { type: "repeat" }
+      : { type: "digit", index: Number(digit) - 1 };
   if (event.key === "Escape") {
     if (state.actionsOpen) return { type: "escape", step: "close-actions" };
     if (state.query !== "") return { type: "escape", step: "clear-query" };
@@ -825,7 +873,7 @@ export function paletteKey(
       return { type: "move", delta: event.key === "ArrowDown" ? 1 : -1 };
   }
   if (event.key === "Enter" && !altKey && !ctrlKey && !metaKey)
-    return { type: "run" };
+    return event.repeat ? { type: "repeat" } : { type: "run" };
   if (
     event.key === "Backspace" &&
     state.query === "" &&
