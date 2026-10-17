@@ -227,6 +227,11 @@ const UNDER_SETTINGS: ReadonlySet<PaletteView> = new Set([
   "access",
   "verification-mode",
 ]);
+/** The Settings views a toast's button can open the palette at. */
+const SETTINGS_OPENS: ReadonlySet<PaletteView> = new Set([
+  "settings",
+  ...UNDER_SETTINGS,
+]);
 const RUN_VERBS: Readonly<Record<SettingsRun["kind"], string>> = {
   view: "Open",
   toggle: "Toggle",
@@ -580,8 +585,10 @@ function inputAllowed(source: InputSource): boolean {
  * Runs a row or an action for a key or a click that inputAllowed lets
  * through. A key pressed in the frame's first second, while the panel has
  * not been reported hidden, waits until the panel has been visible long
- * enough; only the latest such key waits. Any other refused input is
- * dropped, and the footer says why.
+ * enough; only the latest such key waits. A page can click a toast's button
+ * through its own overlay and open the palette at a Settings view, so an
+ * early key there is dropped instead. Any other refused input is dropped,
+ * and the footer says why.
  */
 function gated(source: InputSource, run: () => Promise<void>): void {
   if (inputAllowed(source)) {
@@ -594,6 +601,7 @@ function gated(source: InputSource, run: () => Promise<void>): void {
     source === "key" &&
     readyAt > 0 &&
     !hiddenSinceReady &&
+    !SETTINGS_OPENS.has(record?.view ?? "root") &&
     performance.now() - readyAt < EARLY_KEY_MS
   ) {
     heldRun = run;
@@ -1722,8 +1730,12 @@ async function openView(view: PaletteView): Promise<void> {
 
 // Pairing ------------------------------------------------------------------
 
-/** Start pairing and Start again: a new pairing, its /link copied. */
+/**
+ * Start pairing and Start again: a new pairing, its /link copied. A second
+ * press while the request is created does nothing.
+ */
 async function startPairing(): Promise<void> {
+  if (connectStatus?.text === PAIRING_TEXT.creating) return;
   stopPairing();
   copySelected = false;
   connectStatus = { text: PAIRING_TEXT.creating, error: false };
@@ -1799,6 +1811,8 @@ function pushView(view: PaletteView): void {
   notice = null;
   copySelected = false;
   render();
+  // The /link fallback may have focused text this view no longer shows.
+  input.focus();
 }
 
 function back(): void {
@@ -1810,6 +1824,7 @@ function back(): void {
   notice = null;
   copySelected = false;
   render();
+  input.focus();
 }
 
 /**
@@ -2042,15 +2057,20 @@ function render(): void {
   rows = built.rows;
   active = Math.min(active, Math.max(0, rows.length - 1));
   renderSearchBar(view);
-  renderHint(built.hint ?? notice ?? undefined);
+  renderHint(notice ?? built.hint);
   renderDetail(built.detail);
   renderList(built);
   renderFooter();
   const query = input.value.trim();
-  live.textContent =
+  // The hint has a role only for errors and the status paragraph is rebuilt,
+  // so a success notice and the Connect status are announced here too.
+  const announcement =
     query && !FORM_VIEWS.has(view)
       ? `${rows.length} ${rows.length === 1 ? "result" : "results"}`
-      : "";
+      : notice && !notice.error
+        ? notice.text
+        : (built.detail?.status?.text ?? "");
+  if (live.textContent !== announcement) live.textContent = announcement;
 }
 
 function renderSearchBar(view: PaletteView): void {

@@ -445,12 +445,12 @@ For local review, load `apps/extension/dist` as an unpacked extension.
 - Because of these uses of `activeTab` and `scripting`, the link features add
   no permission.
 - `clipboardWrite` and `offscreen` copy the DigiBot `/link` command when you
-  choose **Start pairing and copy /link** in the palette over a page. The
-  palette's frame never writes to the clipboard there. It asks the Lens
-  worker, which copies through one offscreen document, because the page's
-  Permissions Policy can block a frame's Clipboard API. `offscreen` lets the
-  worker open that document, and `clipboardWrite` lets the document copy
-  without a click inside it.
+  choose **Start pairing and copy /link**, **Start again** or **Copy /link** in
+  the palette over a page. The palette's frame never writes to the clipboard
+  there. It asks the Lens worker, which copies only that command through one
+  offscreen document, because the page's Permissions Policy can block a frame's
+  Clipboard API. `offscreen` lets the worker open that document, and
+  `clipboardWrite` lets the document copy without a click inside it.
 - A packed or store install shows the warning "Modify data you copy and
   paste." for `clipboardWrite`. `offscreen` shows no warning, and an unpacked
   load shows no permission prompt.

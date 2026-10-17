@@ -59,16 +59,19 @@ release yet.
 
 - New permissions `clipboardWrite` (install warning "Modify data you copy and
   paste.") and `offscreen`, for the worker's copy. The worker copies only for
-  a palette frame it mounted on that tab, and only a string of at most 512
-  characters; a palette frame inside a page never writes to the clipboard
-  itself, and the offscreen document copies only for the worker.
+  a palette frame it mounted on that tab, and only the pending pairing's
+  `/link` command; a palette frame inside a page never writes to the
+  clipboard itself, and the offscreen document copies only for the worker.
 - Every settings change, Run, form submit and confirmation goes through the
   palette's input gate (trusted input only, the 250 ms and 500 ms visibility
   rule, the host check), so a page cannot change a setting, start or stop
   pairing, grant access or clear data with synthetic input or a covered
   frame. Opening the palette or its Settings view starts no check and sends
   no request; a pairing request starts only from **Start pairing and copy
-  /link**.
+  /link** or **Start again**, one at a time, and **Complete DigiBot pairing**
+  resumes a pending one. Over a page, a key pressed before the palette shows
+  is dropped when it opens at a Settings view, which a page's click on a
+  toast button can open.
 
 ### Tests
 

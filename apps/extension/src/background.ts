@@ -147,6 +147,7 @@ import {
   isApiVerificationAuthorized,
 } from "./api-verification-policy.js";
 import {
+  getPendingPairing,
   isIntegrationConnected,
   IntegrationClientError,
   pendingIntegrationActivityIds,
@@ -426,12 +427,18 @@ async function isMountedPaletteFrame(
   );
 }
 
-/** The same check as start-action: the frame the worker mounted, for its tab. */
+/**
+ * The same check as start-action: the frame the worker mounted, for its tab.
+ * The frame only ever copies the pending pairing's /link command, so nothing
+ * else is copied.
+ */
 async function copyForPageFrame(
   text: string,
   sender: chrome.runtime.MessageSender,
 ): Promise<boolean> {
   if (!(await isMountedPaletteFrame(sender))) return false;
+  const pending = await getPendingPairing().catch(() => null);
+  if (pending === null || text !== `/link ${pending.pairId}`) return false;
   return copyThroughOffscreen(text);
 }
 

@@ -29,8 +29,9 @@ import {
 /**
  * The palette's Settings table, its saves and the DigiBot pairing it runs.
  * The backend URL, the client token and the connection test stay on the
- * Settings page ("Advanced settings ↗"): the palette never shows or reads
- * them.
+ * Settings page ("Advanced settings ↗"). The palette reads the whole stored
+ * settings record but keeps only its own six fields, so it never shows,
+ * keeps or sends them.
  */
 
 /** The settings the palette shows and changes. */
@@ -69,10 +70,17 @@ export function pickPaletteSettings(
   };
 }
 
+/** The latest save; each save waits for it, so a quick second one keeps both. */
+let saving: Promise<unknown> = Promise.resolve();
+
 /** Saves one change at once; a new cache limit also trims the cache. */
-export async function saveSetting(
-  update: SettingUpdate,
-): Promise<PaletteSettings> {
+export function saveSetting(update: SettingUpdate): Promise<PaletteSettings> {
+  const save = saving.then(() => saveNow(update));
+  saving = save.catch(() => undefined);
+  return save;
+}
+
+async function saveNow(update: SettingUpdate): Promise<PaletteSettings> {
   const changes: SettingUpdate = {};
   for (const key of SETTING_KEYS)
     if (update[key] !== undefined)
@@ -136,7 +144,7 @@ export const COPY_HINT_OTHER = "Press Ctrl+C to copy.";
 
 // The Settings table ---------------------------------------------------------
 
-export type SettingsGroup =
+type SettingsGroup =
   | "DigiBot"
   | "Verification"
   | "History and privacy"
@@ -185,11 +193,11 @@ function onOff(value: boolean): string {
   return value ? "On" : "Off";
 }
 
-export function retentionText(retention: HistoryRetention): string {
+function retentionText(retention: HistoryRetention): string {
   return retention === 0 ? "Off" : `Last ${retention}`;
 }
 
-export function cacheText(limit: number): string {
+function cacheText(limit: number): string {
   return limit.toLocaleString("en-US");
 }
 
@@ -370,7 +378,7 @@ export type FinishSetupState = {
   paletteShortcut: string | undefined;
 };
 
-export type FinishSetupItem = {
+type FinishSetupItem = {
   id: "connect" | "complete-pairing" | "optional-access" | "palette-shortcut";
   title: string;
   subtitle: string;
@@ -449,7 +457,7 @@ export function choicesFor(
 export type ConfirmView =
   "disconnect" | "clear-history" | "clear-cache" | "reset-aliases";
 
-export type ConfirmChoice = { title: string; danger: boolean };
+type ConfirmChoice = { title: string; danger: boolean };
 
 /** The message row and the two choices: Cancel first, then the danger action. */
 export function confirmFor(
@@ -578,12 +586,17 @@ export async function allowSite(
   }
 }
 
-/** The HTTP(S) host grants, read when the view opens; null when unavailable. */
+/**
+ * The optional HTTP(S) host grants, read when the view opens; null when
+ * unavailable. The manifest's own hosts are always granted and not counted.
+ */
 export async function readGrantedSites(): Promise<string[] | null> {
   try {
+    const manifest = chrome.runtime.getManifest() as chrome.runtime.ManifestV3;
+    const required = new Set(manifest.host_permissions);
     const permissions = await chrome.permissions.getAll();
-    return (permissions.origins ?? []).filter((origin) =>
-      /^https?:\/\//iu.test(origin),
+    return (permissions.origins ?? []).filter(
+      (origin) => /^https?:\/\//iu.test(origin) && !required.has(origin),
     );
   } catch {
     return null;
@@ -611,7 +624,7 @@ const PAIRING_SLOW_MS = 30_000;
  * Every 3 s for the first 30 s, then every 30 s: at most 19 exchanges for a
  * pairing, under DigiBot's 20 exchange requests per address in 10 minutes.
  */
-export function pairingPollDelay(elapsedMs: number): number {
+function pairingPollDelay(elapsedMs: number): number {
   return elapsedMs < PAIRING_FAST_FOR_MS ? PAIRING_FAST_MS : PAIRING_SLOW_MS;
 }
 
@@ -623,7 +636,7 @@ export function pairingStartedAt(expiresAt: string, now = Date.now()): number {
     : now;
 }
 
-export type PairingOutcome = "connected" | "timeout" | "stopped";
+type PairingOutcome = "connected" | "timeout" | "stopped";
 export type PairingPoll = { stop: () => void; done: Promise<PairingOutcome> };
 
 /**
@@ -693,8 +706,8 @@ export function formatPairingCode(code: string): string {
 
 // Copy -----------------------------------------------------------------------
 
-export type CopyHost = "page" | "popup" | "tab";
-export type CopyResult = "copied" | "selected";
+type CopyHost = "page" | "popup" | "tab";
+type CopyResult = "copied" | "selected";
 
 /**
  * Copies text in a fixed order. The fallback popup and a tab are extension

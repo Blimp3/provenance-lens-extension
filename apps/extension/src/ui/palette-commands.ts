@@ -54,7 +54,7 @@ export type OpenView =
   | "access"
   | "verification-mode";
 /** The views under Settings, which open with Settings one step back. */
-export type SettingsView =
+type SettingsView =
   | "connect"
   | "disconnect"
   | "verification-mode"

@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type * as IntegrationClient from "../../src/integration-client.js";
+import type * as Storage from "../../src/storage.js";
 import type * as OptionalAccess from "../../src/ui/optional-access.js";
 
 const mocks = vi.hoisted(() => ({
@@ -12,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   clearVerificationCache: vi.fn(),
   clearHistory: vi.fn(),
   exchangePairing: vi.fn(),
+  getIntegrationSession: vi.fn(),
   requestFullOptionalAccess: vi.fn(),
 }));
 
@@ -19,26 +21,16 @@ vi.mock("../../src/cache.js", () => ({
   clearVerificationCache: mocks.clearVerificationCache,
   setCacheLimit: mocks.setCacheLimit,
 }));
-vi.mock("../../src/storage.js", () => ({
+// The real defaults, which the Settings table is checked against.
+vi.mock("../../src/storage.js", async (importOriginal) => ({
   clearHistory: mocks.clearHistory,
-  defaultSettings: {
-    verificationMode: "website",
-    acknowledgedVerificationModes: [],
-    backendBaseUrl: "https://verify.example",
-    clientToken: "",
-    historyRetention: 20,
-    screenshotFallbackEnabled: false,
-    includePageTitle: true,
-    debugMode: false,
-    localCacheLimit: 100,
-    disclosureVersion: 0,
-  },
+  defaultSettings: (await importOriginal<typeof Storage>()).defaultSettings,
   updateSettings: mocks.updateSettings,
 }));
 vi.mock("../../src/integration-client.js", async (importOriginal) => ({
   ...(await importOriginal<typeof IntegrationClient>()),
   exchangePairing: mocks.exchangePairing,
-  getIntegrationSession: vi.fn().mockResolvedValue(null),
+  getIntegrationSession: mocks.getIntegrationSession,
 }));
 vi.mock("../../src/ui/optional-access.js", async (importOriginal) => ({
   ...(await importOriginal<typeof OptionalAccess>()),
@@ -47,10 +39,14 @@ vi.mock("../../src/ui/optional-access.js", async (importOriginal) => ({
 
 import { IntegrationClientError } from "../../src/integration-client.js";
 import { copyThroughOffscreen } from "../../src/offscreen-copy.js";
+import { defaultSettings } from "../../src/storage.js";
 import { checkAlias, effectiveAliases } from "../../src/ui/palette-commands.js";
 import {
   allowSite,
   checkSiteOrigin,
+  choicesFor,
+  clearSavedCache,
+  clearSavedHistory,
   confirmFor,
   CONNECT_CONSENT,
   CONNECT_INTRO,
@@ -58,19 +54,26 @@ import {
   copyText,
   defaultFor,
   finishSetupItems,
+  grantOptionalAccess,
   MODE_DISCLOSURES,
   openTabPage,
   PAIRING_LIMIT_MS,
+  PAIRING_TEXT,
   pairingStartedAt,
   pickPaletteSettings,
   pollPairing,
+  readGrantedSites,
   saveSetting,
   settingsItems,
+  type ChoiceView,
   type ConfirmView,
+  type SettingKey,
+  type SettingsRun,
   type SettingsState,
 } from "../../src/ui/palette-settings.js";
 
 const TOKEN = "bundled-or-typed-client-token-0123456789";
+const REQUIRED_HOSTS = ["https://api.example/*", "https://bot.example/*"];
 const stored = {
   verificationMode: "api" as const,
   acknowledgedVerificationModes: ["api" as const],
@@ -109,6 +112,7 @@ function installChrome(extra: Record<string, unknown> = {}) {
   const api = {
     runtime: {
       getURL: (path: string) => `chrome-extension://test/${path}`,
+      getManifest: () => ({ host_permissions: REQUIRED_HOSTS }),
       sendMessage: vi.fn(),
       getContexts: vi.fn().mockResolvedValue([]),
     },
@@ -129,6 +133,7 @@ beforeEach(() => {
     Promise.resolve({ ...stored, ...update }),
   );
   mocks.setCacheLimit.mockResolvedValue(undefined);
+  mocks.getIntegrationSession.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -166,6 +171,34 @@ describe("palette settings save on change", () => {
     expect(mocks.updateSettings).toHaveBeenCalledWith({ debugMode: true });
   });
 
+  it("runs two quick saves one after the other, so both persist", async () => {
+    installChrome();
+    // Each save reads, waits and writes, as storage.ts does.
+    let persisted = { ...stored };
+    mocks.updateSettings.mockImplementation(async (changes: object) => {
+      const current = { ...persisted };
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      persisted = { ...current, ...changes };
+      return persisted;
+    });
+    const [first, second] = await Promise.all([
+      saveSetting({ includePageTitle: false }),
+      saveSetting({ debugMode: true }),
+    ]);
+    expect(persisted).toMatchObject({
+      includePageTitle: false,
+      debugMode: true,
+    });
+    expect(first.includePageTitle).toBe(false);
+    expect(second).toMatchObject({ includePageTitle: false, debugMode: true });
+    // A failed save does not stop the next one.
+    mocks.updateSettings.mockRejectedValueOnce(new Error("quota"));
+    await expect(saveSetting({ debugMode: false })).rejects.toThrow("quota");
+    await expect(saveSetting({ historyRetention: 50 })).resolves.toMatchObject({
+      historyRetention: 50,
+    });
+  });
+
   it("resets a setting to its default", () => {
     expect(defaultFor("historyRetention")).toEqual({ historyRetention: 20 });
     expect(defaultFor("verificationMode")).toEqual({
@@ -196,7 +229,7 @@ describe("palette settings without the API connection", () => {
     ]);
   });
 
-  it("reads no backend field in the palette's own code", async () => {
+  it("names no backend field in the palette's own code", async () => {
     for (const file of ["src/ui/palette.ts", "src/ui/palette-settings.ts"]) {
       const source = await readFile(
         resolve(import.meta.dirname, "../..", file),
@@ -237,6 +270,165 @@ describe("palette settings without the API connection", () => {
     expect(
       settingsItems(state()).find(({ title }) => title === "Version"),
     ).toMatchObject({ value: "2.1.0", subtitle: "Lens never scans pages." });
+  });
+
+  it("matches the Settings page and the stored defaults row by row", async () => {
+    const html = await readFile(
+      resolve(import.meta.dirname, "../../public/settings.html"),
+      "utf8",
+    );
+    const page = new DOMParser().parseFromString(html, "text/html");
+    const defaults = pickPaletteSettings(defaultSettings);
+    const run = ({ run: target }: { run: SettingsRun }): string =>
+      target.kind === "view"
+        ? `view ${target.view}`
+        : target.kind === "toggle"
+          ? `toggle ${target.setting}`
+          : target.kind === "tab"
+            ? `tab ${target.page}`
+            : target.kind;
+    // Group, title, what it runs, the field ⌘K resets, its value at defaults.
+    expect(
+      settingsItems(state({ settings: defaults })).map((item) => [
+        item.group,
+        item.title,
+        run(item),
+        item.setting ?? null,
+        item.value ?? null,
+      ]),
+    ).toEqual([
+      ["DigiBot", "DigiBot", "view connect", null, "Not connected"],
+      [
+        "Verification",
+        "Verification mode",
+        "view verification-mode",
+        "verificationMode",
+        "Website review",
+      ],
+      [
+        "Verification",
+        "Screenshot copy fallback",
+        "toggle screenshotFallbackEnabled",
+        "screenshotFallbackEnabled",
+        "Off",
+      ],
+      [
+        "History and privacy",
+        "Keep history",
+        "view history-retention",
+        "historyRetention",
+        "Last 20",
+      ],
+      [
+        "History and privacy",
+        "Local cache",
+        "view cache-limit",
+        "localCacheLimit",
+        "100",
+      ],
+      [
+        "History and privacy",
+        "Save page title",
+        "toggle includePageTitle",
+        "includePageTitle",
+        "On",
+      ],
+      [
+        "History and privacy",
+        "Debug details",
+        "toggle debugMode",
+        "debugMode",
+        "Off",
+      ],
+      [
+        "History and privacy",
+        "Clear history…",
+        "view clear-history",
+        null,
+        null,
+      ],
+      [
+        "History and privacy",
+        "Clear verification cache…",
+        "view clear-cache",
+        null,
+        null,
+      ],
+      ["Access", "Optional access", "optional-access", null, "Not granted"],
+      ["Access", "Allow one site…", "view allow-site", null, null],
+      ["Access", "Granted sites", "view granted-sites", null, "1 site"],
+      ["Keys", "Palette shortcut", "tab shortcuts", null, null],
+      ["Keys", "Command hotkeys", "view command-hotkeys", null, null],
+      ["Keys", "Aliases", "view aliases", null, null],
+      ["About", "Version", "none", null, "2.1.0"],
+      ["About", "What a result means", "view about-results", null, null],
+      ["More", "Advanced settings", "tab advanced", null, null],
+    ]);
+
+    // Each field is the Settings page's own control: a checkbox for a
+    // toggle, a select with the same values for a choice.
+    const controls: Record<SettingKey, string> = {
+      verificationMode: "verification-mode",
+      screenshotFallbackEnabled: "screenshot-fallback",
+      historyRetention: "history-retention",
+      localCacheLimit: "local-cache-limit",
+      includePageTitle: "include-page-title",
+      debugMode: "debug-mode",
+    };
+    for (const key of [
+      "screenshotFallbackEnabled",
+      "includePageTitle",
+      "debugMode",
+    ] as const)
+      expect(page.getElementById(controls[key])?.getAttribute("type")).toBe(
+        "checkbox",
+      );
+    const options = (key: SettingKey) =>
+      [
+        ...page.querySelectorAll<HTMLOptionElement>(`#${controls[key]} option`),
+      ].map(({ value }) => value);
+    const choices = (view: ChoiceView) =>
+      choicesFor(view, defaults).map(({ title, update, current }) => [
+        title,
+        String(Object.values(update)[0]),
+        current,
+      ]);
+    expect(choices("verification-mode")).toEqual([
+      ["Website review (manual)", "website", true],
+      ["Automatic API result", "api", false],
+    ]);
+    expect(choices("history-retention")).toEqual([
+      ["Off", "0", false],
+      ["Last 10", "10", false],
+      ["Last 20", "20", true],
+      ["Last 50", "50", false],
+    ]);
+    expect(choices("cache-limit")).toEqual([
+      ["10 results", "10", false],
+      ["50 results", "50", false],
+      ["100 results", "100", true],
+      ["250 results", "250", false],
+      ["1,000 results", "1000", false],
+    ]);
+    for (const [view, key] of [
+      ["verification-mode", "verificationMode"],
+      ["history-retention", "historyRetention"],
+      ["cache-limit", "localCacheLimit"],
+    ] as const)
+      expect(choices(view).map(([, value]) => value)).toEqual(options(key));
+
+    // ⌘K › Reset to default restores storage.ts's own default.
+    for (const key of Object.keys(controls) as SettingKey[])
+      expect(defaultFor(key)).toEqual({ [key]: defaultSettings[key] });
+
+    // The Connect status lines are the Settings page's, word for word; only
+    // the waiting line is the palette's own.
+    const source = await readFile(
+      resolve(import.meta.dirname, "../../src/ui/settings.ts"),
+      "utf8",
+    );
+    for (const [key, text] of Object.entries(PAIRING_TEXT))
+      if (key !== "waiting") expect(source).toContain(JSON.stringify(text));
   });
 });
 
@@ -326,6 +518,84 @@ describe("palette settings validation", () => {
       (paragraph) => paragraph.textContent?.replace(/\s+/gu, " ").trim(),
     );
     expect(paragraphs.slice(0, 2)).toEqual([CONNECT_INTRO, CONNECT_CONSENT]);
+  });
+});
+
+describe("palette Access", () => {
+  it("counts only the optional host grants, never the manifest's own hosts", async () => {
+    const api = installChrome();
+    api.permissions.getAll.mockResolvedValueOnce({ origins: REQUIRED_HOSTS });
+    await expect(readGrantedSites()).resolves.toEqual([]);
+    expect(
+      settingsItems(state({ grantedSites: [] })).find(
+        ({ title }) => title === "Granted sites",
+      )?.value,
+    ).toBe("0 sites");
+    api.permissions.getAll.mockResolvedValueOnce({
+      origins: [
+        ...REQUIRED_HOSTS,
+        "https://images.example/*",
+        "chrome-extension://test/*",
+      ],
+    });
+    await expect(readGrantedSites()).resolves.toEqual([
+      "https://images.example/*",
+    ]);
+    api.permissions.getAll.mockRejectedValueOnce(new Error("gone"));
+    await expect(readGrantedSites()).resolves.toBeNull();
+  });
+
+  it("reports each answer to the optional access request", async () => {
+    mocks.requestFullOptionalAccess
+      .mockResolvedValueOnce({
+        outcome: "granted",
+        state: { allSites: true, downloads: true, complete: true },
+      })
+      .mockResolvedValueOnce({
+        outcome: "denied",
+        state: { allSites: true, downloads: false, complete: false },
+      })
+      .mockRejectedValueOnce(new Error("no gesture"));
+    await expect(grantOptionalAccess()).resolves.toEqual({
+      ok: true,
+      message: "Full optional access is ready.",
+    });
+    await expect(grantOptionalAccess()).resolves.toEqual({
+      ok: false,
+      message:
+        "The browser did not grant the full request. Image-host access is ready; exact-file download access is still optional.",
+    });
+    await expect(grantOptionalAccess()).resolves.toEqual({
+      ok: false,
+      message: "The browser could not complete the optional access request.",
+    });
+    expect(mocks.requestFullOptionalAccess).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("palette Clear history and Clear verification cache", () => {
+  it("clears and says what was cleared", async () => {
+    mocks.clearHistory.mockResolvedValue(undefined);
+    mocks.clearVerificationCache.mockResolvedValue(undefined);
+    await expect(clearSavedHistory()).resolves.toEqual({
+      ok: true,
+      message: "History cleared.",
+    });
+    mocks.getIntegrationSession.mockResolvedValueOnce({ accountId: "a" });
+    await expect(clearSavedHistory()).resolves.toEqual({
+      ok: true,
+      message:
+        "Local standalone history cleared. Manage connected History from the History page.",
+    });
+    expect(mocks.clearHistory).toHaveBeenCalledTimes(2);
+    await expect(clearSavedCache()).resolves.toEqual({
+      ok: true,
+      message: "Local verification cache cleared.",
+    });
+    expect(mocks.clearVerificationCache).toHaveBeenCalledTimes(1);
+    // A failure reaches the palette, which reports it.
+    mocks.clearHistory.mockRejectedValueOnce(new Error("busy"));
+    await expect(clearSavedHistory()).rejects.toThrow("busy");
   });
 });
 

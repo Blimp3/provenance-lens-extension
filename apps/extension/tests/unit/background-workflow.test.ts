@@ -2829,6 +2829,7 @@ type ActionStub = {
 describe("the Lens palette in the worker", () => {
   const OPEN_KEY = "provenanceLens.paletteOpen";
   const MOUNTS_KEY = "provenanceLens.paletteMounts";
+  const PENDING_PAIRING_KEY = "provenanceLens.integration.pendingPairing";
   const UUID = /^[0-9a-f-]{36}$/u;
 
   beforeEach(() => {
@@ -3203,7 +3204,7 @@ describe("the Lens palette in the worker", () => {
 
   it("copies text only for the palette frame it mounted, through one offscreen document", async () => {
     const chromeState = setupChrome();
-    storeOf(chromeState);
+    const store = storeOf(chromeState);
     hostReady(chromeState);
     const createDocument = vi.fn().mockResolvedValue(undefined);
     const offscreenSend = vi.fn().mockResolvedValue(true);
@@ -3264,9 +3265,29 @@ describe("the Lens palette in the worker", () => {
         paletteFrame({ token }),
       ),
     ).toBe("refused at once");
+    // No pending pairing, another text, an expired pairing.
+    expect(await answer(copy, paletteFrame({ token }))).toBe(false);
+    const pending = {
+      pairId: "7F3K9Q",
+      confirmationCode: "482913",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      verifier: "verifier",
+      deviceName: "Lens",
+    };
+    store.set(PENDING_PAIRING_KEY, pending);
+    for (const text of ["/link 7F3K9", "/link 7F3K9Q ", "7F3K9Q", "page text"])
+      expect(
+        await answer({ type: "copy-text", text }, paletteFrame({ token })),
+      ).toBe(false);
+    store.set(PENDING_PAIRING_KEY, {
+      ...pending,
+      expiresAt: new Date(Date.now() - 1).toISOString(),
+    });
+    expect(await answer(copy, paletteFrame({ token }))).toBe(false);
     expect(createDocument).not.toHaveBeenCalled();
     expect(offscreenSend).not.toHaveBeenCalled();
 
+    store.set(PENDING_PAIRING_KEY, pending);
     expect(await answer(copy, paletteFrame({ token }))).toBe(true);
     expect(await answer(copy, paletteFrame({ token }))).toBe(true);
     expect(createDocument).toHaveBeenCalledTimes(1);

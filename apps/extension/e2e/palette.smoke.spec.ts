@@ -8,7 +8,7 @@ import {
   type Worker,
 } from "@playwright/test";
 import { once } from "node:events";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -186,20 +186,23 @@ async function launchLens(
   const extensionPath = resolve(temporaryRoot, "extension");
   await cp(resolve(process.cwd(), "dist"), extensionPath, { recursive: true });
   await writeFile(resolve(extensionPath, "lens-test-patch.js"), TEST_PATCH);
+  // The worker keeps its own address, which the offscreen document checks.
+  await rename(
+    resolve(extensionPath, "background.js"),
+    resolve(extensionPath, "lens-background.js"),
+  );
   await writeFile(
-    resolve(extensionPath, "lens-test-worker.js"),
-    'import "./lens-test-patch.js";\nimport "./background.js";\n',
+    resolve(extensionPath, "background.js"),
+    'import "./lens-test-patch.js";\nimport "./lens-background.js";\n',
   );
   const manifestPath = resolve(extensionPath, "manifest.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
     host_permissions: string[];
     permissions: string[];
-    background: { service_worker: string };
   };
   manifest.host_permissions.push("http://127.0.0.1/*");
   // Stands in for the optional downloads grant.
   if (options.downloads) manifest.permissions.push("downloads");
-  manifest.background.service_worker = "lens-test-worker.js";
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
   const requests: string[] = [];
@@ -1737,8 +1740,15 @@ test("a page that keeps the Clipboard API to itself still gets /link copied thro
       ),
     ).toBe("NotAllowedError");
 
-    await frame.getByRole("option", { name: /^Connect DigiBot/u }).click();
+    // Opening Settings and Connect sends nothing; only the page has loaded.
+    const sent = () =>
+      lens.requests.filter((url) => !url.startsWith(`${lens.origin}/`));
+    await frame.getByRole("option", { name: /^Settings/u }).click();
+    await expect(frame.locator("#chip")).toHaveText("Settings");
+    expect(sent()).toEqual([]);
+    await frame.getByRole("option", { name: /^DigiBot/u }).click();
     await expect(frame.locator("#detail h2")).toHaveText("Connect DigiBot");
+    expect(sent()).toEqual([]);
     lens.requests.length = 0;
     await frame
       .getByRole("option", { name: /^Start pairing and copy \/link/u })

@@ -4,7 +4,9 @@
  * Clipboard API the page's Permissions Policy can block.
  */
 
-export const OFFSCREEN_PATH = "offscreen.html";
+const OFFSCREEN_PATH = "offscreen.html";
+/** The worker's script, as the manifest names it: the only sender it copies for. */
+export const WORKER_PATH = "background.js";
 /** Marks the worker's messages to the offscreen document. */
 export const OFFSCREEN_TARGET = "lens-offscreen";
 
