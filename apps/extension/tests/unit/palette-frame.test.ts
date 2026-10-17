@@ -17,7 +17,10 @@ import type * as Storage from "../../src/storage.js";
 
 const mocks = vi.hoisted(() => ({
   createPairing: vi.fn(),
+  exchangePairing: vi.fn(),
+  getPendingPairing: vi.fn(),
   getSettings: vi.fn(),
+  isIntegrationConnected: vi.fn(),
   updateSettings: vi.fn(),
 }));
 
@@ -36,10 +39,9 @@ vi.mock("../../src/storage.js", async (importOriginal) => ({
 vi.mock("../../src/integration-client.js", async (importOriginal) => ({
   ...(await importOriginal<typeof IntegrationClient>()),
   createPairing: mocks.createPairing,
-  // DigiBot never answers, so a pairing keeps waiting.
-  exchangePairing: () => new Promise(() => undefined),
-  getPendingPairing: () => Promise.resolve(null),
-  isIntegrationConnected: () => Promise.resolve(false),
+  exchangePairing: mocks.exchangePairing,
+  getPendingPairing: mocks.getPendingPairing,
+  isIntegrationConnected: mocks.isIntegrationConnected,
 }));
 
 /**
@@ -58,6 +60,9 @@ const REQUIRED_HOSTS = [
 const CLIENT_TOKEN = "typed-client-token-0123456789abcdef";
 const BACKEND_URL = "https://backend.example";
 const COVERED = "The page is covering Lens. Press Esc and open it again.";
+const SITE_RULE =
+  "For narrower access, grant only the exact image-host origin. Existing grants are never removed when another request is denied.";
+const CREATING = "Creating a short-lived pairing request...";
 
 const html = await readFile(
   resolve(import.meta.dirname, "../../public/palette.html"),
@@ -193,6 +198,10 @@ beforeEach(() => {
     ...(await (mocks.getSettings() as Promise<object>)),
     ...changes,
   }));
+  // DigiBot never answers, so a pairing keeps waiting.
+  mocks.exchangePairing.mockReturnValue(new Promise(() => undefined));
+  mocks.getPendingPairing.mockResolvedValue(null);
+  mocks.isIntegrationConnected.mockResolvedValue(false);
 });
 
 afterEach(() => {
@@ -259,6 +268,7 @@ function trusted(init: Record<string, unknown>): never {
     shiftKey: false,
     isComposing: false,
     keyCode: 0,
+    repeat: false,
     preventDefault: () => undefined,
     stopPropagation: () => undefined,
     ...init,
@@ -296,11 +306,12 @@ describe("the palette frame's Settings rows", () => {
       expect(element("chip").textContent).toBe("Settings › Allow one site"),
     );
     const input = element("query") as HTMLInputElement;
-    input.value = "https://images.example";
-    input.dispatchEvent(new Event("input"));
-    expect(element("hint").textContent).toBe(
-      "For narrower access, grant only the exact image-host origin. Existing grants are never removed when another request is denied.",
-    );
+    const type = (value: string) => {
+      input.value = value;
+      input.dispatchEvent(new Event("input"));
+    };
+    type("https://images.example");
+    expect(element("hint").textContent).toBe(SITE_RULE);
 
     stub.answers.push(false, new Error("no gesture"), true);
     act(stub, () => press("Enter"));
@@ -308,6 +319,9 @@ describe("the palette frame's Settings rows", () => {
       expect(element("hint").textContent).toBe("Host access was not granted."),
     );
     expect(element("hint").getAttribute("role")).toBe("alert");
+    // The answer lasts until the next keystroke.
+    type("https://images.example/");
+    expect(element("hint").textContent).toBe(SITE_RULE);
     act(stub, () => press("Enter"));
     await vi.waitFor(() =>
       expect(element("hint").textContent).toBe(
@@ -400,6 +414,38 @@ describe("the palette frame's Settings rows", () => {
     expect(document.activeElement).toBe(input);
   });
 
+  it("turns a switch back for a second quick press", async () => {
+    // Each save reads, waits and writes, as storage.ts does.
+    let persisted = (await mocks.getSettings()) as {
+      screenshotFallbackEnabled: boolean;
+    };
+    mocks.getSettings.mockImplementation(() =>
+      Promise.resolve({ ...persisted }),
+    );
+    mocks.updateSettings.mockImplementation(async (changes: object) => {
+      const current = { ...persisted };
+      await flush();
+      persisted = { ...current, ...changes };
+      return persisted;
+    });
+    await openFrame("settings");
+    for (let index = 0; index < 2; index += 1) press("ArrowDown");
+    expect(rowTitle(2)).toBe("Screenshot copy fallback");
+    press("Enter");
+    press("Enter");
+    await vi.waitFor(() =>
+      expect(mocks.updateSettings).toHaveBeenCalledTimes(2),
+    );
+    await mocks.updateSettings.mock.results[1]?.value;
+    await flush();
+    expect(mocks.updateSettings.mock.calls).toEqual([
+      [{ screenshotFallbackEnabled: true }],
+      [{ screenshotFallbackEnabled: false }],
+    ]);
+    expect(persisted.screenshotFallbackEnabled).toBe(false);
+    expect(element("row-2").textContent).toContain("Off");
+  });
+
   it("never shows or sends the client token or the backend URL", async () => {
     const stub = await openFrame("settings");
     const shown = [document.body.innerHTML];
@@ -441,9 +487,7 @@ describe("the palette frame's Connect view", () => {
     expect(element("live").textContent).toBe("DigiBot is not connected.");
 
     press("Enter");
-    expect(element("live").textContent).toBe(
-      "Creating a short-lived pairing request...",
-    );
+    expect(element("live").textContent).toBe(CREATING);
     press("Enter");
     press("1", { code: "Digit1", altKey: true });
     expect(mocks.createPairing).toHaveBeenCalledTimes(1);
@@ -466,6 +510,104 @@ describe("the palette frame's Connect view", () => {
     // takes focus again.
     press("Escape");
     expect(element("chip").textContent).toBe("Settings");
+    expect(document.activeElement).toBe(element("query"));
+  });
+
+  it("starts or resumes no pairing while a new one is created", async () => {
+    mocks.getPendingPairing.mockResolvedValue({
+      pairId: "OLD5W2",
+      confirmationCode: "105274",
+      expiresAt: new Date(Date.now() + 200_000).toISOString(),
+    });
+    let fail: (error: Error) => void = () => undefined;
+    mocks.createPairing.mockReturnValue(
+      new Promise((_, reject) => {
+        fail = reject;
+      }),
+    );
+    await openFrame("connect");
+    expect([rowTitle(0), rowTitle(1), rowTitle(2)]).toEqual([
+      "Complete DigiBot pairing",
+      "Copy /link",
+      "Start again",
+    ]);
+
+    press("3", { code: "Digit3", altKey: true });
+    expect(element("live").textContent).toBe(CREATING);
+    // The old pairing's rows stay on screen while the new one is created.
+    expect(rowTitle(0)).toBe("Complete DigiBot pairing");
+    press("1", { code: "Digit1", altKey: true });
+    press("3", { code: "Digit3", altKey: true });
+    await flush();
+    expect(mocks.createPairing).toHaveBeenCalledTimes(1);
+    expect(mocks.exchangePairing).not.toHaveBeenCalled();
+    expect(element("live").textContent).toBe(CREATING);
+
+    // Once the request fails, the old pairing can be completed again.
+    fail(new Error("offline"));
+    await vi.waitFor(() =>
+      expect(element("live").textContent).toBe(
+        "The DigiBot pairing request could not be created.",
+      ),
+    );
+    press("1", { code: "Digit1", altKey: true });
+    expect(mocks.exchangePairing).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps focus in the frame when the pairing ends", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    await openFrame("connect");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("blur")) },
+    });
+    mocks.createPairing.mockResolvedValue({
+      pairId: "7F3K9Q",
+      confirmationCode: "482913",
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    });
+    press("Enter");
+    await vi.waitFor(() =>
+      expect(document.activeElement?.id).toBe("pair-command"),
+    );
+
+    // DigiBot approves at the first check, 3 s in.
+    mocks.exchangePairing.mockResolvedValue({});
+    mocks.isIntegrationConnected.mockResolvedValue(true);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.waitFor(() =>
+      expect(element("live").textContent).toBe(
+        "DigiBot is connected for this browser. Connected checks and downloads use that account.",
+      ),
+    );
+    expect(document.getElementById("pair-command")).toBeNull();
+    expect(document.activeElement).toBe(element("query"));
+    expect(element("hint").hidden).toBe(true);
+  });
+
+  it("drops the copy hint when Complete DigiBot pairing replaces the /link", async () => {
+    mocks.getPendingPairing.mockResolvedValue({
+      pairId: "7F3K9Q",
+      confirmationCode: "482913",
+      expiresAt: new Date(Date.now() + 200_000).toISOString(),
+    });
+    await openFrame("connect");
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("blur")) },
+    });
+    expect(rowTitle(1)).toBe("Copy /link");
+    press("2", { code: "Digit2", altKey: true });
+    await vi.waitFor(() =>
+      expect(document.activeElement?.id).toBe("pair-command"),
+    );
+    expect(element("hint").hidden).toBe(false);
+
+    press("1", { code: "Digit1", altKey: true });
+    expect(element("live").textContent).toBe(
+      "Waiting for approval in Telegram…",
+    );
+    expect(element("hint").hidden).toBe(true);
     expect(document.activeElement).toBe(element("query"));
   });
 });
@@ -511,7 +653,7 @@ describe("the palette frame inside a page", () => {
   };
 
   it.each(Object.keys(ran))(
-    "drops a key pressed before the panel shows, opened at %s",
+    "drops a key pressed before the panel shows, and its repeats, opened at %s",
     async (view) => {
       mocks.createPairing.mockReturnValue(new Promise(() => undefined));
       const stub = await openInPage(view);
@@ -520,6 +662,12 @@ describe("the palette frame inside a page", () => {
       expect(element("status-text").textContent).toBe(COVERED);
       observed?.([{ isVisible: true }]);
       await vi.advanceTimersByTimeAsync(600);
+      expect(check(stub)).toBe(false);
+
+      // A key held from the page repeats once the panel shows: no repeat runs.
+      press("Enter", { repeat: true });
+      press("1", { code: "Digit1", altKey: true, repeat: true });
+      await vi.advanceTimersByTimeAsync(10);
       expect(check(stub)).toBe(false);
 
       // The same key once the panel has been visible runs the first row.

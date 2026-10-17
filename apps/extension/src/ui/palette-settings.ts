@@ -13,7 +13,12 @@ import {
   getIntegrationSession,
   IntegrationClientError,
 } from "../integration-client.js";
-import { clearHistory, defaultSettings, updateSettings } from "../storage.js";
+import {
+  clearHistory,
+  defaultSettings,
+  getSettings,
+  updateSettings,
+} from "../storage.js";
 import {
   optionalAccessStatusText,
   requestFullOptionalAccess,
@@ -75,9 +80,29 @@ let saving: Promise<unknown> = Promise.resolve();
 
 /** Saves one change at once; a new cache limit also trims the cache. */
 export function saveSetting(update: SettingUpdate): Promise<PaletteSettings> {
-  const save = saving.then(() => saveNow(update));
-  saving = save.catch(() => undefined);
-  return save;
+  return queued(() => saveNow(update));
+}
+
+/**
+ * Turns a switch over from its stored value when its turn comes, so two
+ * quick presses undo each other.
+ */
+export function flipSetting(key: SettingKey): Promise<PaletteSettings> {
+  return queued(async () => {
+    const value = (await getSettings())[key];
+    if (typeof value !== "boolean")
+      throw new TypeError(`${key} is not a switch.`);
+    return saveNow({ [key]: !value });
+  });
+}
+
+/** Runs after the save before it; a failed save does not block the next. */
+function queued(
+  save: () => Promise<PaletteSettings>,
+): Promise<PaletteSettings> {
+  const next = saving.then(save);
+  saving = next.catch(() => undefined);
+  return next;
 }
 
 async function saveNow(update: SettingUpdate): Promise<PaletteSettings> {

@@ -68,9 +68,9 @@ b013e6ee73bdec6c0c6d1ca4c1e826a34dc90eaeb4e523a2f69596e316a681eb  ./apps/extensi
 3dd8f4641d09bcfaff4ec397cdfc0a05c7b6c2295b23eb941801c3129ad2a70a  ./apps/extension/src/ui/history.ts
 223a8a64982c973b9be0a455c55cbf68369f7add5a8bd0aac765d7499e67c25f  ./apps/extension/src/ui/link-output.ts
 db55e670be804b058595df193a6ffa9d1b7198d865ecdede68526b5a9e3ba630  ./apps/extension/src/ui/optional-access.ts
-d26dea2dea71b1bafdb57314190db63636371fdb73dcfd1c97a685edf2a2cb47  ./apps/extension/src/ui/palette-commands.ts
-6c64c25ad34834a2eaf765b6fecdc679e815c59a1222088a0b3ee41c82c83d23  ./apps/extension/src/ui/palette-settings.ts
-0e68353c7ad04ec8ee4dcf1edb14c3ed54ba8b604d9c4c5f5f7744ef76efa587  ./apps/extension/src/ui/palette.ts
+cc380b55bced1bf65f76ad9ac71cd3fd9a5005f74a2cd814bf0e6c2ce1805f5c  ./apps/extension/src/ui/palette-commands.ts
+8ece2f4428d3d880ab397a87372d85e23f6a16a015ed6a869b3e4543645f5844  ./apps/extension/src/ui/palette-settings.ts
+c91dc6ce206a654f4d63b03494cbe567b5286c6668cb8d325fa6c360edab56f5  ./apps/extension/src/ui/palette.ts
 5a95486e90916a97ea9f52af8d2d6c33ff69d1c8ae3f1ee0ba7750167ee7b1cc  ./apps/extension/src/ui/settings.ts
 633f7420ef5e808d1c9d3473a64392f8a9bd6aa653d00b9abaa35532ca7f608d  ./apps/extension/src/ui/tokens.ts
 ea5400753b8fe10c5dac507261c7c00a8fae85f1b09f0677f043fa0c1df2c92d  ./apps/extension/src/verification-runs.ts
@@ -104,10 +104,10 @@ f234af890dba2b367b248564965f22ad3349eba02097f31349de61284a95fdad  ./apps/extensi
 b8637724226fea08c210eee5f563521c871fb0522c40e317c5ff447155c6d6b1  ./apps/extension/tests/unit/page-link-candidates.test.ts
 b78b71e070320d11258897eaa3a0775191faccc518aa63216e45461afb5a1881  ./apps/extension/tests/unit/page-policy.test.ts
 9deff75e68b86598e956725ff0e4c2cbfda8cccb06fb9fe24e7f7e2435d7ffb7  ./apps/extension/tests/unit/palette-commands.test.ts
-d1a605eea477a7bd400c62fe1b26a2c82c3d75318c17d11acc9c94df095cee67  ./apps/extension/tests/unit/palette-frame.test.ts
+a633cf1ad3cebe6b29f18c19f4a96f47a9c769ac5ce017fc99774e6014cd7be8  ./apps/extension/tests/unit/palette-frame.test.ts
 557e023b8d23ee0ca16bb25fa1981a577357bdb91e1ff1b6009c227383bd26f2  ./apps/extension/tests/unit/palette-host.test.ts
-2110d2fd57361481fc910fdda9725eba3ae07729bd669e8037dd7c54543df947  ./apps/extension/tests/unit/palette-keys.test.ts
-7b4312b4923a478eeba3715e71976fd324940a1598a496b448e97f78329da781  ./apps/extension/tests/unit/palette-settings.test.ts
+f971aa0d59b45952b4c109471af14ed93b6c56e9f0748d207cc9ab01844eead7  ./apps/extension/tests/unit/palette-keys.test.ts
+4688763c8237d9864082a0c88d22a0acaa4add25e6bf9d2a47575f78d252fd7d  ./apps/extension/tests/unit/palette-settings.test.ts
 89d6ab7d9b571f960d8e044a4a527a820fc2617bc772de34618ac73fbfc32c7f  ./apps/extension/tests/unit/picker.test.ts
 e2ed9b23dbdf2254229bdf1edffd71c1b45ae5a3c18c610c8c16bb616deeddc3  ./apps/extension/tests/unit/registry.test.ts
 3a3d7e7841f136c472958e27528b2f0020c1ce163742c6d0c002023394ca46b0  ./apps/extension/tests/unit/retrieval.test.ts
@@ -164,7 +164,7 @@ fb138a47d8036862a18fc1d2fe4dce1444b891af669ee45fbfe7b6f165b0e268  ./packages/sha
 574f1e8d9a06b9461790ab003bb4915c509ab4a42b640bcffe58af75075e3275  ./packages/shared/tests/url-safety.test.ts
 c4e888ea448a6c5d73e247e38f7bf1e4de53a6aaec6c00037b0ffa2000b3b9d1  ./packages/shared/tsconfig.build.json
 e5bd0b7731c516492c844fb8af234af1287147f24f4805cb2705c0f7fca930f2  ./packages/shared/tsconfig.json
-b308ece9b3caaf106881f03efb329d07b900750dcdc30b7426afd71bc2d35e41  ./scripts/audit-extension.mjs
+1f92d6ddc6475a4c5564e3681eaf28ab2725d432f5da83d5eee7dc11c4aa79d1  ./scripts/audit-extension.mjs
 fefd04764e0fecbf444fea949906d3b362998645b67287f3d574b8d5a39ebfd1  ./scripts/package.mjs
 3222f5fc2c11683f486e07214d65fce23c4e19d6e1fbd542d3c4843883a2a94b  ./scripts/public-package.test.mjs
 e19f5cd22d71c9c4f70152d0c1ba38599204574e30958607008fd2d6e06e2beb  ./scripts/scan-extension.mjs

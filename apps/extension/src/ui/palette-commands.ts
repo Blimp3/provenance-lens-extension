@@ -803,6 +803,7 @@ export type PaletteKeyEvent = {
   isComposing: boolean;
   keyCode: number;
   isTrusted: boolean;
+  repeat: boolean;
 };
 
 export type PaletteKeyState = {
@@ -817,6 +818,7 @@ export type PaletteKey =
   | { type: "edge"; edge: "first" | "last" }
   | { type: "run" }
   | { type: "digit"; index: number }
+  | { type: "repeat" }
   | { type: "actions" }
   | {
       type: "escape";
@@ -830,7 +832,9 @@ const DIGIT_CODE = /^(?:Digit|Numpad)([1-9])$/u;
 /**
  * What one key does in the palette. Untrusted events do nothing, and
  * while an IME composes only Tab stays trapped; "none" leaves the key to the
- * input. Every other result is handled with preventDefault().
+ * input. Every other result is handled with preventDefault(). A held ↵ or
+ * ⌥digit runs once: its auto-repeats are "repeat", which runs nothing, so a
+ * page that asks for a held key cannot run a row the user has not seen.
  */
 export function paletteKey(
   event: PaletteKeyEvent,
@@ -845,7 +849,9 @@ export function paletteKey(
   const digit = DIGIT_CODE.exec(event.code)?.[1];
   // ⌥1–⌥9 by the physical key, so the layout's character is never typed.
   if (digit !== undefined && altKey && !ctrlKey && !metaKey && !shiftKey)
-    return { type: "digit", index: Number(digit) - 1 };
+    return event.repeat
+      ? { type: "repeat" }
+      : { type: "digit", index: Number(digit) - 1 };
   if (event.key === "Escape") {
     if (state.actionsOpen) return { type: "escape", step: "close-actions" };
     if (state.query !== "") return { type: "escape", step: "clear-query" };
@@ -867,7 +873,7 @@ export function paletteKey(
       return { type: "move", delta: event.key === "ArrowDown" ? 1 : -1 };
   }
   if (event.key === "Enter" && !altKey && !ctrlKey && !metaKey)
-    return { type: "run" };
+    return event.repeat ? { type: "repeat" } : { type: "run" };
   if (
     event.key === "Backspace" &&
     state.query === "" &&

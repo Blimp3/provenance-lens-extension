@@ -8,6 +8,7 @@ import type * as Storage from "../../src/storage.js";
 import type * as OptionalAccess from "../../src/ui/optional-access.js";
 
 const mocks = vi.hoisted(() => ({
+  getSettings: vi.fn(),
   updateSettings: vi.fn(),
   setCacheLimit: vi.fn(),
   clearVerificationCache: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock("../../src/cache.js", () => ({
 vi.mock("../../src/storage.js", async (importOriginal) => ({
   clearHistory: mocks.clearHistory,
   defaultSettings: (await importOriginal<typeof Storage>()).defaultSettings,
+  getSettings: mocks.getSettings,
   updateSettings: mocks.updateSettings,
 }));
 vi.mock("../../src/integration-client.js", async (importOriginal) => ({
@@ -54,6 +56,7 @@ import {
   copyText,
   defaultFor,
   finishSetupItems,
+  flipSetting,
   grantOptionalAccess,
   MODE_DISCLOSURES,
   openTabPage,
@@ -197,6 +200,30 @@ describe("palette settings save on change", () => {
     await expect(saveSetting({ historyRetention: 50 })).resolves.toMatchObject({
       historyRetention: 50,
     });
+  });
+
+  it("turns a switch over from its stored value, so two quick presses undo each other", async () => {
+    installChrome();
+    let persisted = { ...stored };
+    mocks.getSettings.mockImplementation(() =>
+      Promise.resolve({ ...persisted }),
+    );
+    mocks.updateSettings.mockImplementation(async (changes: object) => {
+      const current = { ...persisted };
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      persisted = { ...current, ...changes };
+      return persisted;
+    });
+    const [first, second] = await Promise.all([
+      flipSetting("debugMode"),
+      flipSetting("debugMode"),
+    ]);
+    expect(first.debugMode).toBe(true);
+    expect(second.debugMode).toBe(false);
+    expect(persisted.debugMode).toBe(false);
+    await expect(flipSetting("historyRetention")).rejects.toThrow(
+      "historyRetention is not a switch.",
+    );
   });
 
   it("resets a setting to its default", () => {

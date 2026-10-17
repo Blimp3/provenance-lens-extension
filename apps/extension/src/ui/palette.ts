@@ -81,6 +81,7 @@ import {
   defaultFor,
   disconnectDigiBot,
   finishSetupItems,
+  flipSetting,
   formatPairingCode,
   grantOptionalAccess,
   MODE_DISCLOSURES,
@@ -315,6 +316,8 @@ let notice: Hint | null = null;
 let connectStatus: Hint | null = null;
 /** The pairing this frame asks DigiBot about; it ends with the frame. */
 let pairingPoll: PairingPoll | null = null;
+/** A pairing request is being created; no pairing starts or resumes. */
+let creatingPairing = false;
 /** The /link copy fell back to a selection for a keyboard copy. */
 let copySelected = false;
 /** The Detail on screen, so a render that changes nothing keeps a selection. */
@@ -1664,9 +1667,17 @@ function editAlias(commandId: string): void {
 }
 
 /** Saves one setting at once; the footer says "Saved" for 2.5 s. */
-async function applySetting(update: SettingUpdate): Promise<boolean> {
+function applySetting(update: SettingUpdate): Promise<boolean> {
+  return showSave(saveSetting(update));
+}
+
+async function toggleSetting(key: SettingKey): Promise<void> {
+  await showSave(flipSetting(key));
+}
+
+async function showSave(save: Promise<PaletteSettings>): Promise<boolean> {
   try {
-    const settings = await saveSetting(update);
+    const settings = await save;
     if (data)
       data = {
         ...data,
@@ -1684,11 +1695,6 @@ async function applySetting(update: SettingUpdate): Promise<boolean> {
   showSaved();
   render();
   return true;
-}
-
-async function toggleSetting(key: SettingKey): Promise<void> {
-  const value = data?.settings[key];
-  if (typeof value === "boolean") await applySetting({ [key]: !value });
 }
 
 function showSaved(text = "Saved"): void {
@@ -1731,11 +1737,12 @@ async function openView(view: PaletteView): Promise<void> {
 // Pairing ------------------------------------------------------------------
 
 /**
- * Start pairing and Start again: a new pairing, its /link copied. A second
- * press while the request is created does nothing.
+ * Start pairing and Start again: a new pairing, its /link copied. While the
+ * request is created, neither this nor Complete DigiBot pairing does anything.
  */
 async function startPairing(): Promise<void> {
-  if (connectStatus?.text === PAIRING_TEXT.creating) return;
+  if (creatingPairing) return;
+  creatingPairing = true;
   stopPairing();
   copySelected = false;
   connectStatus = { text: PAIRING_TEXT.creating, error: false };
@@ -1747,6 +1754,8 @@ async function startPairing(): Promise<void> {
     connectStatus = { text: PAIRING_TEXT.createFailed, error: true };
     render();
     return;
+  } finally {
+    creatingPairing = false;
   }
   connectStatus = null;
   if (data)
@@ -1766,8 +1775,10 @@ async function startPairing(): Promise<void> {
 /** Complete DigiBot pairing: asks at once, then on the same schedule. */
 function completePairing(): void {
   const pending = data?.pending;
-  if (!pending) return;
+  if (!pending || creatingPairing) return;
   connectStatus = null;
+  // The new status rebuilds the Detail, and a selected /link with it.
+  copySelected = false;
   if (currentView() !== "connect") pushView("connect");
   watchPairing(pairingStartedAt(pending.expiresAt), true);
   render();
@@ -1780,6 +1791,7 @@ function watchPairing(startedAt: number, immediate: boolean): void {
   void poll.done.then((outcome) => {
     if (pairingPoll !== poll) return;
     pairingPoll = null;
+    copySelected = false;
     if (outcome === "timeout")
       connectStatus = { text: PAIRING_TEXT.timeout, error: true };
     void reload();
@@ -2174,7 +2186,10 @@ function renderDetail(detail: Detail | undefined): void {
     paragraph.textContent = text;
     children.push(paragraph);
   }
+  // Focus in the old Detail, on a selected /link, goes back to the search field.
+  const focused = detailElement.contains(document.activeElement);
   detailElement.replaceChildren(...children);
+  if (focused) input.focus();
 }
 
 function renderList(built: BuiltView): void {
