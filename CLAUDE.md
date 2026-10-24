@@ -21,7 +21,7 @@ sync follows the release checklist.
 
 ## Commands
 
-Use Node.js 24.20.0 (`.nvmrc`) and npm 11.6.2. In a cloud session, prepend
+Use Node.js 24.22.1 (`.nvmrc`) and npm 11.6.2. In a cloud session, prepend
 `/opt/node24/bin` to `PATH` first.
 
 ```sh

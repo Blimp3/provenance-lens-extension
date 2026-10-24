@@ -348,7 +348,7 @@ tab that you close without **Continue** ends its action as **Cancelled**.
 
 ## Requirements
 
-- Node.js 24.20.0
+- Node.js 24.22.1
 - npm 11.6.2
 - a git clone of this repository for `npm run check`
 
