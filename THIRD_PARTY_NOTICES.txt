@@ -267,7 +267,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ---
 
-zod 4.5.4
+zod 4.6.7
 Declared license: MIT
 
 MIT License
