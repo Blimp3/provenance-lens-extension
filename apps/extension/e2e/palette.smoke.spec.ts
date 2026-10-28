@@ -332,20 +332,49 @@ async function openPalette(lens: Lens, page: Page): Promise<Frame> {
   const frame = paletteFrame(page) as Frame;
   await expect(frame.locator("#panel")).toBeVisible();
   await expect(frame.locator("#query")).toBeFocused();
-  await takesClicks(page, frame);
+  await takesClicks(frame);
   return frame;
 }
 
 /**
- * Waits until the palette reports its panel visible, and a little longer,
- * since a click runs a row only once the panel has been visible for 500 ms.
+ * Waits until the palette has reported its panel visible for 600 ms with no
+ * change and no resize, since a click runs a row only once the panel has
+ * been visible for 500 ms by the frame's own clock. A "true" seen right after
+ * a remount or an uncover can be stale: the frame may still report the panel
+ * hidden and visible again, which restarts that clock.
  */
-async function takesClicks(page: Page, frame: Frame): Promise<void> {
+async function takesClicks(frame: Frame): Promise<void> {
   await expect(frame.locator("#palette")).toHaveAttribute(
     "data-visible",
     "true",
   );
-  await page.waitForTimeout(600);
+  await frame.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        const palette = document.getElementById("palette") as HTMLElement;
+        const isShown = (): boolean => palette.dataset["visible"] === "true";
+        let shown = isShown();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const restart = (): void => {
+          clearTimeout(timer);
+          if (!shown) return;
+          timer = setTimeout(() => {
+            observer.disconnect();
+            removeEventListener("resize", restart);
+            resolve();
+          }, 600);
+        };
+        // The frame sets the attribute on every sample; only a change counts.
+        const observer = new MutationObserver(() => {
+          if (isShown() === shown) return;
+          shown = isShown();
+          restart();
+        });
+        observer.observe(palette, { attributeFilter: ["data-visible"] });
+        addEventListener("resize", restart);
+        restart();
+      }),
+  );
 }
 
 function hostCount(page: Page): Promise<number> {
@@ -796,7 +825,7 @@ test("a click lands in the palette above a modal dialog and a fullscreen element
         ),
       )
       .toBe(true);
-    await takesClicks(page, frame);
+    await takesClicks(frame);
     await frame.getByRole("option", { name: /^Recent/u }).click();
     await expect(frame.locator("#chip")).toHaveText("Recent");
     await frame.locator("#chip").click();
@@ -822,7 +851,7 @@ test("a click lands in the palette above a modal dialog and a fullscreen element
       )
       .toBe("stage");
     await expect(frame.locator("#query")).toBeFocused();
-    await takesClicks(page, frame);
+    await takesClicks(frame);
     await frame.getByRole("option", { name: /^Recent/u }).click();
     await expect(frame.locator("#chip")).toHaveText("Recent");
     await page.evaluate(() => document.exitFullscreen());
@@ -897,7 +926,7 @@ test("ignores a click, a key and an action while a page element covers the palet
 
     // Uncovered, the message goes and the same click runs the row.
     await uncoverPalette(page);
-    await takesClicks(page, frame);
+    await takesClicks(frame);
     await expect(frame.locator("#status-text")).not.toHaveText(
       "The page is covering Lens. Press Esc and open it again.",
     );
@@ -937,7 +966,7 @@ test("closes the palette when the page masks, hides or moves its host", async ()
         name: /^Pick an image to verify/u,
       });
       await expect(pickRow).toBeVisible();
-      await takesClicks(page, frame);
+      await takesClicks(frame);
       const box = await pickRow.boundingBox();
       if (!box) throw new Error("The pick row has no box.");
       return {
@@ -1129,7 +1158,7 @@ test("a page cover lifted 15 ms in every 100 ms lets no key through", async () =
       await new Promise((resolve) => setTimeout(resolve, 50));
       document.querySelector<HTMLElement>("#cover")?.hidePopover();
     });
-    await takesClicks(page, frame);
+    await takesClicks(frame);
     await page.keyboard.press("Enter");
     await expect.poll(() => hostCount(page)).toBe(0);
     await expect
@@ -1593,7 +1622,7 @@ test("the palette mounts on a page whose player's open shadow root is at the top
     await expect.poll(() => hostParentName(page)).toBe("main");
     await page.evaluate(() => document.exitFullscreen());
     await expect.poll(() => hostParentName(page)).toBe("html");
-    await takesClicks(page, frame);
+    await takesClicks(frame);
     await page.keyboard.type("v");
     await page.keyboard.press("Enter");
     await expect.poll(() => hostCount(page)).toBe(0);
