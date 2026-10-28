@@ -18,7 +18,6 @@ export const entryPoints = {
   settings: join(sourceDir, "ui/settings.ts"),
   history: join(sourceDir, "ui/history.ts"),
   details: join(sourceDir, "ui/details.ts"),
-  disclosure: join(sourceDir, "ui/disclosure.ts"),
   audio: join(sourceDir, "ui/audio.ts"),
   offscreen: join(sourceDir, "offscreen.ts"),
 };
@@ -65,7 +64,6 @@ if (import.meta.main) {
     "settings",
     "history",
     "details",
-    "disclosure",
     "audio",
     "offscreen",
   ]) {

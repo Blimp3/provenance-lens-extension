@@ -197,6 +197,7 @@ afterEach(() => {
 async function openFrame(
   view: string,
   host: "tab" | "page" = "tab",
+  extra: Record<string, unknown> = {},
 ): Promise<Stub> {
   vi.resetModules();
   document.documentElement.className = "";
@@ -218,6 +219,7 @@ async function openFrame(
     hostname: "page.example",
     scope: "page",
     needsPick: false,
+    ...extra,
   });
   vi.stubGlobal("chrome", stub.api);
   await import("../../src/ui/palette.js");
@@ -616,6 +618,129 @@ describe("the palette frame's Connect view", () => {
   });
 });
 
+describe("the palette frame's Disclosure view", () => {
+  const PENDING_ID = "5d0c9a4e-1f2b-4c3d-8e9f-0a1b2c3d4e5f";
+  // The tab host closes its window after a run; jsdom would drop the page.
+  let closed: MockInstance<() => void>;
+  beforeEach(() => {
+    closed = vi.spyOn(window, "close").mockImplementation(() => undefined);
+    vi.useFakeTimers({ toFake: ["performance"] });
+  });
+  afterEach(() => closed.mockRestore());
+  const sent = (stub: Stub, type: string) =>
+    stub.calls
+      .filter(
+        ({ name, args }) =>
+          name === "runtime.sendMessage" &&
+          (args[0] as { type?: string }).type === type,
+      )
+      .map(({ args }) => args[0]);
+  const openDisclosure = (synthId = false) =>
+    openFrame("disclosure", "tab", {
+      disclosure: { pendingId: PENDING_ID, synthId },
+    });
+  /** Past the 250 ms in which the view ignores keys. */
+  const shownLongEnough = () => vi.advanceTimersByTime(250);
+
+  it("shows the API text and acknowledges with ⌥1 only once it has shown for 250 ms", async () => {
+    mocks.getSettings.mockResolvedValue({
+      ...(await (mocks.getSettings() as Promise<object>)),
+      verificationMode: "api",
+    });
+    const stub = await openDisclosure();
+    const text = element("detail").textContent;
+    expect(text).toContain("Before your first verification");
+    expect(text).toContain("API mode uploads the exact bytes");
+    expect(text).toContain("not universal AI detectors");
+    expect([rowTitle(0), rowTitle(1)]).toEqual([
+      "Acknowledge and pick an image",
+      "Cancel",
+    ]);
+    // A key at once, in the tab or the popup too, is ignored.
+    press("1", { code: "Digit1", altKey: true });
+    await flush();
+    expect(sent(stub, "resume-permission")).toEqual([]);
+    shownLongEnough();
+    press("1", { code: "Digit1", altKey: true });
+    await flush();
+    expect(sent(stub, "resume-permission")).toEqual([
+      {
+        type: "resume-permission",
+        pendingId: PENDING_ID,
+        verificationMode: "api",
+      },
+    ]);
+  });
+
+  it("shows the Website text for Website mode", async () => {
+    await openDisclosure();
+    const text = element("detail").textContent;
+    expect(text).toContain("Website mode downloads the exact bytes");
+    expect(text).toContain("does not upload the file to OpenAI");
+    expect(text).toContain("not universal AI detectors");
+    expect(text).not.toContain("API mode uploads");
+  });
+
+  it("asks for the SynthID handoff with Google, the saved copy and the 24-hour signature", async () => {
+    const stub = await openDisclosure(true);
+    const text = element("detail").textContent;
+    expect(text).toContain("Before you check with Google SynthID");
+    expect(text).toContain("Google's SynthID Detector");
+    expect(text).toContain("keeps the copy in its download folder");
+    expect(text).toContain("signature of each uploaded file for 24 hours");
+    expect(text).not.toContain("not universal AI detectors");
+    shownLongEnough();
+    press("Enter");
+    await flush();
+    expect(sent(stub, "resume-permission")).toEqual([
+      {
+        type: "resume-permission",
+        pendingId: PENDING_ID,
+        verificationMode: "synthid",
+      },
+    ]);
+  });
+
+  it("cancels its action with Cancel", async () => {
+    const cancelled = {
+      type: "cancel-disclosure",
+      pendingId: PENDING_ID,
+    };
+    const stub = await openDisclosure();
+    shownLongEnough();
+    press("2", { code: "Digit2", altKey: true });
+    await flush();
+    expect(sent(stub, "cancel-disclosure")).toEqual([cancelled]);
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels its action with Esc, and has no view to go back to", async () => {
+    const cancelled = {
+      type: "cancel-disclosure",
+      pendingId: PENDING_ID,
+    };
+    const stub = await openDisclosure();
+    // Backspace and the chip do not leave the view for the first view.
+    press("Backspace");
+    click(element("chip"));
+    expect(rowTitle(0)).toBe("Acknowledge and pick an image");
+    press("Escape");
+    await flush();
+    expect(sent(stub, "cancel-disclosure")).toEqual([cancelled]);
+    expect(sent(stub, "resume-permission")).toEqual([]);
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers only Cancel when the verification mode cannot be read", async () => {
+    mocks.getSettings.mockRejectedValue(new Error("storage"));
+    await openDisclosure();
+    expect(element("detail").textContent).toContain(
+      "The verification mode could not be loaded.",
+    );
+    expect(shown(".row-title")).toEqual(["Cancel"]);
+  });
+});
+
 describe("the palette frame inside a page", () => {
   /** Answers the frame's host checks as a host that still stands. */
   function connectHost(stub: Stub): void {
@@ -679,6 +804,28 @@ describe("the palette frame inside a page", () => {
       expect(check(stub)).toBe(true);
     },
   );
+
+  it("drops an early key on the Disclosure view", async () => {
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "Date", "performance"],
+    });
+    const stub = await openFrame("disclosure", "page", {
+      disclosure: {
+        pendingId: "5d0c9a4e-1f2b-4c3d-8e9f-0a1b2c3d4e5f",
+        synthId: false,
+      },
+    });
+    connectHost(stub);
+    const sent = () =>
+      stub.calls.filter(({ name }) => name === "runtime.sendMessage").length;
+    press("Enter");
+    observed?.([{ isVisible: true }]);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(sent()).toBe(0);
+    press("Enter");
+    await vi.advanceTimersByTimeAsync(10);
+    expect(sent()).toBe(1);
+  });
 
   it("keeps an early key for the first view until the panel shows", async () => {
     await openInPage("root");

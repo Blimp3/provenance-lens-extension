@@ -37,30 +37,7 @@ const MAX_RESPONSE_BYTES = 128 * 1024;
 const BACKEND_TIMEOUT_MS = 30_000;
 
 export async function openAudioCheck(): Promise<void> {
-  let sourceUrl: string | null = null;
-  try {
-    const tabs = await chrome.tabs.query({
-      active: true,
-      lastFocusedWindow: true,
-    });
-    const candidate = tabs[0]?.url;
-    if (candidate) {
-      const parsed = new URL(candidate);
-      if (
-        ["http:", "https:"].includes(parsed.protocol) &&
-        !parsed.username &&
-        !parsed.password
-      ) {
-        parsed.hash = "";
-        sourceUrl = parsed.toString();
-      }
-    }
-  } catch {
-    // The audio page still supports manually entering a video URL.
-  }
-  const page = new URL(chrome.runtime.getURL("audio.html"));
-  if (sourceUrl) page.searchParams.set("source", sourceUrl);
-  await chrome.tabs.create({ url: page.toString() });
+  await chrome.tabs.create({ url: chrome.runtime.getURL("audio.html") });
 }
 
 export interface AudioVerificationContext {

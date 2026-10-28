@@ -18,10 +18,7 @@ import {
   createAudioHistoryRecord,
   verifyAudioFile,
 } from "../actions/verify-openai-audio.js";
-import {
-  runIntegratedAudioFileAction,
-  runIntegratedAudioSegmentAction,
-} from "../actions/integration-audio.js";
+import { runIntegratedAudioFileAction } from "../actions/integration-audio.js";
 import {
   API_MODE_REQUIRED_MESSAGE,
   isApiVerificationAuthorized,
@@ -29,53 +26,47 @@ import {
 import { getIntegrationSession } from "../integration-client.js";
 import { appendHistory, getSettings, updateSettings } from "../storage.js";
 
-const form = required<HTMLFormElement>("audio-form");
 const fileInput = required<HTMLInputElement>("audio-file");
-const sourceMode = optional<HTMLSelectElement>("audio-source");
-const videoFields = optional<HTMLElement>("video-segment-fields");
-const videoSource = optional<HTMLInputElement>("video-source-url");
-const videoStart = optional<HTMLInputElement>("video-start-seconds");
-const videoEnd = optional<HTMLInputElement>("video-end-seconds");
-const button = required<HTMLButtonElement>("check-audio");
 const status = required<HTMLElement>("audio-status");
 const result = required<HTMLElement>("audio-result");
 const apiAuthorization = required<HTMLElement>("api-authorization");
 const apiAcknowledgement = required<HTMLInputElement>("api-acknowledgement");
 const apiOnlyMessage = required<HTMLElement>("api-only-message");
 
-sourceMode?.addEventListener("change", refreshSourceMode);
-const sourceFromTab = new URLSearchParams(location.search).get("source");
-if (sourceFromTab && videoSource && sourceMode) {
-  videoSource.value = sourceFromTab;
-  sourceMode.value = "video";
-}
-refreshSourceMode();
 void initializeAuthorization();
 
-form.addEventListener("submit", (event) => {
-  event.preventDefault();
-  void check();
+// The check starts on file choice, and again once the API disclosure is
+// acknowledged for the file already chosen.
+fileInput.addEventListener("change", () => void check());
+apiAcknowledgement.addEventListener("change", () => {
+  if (apiAcknowledgement.checked && fileInput.files?.length) void check();
 });
-required<HTMLButtonElement>("open-settings").addEventListener("click", () => {
-  void chrome.runtime.openOptionsPage();
-});
+// The Settings page has no Verification mode: the palette's view does.
+for (const id of ["open-settings", "open-verification-mode"])
+  required<HTMLElement>(id).addEventListener("click", (event) => {
+    event.preventDefault();
+    void chrome.runtime.sendMessage({
+      type: "open-palette-view",
+      view: "verification-mode",
+    });
+  });
 
 async function check(): Promise<void> {
-  if (sourceMode?.value === "video") {
-    await checkVideoSegment();
-    return;
-  }
+  // One check at a time: the input is disabled while one runs.
+  if (fileInput.disabled) return;
   const file = fileInput.files?.[0];
   if (!file) {
     showError("Choose an audio file first.");
     return;
   }
-  button.disabled = true;
+  fileInput.disabled = true;
   result.hidden = true;
   status.textContent = "Checking the exact audio bytes...";
   status.className = "status";
   // Recent lists a check once it runs, not a form the page refused.
   let activityId: ActivityId = null;
+  // A file that waits for the API acknowledgement stays chosen.
+  let keepFile = false;
   try {
     const connected = await getIntegrationSession().catch(() => null);
     if (connected) {
@@ -107,6 +98,7 @@ async function check(): Promise<void> {
         showError(
           "Acknowledge the API privacy disclosure before checking this audio file.",
         );
+        keepFile = true;
         return;
       }
       settings = await updateSettings({
@@ -147,7 +139,9 @@ async function check(): Promise<void> {
     });
     showError("The audio result could not be saved.");
   } finally {
-    button.disabled = false;
+    fileInput.disabled = false;
+    // Choosing the same file again, after a switch or an error, fires a change.
+    if (!keepFile) fileInput.value = "";
   }
 }
 
@@ -157,57 +151,6 @@ async function noteIntegratedCheck(
   operation: IntegrationOperationStatus,
 ): Promise<void> {
   await noteActivity(activityId, operationUpdate(operation, "audio"));
-}
-
-async function checkVideoSegment(): Promise<void> {
-  const source = videoSource?.value.trim() ?? "";
-  const start = Number(videoStart?.value ?? "");
-  const end = Number(videoEnd?.value ?? "");
-  if (!source || !Number.isFinite(start) || !Number.isFinite(end)) {
-    showError("Enter a video URL and whole-second start and end times.");
-    return;
-  }
-  button.disabled = true;
-  result.hidden = true;
-  status.textContent = "Requesting the selected audio segment...";
-  status.className = "status";
-  let activityId: ActivityId = null;
-  try {
-    if (!(await getIntegrationSession().catch(() => null))) {
-      showError(
-        "Connect Provenance Lens to DigiBot before checking a video segment.",
-      );
-      return;
-    }
-    activityId = await beginActivity(
-      "Verify a video's audio",
-      "verify",
-      { url: source },
-      { held: true },
-    );
-    const outcome = await runIntegratedAudioSegmentAction(
-      source,
-      start,
-      end,
-      activityId,
-    );
-    await noteIntegratedCheck(activityId, outcome.status);
-    renderIntegratedResult(outcome.status);
-    status.textContent = outcome.status.envelope?.result
-      ? "Audio segment check complete. The result was saved to DigiBot History."
-      : "Audio segment check is still processing. DigiBot History will update.";
-    status.className =
-      outcome.status.state === "failed" ? "status error" : "status success";
-  } catch (error: unknown) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : "The audio segment could not be checked.";
-    await noteActivity(activityId, { state: "failed", message });
-    showError(message);
-  } finally {
-    button.disabled = false;
-  }
 }
 
 async function initializeAuthorization(): Promise<void> {
@@ -224,12 +167,6 @@ function renderAuthorization(settings: {
   disclosureVersion: number;
 }): void {
   const apiMode = settings.verificationMode === "api";
-  if (sourceMode?.value === "video") {
-    apiAuthorization.hidden = true;
-    apiAcknowledgement.required = false;
-    apiOnlyMessage.hidden = true;
-    return;
-  }
   const needsAcknowledgement =
     apiMode && !isApiVerificationAuthorized(settings);
   apiAuthorization.hidden = !needsAcknowledgement;
@@ -256,9 +193,7 @@ function renderIntegratedResult(
     `Operation ${operation.operationId} is ${operation.state}.`;
   const scope = document.createElement("p");
   scope.className = "muted small";
-  scope.textContent = operation.segment
-    ? `Checked audio segment: ${operation.segment.startSeconds}–${operation.segment.endSeconds} seconds.`
-    : "Checked the exact audio file bytes.";
+  scope.textContent = "Checked the exact audio file bytes.";
   const history = document.createElement("a");
   history.className = "button secondary";
   history.href = "history.html";
@@ -267,25 +202,6 @@ function renderIntegratedResult(
   history.textContent = "Open DigiBot History";
   result.append(heading, summary, scope, history);
   result.hidden = false;
-}
-
-function refreshSourceMode(): void {
-  if (!sourceMode) return;
-  const video = sourceMode?.value === "video";
-  videoFields?.toggleAttribute("hidden", !video);
-  fileInput.required = !video;
-  if (video)
-    renderAuthorization({
-      verificationMode: "api",
-      acknowledgedVerificationModes: [],
-      disclosureVersion: 0,
-    });
-  else
-    void getSettings()
-      .then((settings) => {
-        if (settings) renderAuthorization(settings);
-      })
-      .catch(() => undefined);
 }
 
 function renderResult(record: HistoryRecord): void {
@@ -327,9 +243,4 @@ function required<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
   if (!element) throw new Error(`Missing element: ${id}`);
   return element as T;
-}
-
-function optional<T extends HTMLElement>(id: string): T | null {
-  const element = document.getElementById(id);
-  return element ? (element as T) : null;
 }

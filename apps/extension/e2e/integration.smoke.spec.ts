@@ -2,6 +2,7 @@ import {
   chromium,
   expect,
   test,
+  type BrowserContext,
   type Frame,
   type Page,
   type Route,
@@ -81,6 +82,49 @@ const TALK_HTML = `<!doctype html>
 
 function fixtureTime(offsetMs: number): string {
   return new Date(Date.now() + offsetMs).toISOString();
+}
+
+/**
+ * Pairs DigiBot from the palette's Connect view in a tab, since the Settings
+ * page keeps only the API connection and Extension access.
+ */
+async function pairInPalette(
+  context: BrowserContext,
+  extensionId: string,
+): Promise<void> {
+  const base = `chrome-extension://${extensionId}/palette.html`;
+  const page = await context.newPage();
+  await page.goto(base);
+  const token = await page.evaluate(async () => {
+    const token = crypto.randomUUID();
+    await chrome.storage.session.set({
+      "provenanceLens.paletteOpen": {
+        token,
+        tabId: 1,
+        view: "connect",
+        host: "tab",
+        page: "none",
+        hostname: "",
+        scope: "page",
+        needsPick: false,
+      },
+    });
+    return token;
+  });
+  await page.goto(`${base}#t=${token}`);
+  await page.reload();
+  await page
+    .getByRole("option", { name: /^Start pairing and copy \/link/u })
+    .click();
+  await expect(page.locator("#pair-command")).toHaveText("/link pair-e2e");
+  await expect(page.locator(".pair-code")).toHaveText(
+    "Confirmation code 482 731",
+  );
+  // The view asks for the exchange every 3 s and completes on its own.
+  await expect(page.locator("#detail")).toContainText("DigiBot is connected", {
+    timeout: 10_000,
+  });
+  await page.close();
 }
 
 function json(route: Route, value: unknown, status = 200): Promise<void> {
@@ -394,23 +438,10 @@ test("pairs DigiBot, separates image Check and Download operations, sends a page
       context.serviceWorkers()[0] ??
       (await context.waitForEvent("serviceworker"));
     const extensionId = new URL(worker.url()).hostname;
+    await pairInPalette(context, extensionId);
+    // An extension page that sends the palette's messages below.
     const settings = await context.newPage();
     await settings.goto(`chrome-extension://${extensionId}/settings.html`);
-    await expect(settings.locator("#integration-status")).toHaveText(
-      "DigiBot is not connected.",
-    );
-    await settings.locator("#start-pairing").click();
-    await expect(settings.locator("#integration-command")).toHaveText(
-      "/link pair-e2e",
-    );
-    await expect(settings.locator("#integration-code")).toHaveText("482731");
-    await expect(settings.locator("#integration-pairing")).toBeVisible();
-    await settings.locator("#complete-pairing").click();
-    await expect(settings.locator("#integration-status")).toHaveText(
-      /DigiBot is connected/u,
-    );
-    await expect(settings.locator("#disconnect-integration")).toBeVisible();
-    await expect(settings.locator("#integration-pairing")).toBeHidden();
 
     const targetPage = await context.newPage();
     await targetPage.goto(`${INTEGRATION_BACKEND_URL}/fixture`);
@@ -714,14 +745,10 @@ test("a download pick on an embedded YouTube player sends its watch page, also i
       context.serviceWorkers()[0] ??
       (await context.waitForEvent("serviceworker"));
     const extensionId = new URL(worker.url()).hostname;
+    await pairInPalette(context, extensionId);
+    // An extension page that sends the palette's messages below.
     const settings = await context.newPage();
     await settings.goto(`chrome-extension://${extensionId}/settings.html`);
-    await settings.locator("#start-pairing").click();
-    await expect(settings.locator("#integration-pairing")).toBeVisible();
-    await settings.locator("#complete-pairing").click();
-    await expect(settings.locator("#integration-status")).toHaveText(
-      /DigiBot is connected/u,
-    );
 
     const targetPage = await context.newPage();
     for (const [index, path] of Object.keys(EMBED_PAGES).entries()) {

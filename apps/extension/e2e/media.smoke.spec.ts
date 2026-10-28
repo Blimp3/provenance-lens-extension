@@ -178,19 +178,19 @@ test("checks exact audio bytes, rejects long audio locally, and explains C2PA tr
       mimeType: "audio/wav",
       buffer: original,
     });
+    // The file choice starts the check, which waits for the acknowledgement.
     await expect(audioPage.locator("#api-acknowledgement")).toBeVisible();
     await audioPage.locator("#api-acknowledgement").check();
-    await audioPage
-      .getByRole("button", { name: "Check audio", exact: true })
-      .click();
     await expect(audioPage.locator("#audio-status")).toContainText(
       "Audio check complete",
     );
     expect(uploads).toBe(1);
     expect(lookups).toBe(1);
-    await audioPage
-      .getByRole("button", { name: "Check audio", exact: true })
-      .click();
+    await audioPage.locator("#audio-file").setInputFiles({
+      name: "sample.wav",
+      mimeType: "audio/wav",
+      buffer: original,
+    });
     await expect(audioPage.locator("#audio-status")).toContainText(
       "Audio check complete",
     );
@@ -221,9 +221,6 @@ test("checks exact audio bytes, rejects long audio locally, and explains C2PA tr
       mimeType: "audio/wav",
       buffer: wav(61),
     });
-    await audioPage
-      .getByRole("button", { name: "Check audio", exact: true })
-      .click();
     await expect(audioPage.locator("#audio-status")).toContainText(
       "60 seconds",
     );

@@ -261,13 +261,6 @@ input[type="checkbox"] {
   accent-color: var(--button-background);
 }
 
-.check-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  font-weight: 500;
-}
-
 .status {
   min-height: 22px;
   margin: 8px 0 0;

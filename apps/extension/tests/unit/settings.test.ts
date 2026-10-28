@@ -1,25 +1,23 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getOptionalAccessState: vi.fn(),
   getSettings: vi.fn(),
+  updateSettings: vi.fn(),
   getAll: vi.fn(),
   request: vi.fn(),
 }));
 
-vi.mock("../../src/cache.js", () => ({
-  clearVerificationCache: vi.fn(),
-  setCacheLimit: vi.fn(),
-}));
 vi.mock("../../src/bundled-client.js", () => ({
   getBundledClientTokenForBackend: vi.fn().mockReturnValue(null),
   isDefaultBackendUrl: vi.fn().mockReturnValue(false),
 }));
 vi.mock("../../src/storage.js", () => ({
-  clearHistory: vi.fn(),
-  defaultSettings: {},
   getSettings: mocks.getSettings,
-  saveSettings: vi.fn(),
+  updateSettings: mocks.updateSettings,
 }));
 vi.mock("../../src/ui/optional-access.js", () => ({
   getOptionalAccessState: mocks.getOptionalAccessState,
@@ -27,37 +25,19 @@ vi.mock("../../src/ui/optional-access.js", () => ({
   requestFullOptionalAccess: vi.fn(),
 }));
 
-describe("settings exact-host permission", () => {
+const settingsPage = readFileSync(
+  resolve(import.meta.dirname, "../../public/settings.html"),
+  "utf8",
+);
+
+describe("settings page", () => {
   beforeEach(async () => {
     vi.resetModules();
-    document.body.innerHTML = `
-      <form id="settings-form"></form>
-      <select id="verification-mode"><option value="website">Website</option></select>
-      <div id="website-mode-disclosure"></div>
-      <div id="api-mode-disclosure"></div>
-      <input id="backend-url">
-      <input id="client-token">
-      <select id="history-retention"><option value="20">20</option></select>
-      <select id="local-cache-limit"><option value="100">100</option></select>
-      <input id="include-page-title" type="checkbox">
-      <input id="debug-mode" type="checkbox">
-      <input id="screenshot-fallback" type="checkbox">
-      <p id="connection-status"></p>
-      <p id="history-status"></p>
-      <p id="cache-status"></p>
-      <input id="permission-origin">
-      <p id="permission-status"></p>
-      <button id="grant-optional-access"></button>
-      <p id="optional-access-status"></p>
-      <div id="bundled-client-disclosure"></div>
-      <div id="backend-permission-note"></div>
-      <button id="request-backend-permission"></button>
-      <button id="test-connection"></button>
-      <button id="clear-history"></button>
-      <button id="clear-cache"></button>
-      <button id="request-permission"></button>
-      <button id="refresh-permissions"></button>
-    `;
+    // The real page, so its ids and the script stay in step.
+    document.body.innerHTML = new DOMParser().parseFromString(
+      settingsPage,
+      "text/html",
+    ).body.innerHTML;
     mocks.getSettings.mockReset().mockResolvedValue({
       verificationMode: "website",
       acknowledgedVerificationModes: ["website"],
@@ -70,6 +50,7 @@ describe("settings exact-host permission", () => {
       debugMode: false,
       disclosureVersion: 1,
     });
+    mocks.updateSettings.mockReset().mockResolvedValue({});
     mocks.getOptionalAccessState.mockReset().mockResolvedValue({
       allSites: false,
       downloads: false,
@@ -91,6 +72,50 @@ describe("settings exact-host permission", () => {
 
     await import("../../src/ui/settings.js");
     await vi.waitFor(() => expect(mocks.getSettings).toHaveBeenCalled());
+  });
+
+  it("keeps only the API connection and Extension access cards", () => {
+    const headings = [...document.querySelectorAll("section > h2")].map(
+      (heading) => heading.id,
+    );
+    expect(headings).toEqual(["connection-heading", "permissions-heading"]);
+    // Every other group lives in the palette now.
+    for (const id of [
+      "verification-mode",
+      "start-pairing",
+      "history-retention",
+      "local-cache-limit",
+      "include-page-title",
+      "debug-mode",
+      "screenshot-fallback",
+      "clear-history",
+      "clear-cache",
+      "refresh-permissions",
+    ])
+      expect(document.getElementById(id), id).toBeNull();
+  });
+
+  it("saves only the backend URL and client token", async () => {
+    const backendUrl = document.getElementById("backend-url");
+    const clientToken = document.getElementById("client-token");
+    if (
+      !(backendUrl instanceof HTMLInputElement) ||
+      !(clientToken instanceof HTMLInputElement)
+    )
+      throw new Error("Missing input");
+    backendUrl.value = "https://api.example/";
+    clientToken.value = "client-token-value";
+
+    document
+      .getElementById("settings-form")
+      ?.dispatchEvent(new Event("submit", { cancelable: true }));
+
+    await vi.waitFor(() =>
+      expect(mocks.updateSettings).toHaveBeenCalledWith({
+        backendBaseUrl: "https://api.example",
+        clientToken: "client-token-value",
+      }),
+    );
   });
 
   it.each([

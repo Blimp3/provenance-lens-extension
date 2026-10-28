@@ -99,9 +99,12 @@ test("loads the unpacked extension settings page", async () => {
       await expect(bundledClientDisclosure).toBeHidden();
       expect(interceptedHealthChecks).toBe(0);
     }
-    await expect(settingsPage.locator("#verification-mode")).toHaveValue(
-      hasBundledClient ? "api" : "website",
-    );
+    // Every other setting is in the palette now.
+    await expect(settingsPage.locator("section > h2")).toHaveText([
+      "API connection",
+      "Extension access",
+    ]);
+    await expect(settingsPage.locator("#verification-mode")).toHaveCount(0);
     await expect(settingsPage.locator("#backend-url")).toHaveValue(
       DEFAULT_BACKEND_URL,
     );
@@ -116,15 +119,6 @@ test("loads the unpacked extension settings page", async () => {
     } else {
       await expect(clientToken).toBeEnabled();
     }
-    await settingsPage.locator("#verification-mode").selectOption("api");
-    await expect(settingsPage.locator("#api-mode-disclosure")).toBeVisible();
-    await expect(settingsPage.locator("#website-mode-disclosure")).toBeHidden();
-    await settingsPage.locator("#verification-mode").selectOption("website");
-    await expect(
-      settingsPage.locator("#website-mode-disclosure"),
-    ).toBeVisible();
-    await expect(settingsPage.locator("#api-mode-disclosure")).toBeHidden();
-
     await settingsPage.locator("#backend-url").fill("https://verify.example");
     await expect(backendPermission).toBeVisible();
     await expect(clientToken).toBeEnabled();
