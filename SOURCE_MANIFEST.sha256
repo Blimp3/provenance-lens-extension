@@ -10,7 +10,7 @@ b7d35f9202a9e47d4a747744631daa208068daf8432c143c1866bca2c21b0336  ./LICENSE
 9d43ab58373edf1f481e8796d026be243c61a53a9dfe4e957550b9f4d928a06f  ./README.md
 3f93cdacdf0732307a2e61ad47b356f2553e3d62c8d88c397261e2733a1c3a6e  ./SOURCE_PROVENANCE.md
 b4683f46cda056f348356f7de8ab5595b1e28d5b6b2fada4ad6342a1f569af37  ./THIRD_PARTY_NOTICES.txt
-ce5a360510440c553dc5a7384696b4c0b8ccb7bff69407c2d5baa97bc1fbb8e4  ./apps/extension/e2e/integration.smoke.spec.ts
+140fd75576c0ad376c70b2005523f0cd1cc3515f8dc172790ffb227311726b13  ./apps/extension/e2e/integration.smoke.spec.ts
 54fde47505530b57a18337ffaf7aea6a00578ef938372c39dce36f2b1c87e301  ./apps/extension/e2e/media.smoke.spec.ts
 256b5ab2f0232eec82dbb7fdabc7c458045a3a4053e42139eedcd5bb818a7e05  ./apps/extension/e2e/palette.smoke.spec.ts
 e5b50b41c8b8b926d8f3deac6f9efccc93678dfb4e2bac8befc7f9e2abf297cb  ./apps/extension/e2e/picker-runtime.smoke.spec.ts

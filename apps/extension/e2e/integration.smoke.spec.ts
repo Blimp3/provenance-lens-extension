@@ -1,4 +1,11 @@
-import { chromium, expect, test, type Route } from "@playwright/test";
+import {
+  chromium,
+  expect,
+  test,
+  type Frame,
+  type Page,
+  type Route,
+} from "@playwright/test";
 import {
   DOWNLOAD_ACTION_ID,
   LINK_ACTION_ID,
@@ -586,6 +593,22 @@ const PLAYER_HTML = `<!doctype html>
     </script>
   </body>
 </html>`;
+
+/**
+ * Resolves once the page or frame has drawn: a second animation frame runs
+ * only after the first was drawn. The browser sends a click over a
+ * cross-origin frame by what the page and the frame last drew, so a click
+ * waits for this.
+ */
+function painted(target: Page | Frame): Promise<unknown> {
+  return target.evaluate(
+    () =>
+      new Promise((done) =>
+        requestAnimationFrame(() => requestAnimationFrame(done)),
+      ),
+  );
+}
+
 const EMBED_PAGES: Record<string, string> = {
   "/story": `<!doctype html>
 <html lang="en">
@@ -724,7 +747,10 @@ test("a download pick on an embedded YouTube player sends its watch page, also i
           () => (window as unknown as { received: string[] }).received,
         );
 
-      // Without a picker the player gets the click.
+      // Without a picker the player gets the click, once the player and then
+      // the page around it have drawn.
+      await painted(player);
+      await painted(targetPage);
       await targetPage.mouse.click(center.x, center.y);
       await expect
         .poll(received)
@@ -757,14 +783,8 @@ test("a download pick on an embedded YouTube player sends its watch page, also i
         '[data-provenance-lens-picker="overlay"]',
       );
       await expect(overlay).toBeAttached();
-      // The browser routes a click to a frame by the last painted frame, so
-      // the shield paints first.
-      await targetPage.evaluate(
-        () =>
-          new Promise((done) =>
-            requestAnimationFrame(() => requestAnimationFrame(done)),
-          ),
-      );
+      // The shields draw before the click.
+      await painted(targetPage);
       await targetPage.mouse.click(center.x, center.y);
 
       await expect.poll(() => linkDownloads.length).toBe(index + 1);
