@@ -665,6 +665,9 @@ export const ResultToastBindingsSchema = z
   .array(ResultToastBindingSchema)
   .max(32);
 
+/** The longest text a palette frame may ask the worker to copy. */
+export const COPY_TEXT_MAX_LENGTH = 512;
+
 export const ExtensionMessageSchema = z.discriminatedUnion("type", [
   z
     .object({
@@ -737,6 +740,14 @@ export const ExtensionMessageSchema = z.discriminatedUnion("type", [
       type: z.literal("toast-action"),
       sessionToken: z.string().uuid(),
       action: ToastActionSchema.exclude(["details"]),
+    })
+    .strict(),
+  // Text a palette frame inside a page asks the worker to copy, because the
+  // page's Permissions Policy may block the frame's own Clipboard API.
+  z
+    .object({
+      type: z.literal("copy-text"),
+      text: z.string().min(1).max(COPY_TEXT_MAX_LENGTH),
     })
     .strict(),
 ]);

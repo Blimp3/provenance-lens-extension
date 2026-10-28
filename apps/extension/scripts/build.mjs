@@ -20,6 +20,7 @@ export const entryPoints = {
   details: join(sourceDir, "ui/details.ts"),
   disclosure: join(sourceDir, "ui/disclosure.ts"),
   audio: join(sourceDir, "ui/audio.ts"),
+  offscreen: join(sourceDir, "offscreen.ts"),
 };
 
 export const buildOptions = {
@@ -66,6 +67,7 @@ if (import.meta.main) {
     "details",
     "disclosure",
     "audio",
+    "offscreen",
   ]) {
     await cp(join(publicDir, `${page}.html`), join(outputDir, `${page}.html`));
   }

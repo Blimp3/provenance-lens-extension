@@ -200,10 +200,66 @@ body {
   border-bottom: 1px solid var(--lens-line);
   color: var(--lens-muted);
   font: 400 12px/16px var(--lens-font);
+  white-space: pre-line;
 }
 
 .hint.error {
   color: var(--lens-danger);
+}
+
+/* Detail and Confirm text: it scrolls, and the rows under it stay shown. */
+.detail {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 16px;
+  overflow-y: auto;
+  color: var(--lens-muted);
+  font: 400 13px/20px var(--lens-font);
+}
+
+.detail h2 {
+  margin: 0 0 8px;
+  color: var(--lens-text);
+  font: 600 15px/20px var(--lens-font);
+}
+
+.detail p {
+  margin: 0 0 8px;
+}
+
+.detail p:last-child {
+  margin-bottom: 0;
+}
+
+.detail .detail-status {
+  color: var(--lens-text);
+}
+
+.detail .detail-status.error {
+  color: var(--lens-danger);
+}
+
+.pair {
+  margin: 0 0 12px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--lens-accent-soft);
+  color: var(--lens-text);
+}
+
+.pair-command {
+  display: block;
+  outline: none;
+  font: 400 14px/20px var(--lens-mono);
+}
+
+.detail .pair-code {
+  margin: 4px 0 0;
+  font: 600 22px/28px var(--lens-mono);
+}
+
+.has-detail .list {
+  flex: none;
 }
 
 .list {
@@ -268,6 +324,16 @@ body {
 
 .row-subtitle.warn {
   color: var(--lens-warn);
+}
+
+.row.danger .row-title {
+  color: var(--lens-danger);
+}
+
+.row-right .current {
+  width: 14px;
+  height: 14px;
+  color: var(--lens-accent);
 }
 
 .row-right {
