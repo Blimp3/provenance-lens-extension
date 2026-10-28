@@ -3360,17 +3360,21 @@ async function endArmedPicks(
  * Ends Recent's entries a stopped worker left running: those no stored pick,
  * pending disclosure, pending DigiBot operation or extension page still
  * holds. Image picks live only in the worker, so theirs end here too. An
- * action this worker started, even while this runs, stays running.
+ * action this worker started, even while this runs, stays running. The list
+ * is read before its holders: a page takes its entry's lock before it writes
+ * the entry, so a page's entry in the list is already held, and one written
+ * after the read is not looked at.
  */
 async function endStoppedActivity(): Promise<void> {
   try {
+    const entries = await getActivity();
     const kept = new Set([
       ...(await storedActivityIds(LINK_PICKER_SESSIONS_KEY)),
       ...(await storedActivityIds(PENDING_DISCLOSURES_KEY)),
       ...(await pendingIntegrationActivityIds()),
       ...(await heldActivityIds()),
     ]);
-    for (const entry of await getActivity()) {
+    for (const entry of entries) {
       if (
         entry.state === "running" &&
         !kept.has(entry.id) &&

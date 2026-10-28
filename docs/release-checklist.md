@@ -1,7 +1,7 @@
 # Release checklist
 
 Use this for every public source release of this edition. Work from a clean
-checkout with Node.js 24.20.0 (`.nvmrc`) and npm 11.6.2.
+checkout with Node.js 24.22.1 (`.nvmrc`) and npm 11.6.2.
 
 The current source is v1.0.0 from private base `4978fa8`, recorded in
 [SOURCE_PROVENANCE.md](../SOURCE_PROVENANCE.md) and released on 2026-10-02 as

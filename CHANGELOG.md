@@ -281,6 +281,9 @@ and the picker runtime is 0.9.0.
   stay unchanged. Only a legacy settings record with exactly
   `http://127.0.0.1:8787` and no client token changes to the default backend
   URL.
+- An audio check that starts while Lens's worker wakes up stays **Started** in
+  Recent. The worker's start-up sweep could mark it "Lens stopped before this
+  action ended." while it still ran.
 
 ### Security and privacy
 
@@ -300,6 +303,8 @@ and the picker runtime is 0.9.0.
 - Dependency updates for security advisories: music-metadata 11.16.1
   (CVE-2026-107391, CVE-2026-107389), sharp 0.35.5 (CVE-2026-96889) and
   source-map-js 1.2.2 (CVE-2026-93749).
+- Dependency updates for the October 2026 npm advisories: zod 4.6.7
+  (GHSA-mrhx-c7xc-m3w5), undici 8.12.3 and vite 8.3.5 (through vitest 4.1.12).
 
 ### Documentation
 
