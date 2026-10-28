@@ -3,9 +3,9 @@
 Use this for every public source release of this edition. Work from a clean
 checkout with Node.js 24.22.1 (`.nvmrc`) and npm 11.6.2.
 
-The current source is v1.0.0 from private base `4978fa8`, recorded in
-[SOURCE_PROVENANCE.md](../SOURCE_PROVENANCE.md) and released on 2026-10-02 as
-tag `v1.0.0` on `c3aaf32`. The next release starts at step 1 with the private
+The current source is v2.0.0 from private base `eeba7e4`, recorded in
+[SOURCE_PROVENANCE.md](../SOURCE_PROVENANCE.md) and released on 2026-10-28 as
+tag `v2.0.0`. The next release starts at step 1 with the private
 commit chosen for it.
 
 1. **Copy only public source.** Bring over changes from the new private
