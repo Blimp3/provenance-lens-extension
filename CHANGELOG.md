@@ -56,6 +56,12 @@ permissions, with no tag or release yet.
   palette selects the command and asks you to press ⌘C (Ctrl+C outside a
   Mac).
 
+### Fixed
+
+- A click on a palette row right after the page zoomed is refused until the
+  panel has been visible at its new size for 500 ms, also before the frame's
+  resize event arrives. It could run the row the zoom moved under the pointer.
+
 ### Security and privacy
 
 - New permissions `clipboardWrite` (install warning "Modify data you copy and

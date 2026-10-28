@@ -4,7 +4,7 @@ a6b98ea7cb6d61ed8d430dd0dffa46c87012b5cf859d4ce7207898954951fdcd  ./.editorconfi
 7151cf397def0c2cb0ab65643701d27d335a72c90f775675b5f826bc7005818a  ./.npmrc
 d9f318747a126ce2247661af67852b185def7789492eabfad7bba322be087c33  ./.nvmrc
 e9ee6ed217f073ec0a13b0b1c9068e1336f108f2c78f72bb2bbde46281efb973  ./.prettierignore
-ac1516a8584c1860d9d920d102a825ee4979a78432a33a1668d01129c6bdb2d8  ./CHANGELOG.md
+3047ddcf57d040b8dfa23aba21858cbfd8a2141f07b5dd2f9d19069e23b4dc2e  ./CHANGELOG.md
 ac287b5e82e63c10fde73a092c0077da0d59c2ffa82328d58b0d6c9a29f6a51f  ./CLAUDE.md
 b7d35f9202a9e47d4a747744631daa208068daf8432c143c1866bca2c21b0336  ./LICENSE
 62e573cc7cd6d0b21127285c656989b227f563cf52955a31061db0abe468fd13  ./README.md
@@ -70,7 +70,7 @@ b013e6ee73bdec6c0c6d1ca4c1e826a34dc90eaeb4e523a2f69596e316a681eb  ./apps/extensi
 db55e670be804b058595df193a6ffa9d1b7198d865ecdede68526b5a9e3ba630  ./apps/extension/src/ui/optional-access.ts
 67864c33852085d28197dbc3d88ddfc6cbd64d8497e20ab788eb936ed1d98fb4  ./apps/extension/src/ui/palette-commands.ts
 cadbc132d57739d514814aad4ce4a767aef6ea6dc2252f1f334b92d0eaa769e5  ./apps/extension/src/ui/palette-settings.ts
-863729ae5378be38b25497a80969537604d661d687d9a969fef9b7576ee915ed  ./apps/extension/src/ui/palette.ts
+5d67390be9111a5103d0e96d13b5b4116a5751fcc2e052629de305e8ee4e7d02  ./apps/extension/src/ui/palette.ts
 5a95486e90916a97ea9f52af8d2d6c33ff69d1c8ae3f1ee0ba7750167ee7b1cc  ./apps/extension/src/ui/settings.ts
 633f7420ef5e808d1c9d3473a64392f8a9bd6aa653d00b9abaa35532ca7f608d  ./apps/extension/src/ui/tokens.ts
 ea5400753b8fe10c5dac507261c7c00a8fae85f1b09f0677f043fa0c1df2c92d  ./apps/extension/src/verification-runs.ts
@@ -104,7 +104,7 @@ f234af890dba2b367b248564965f22ad3349eba02097f31349de61284a95fdad  ./apps/extensi
 b8637724226fea08c210eee5f563521c871fb0522c40e317c5ff447155c6d6b1  ./apps/extension/tests/unit/page-link-candidates.test.ts
 b78b71e070320d11258897eaa3a0775191faccc518aa63216e45461afb5a1881  ./apps/extension/tests/unit/page-policy.test.ts
 4feb4e68b98d1ca80a0fc7a43f24053cf7dd8bbcb4d43f2567fd034a6b1f1b03  ./apps/extension/tests/unit/palette-commands.test.ts
-2bb062678bb0bf2262efe4e42d495da2309e2729f97f1e3cc3c2f4de855faa29  ./apps/extension/tests/unit/palette-frame.test.ts
+40b7e099248edfde031d0439fa28a6697cc6fcb5fce2d0a9781c01a81779095c  ./apps/extension/tests/unit/palette-frame.test.ts
 557e023b8d23ee0ca16bb25fa1981a577357bdb91e1ff1b6009c227383bd26f2  ./apps/extension/tests/unit/palette-host.test.ts
 f971aa0d59b45952b4c109471af14ed93b6c56e9f0748d207cc9ab01844eead7  ./apps/extension/tests/unit/palette-keys.test.ts
 939e108edaebbf0d86cab35b7605de40d99ea4c6d537b1971620c135e496edef  ./apps/extension/tests/unit/palette-settings.test.ts

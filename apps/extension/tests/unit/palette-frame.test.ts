@@ -689,4 +689,30 @@ describe("the palette frame inside a page", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(element("chip").textContent).toBe("Settings › DigiBot");
   });
+
+  it("refuses a click right after a zoom resized the frame, before its resize event", async () => {
+    await openInPage("root");
+    observed?.([{ isVisible: true }]);
+    await vi.advanceTimersByTimeAsync(600);
+    const width = Object.getOwnPropertyDescriptor(window, "innerWidth");
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: innerWidth + 320,
+    });
+    try {
+      click(element("row-0"));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(element("status-text").textContent).toBe(COVERED);
+      expect(element("chip").textContent).not.toBe("Settings › DigiBot");
+
+      // Once the resized panel has been visible for 500 ms, a click runs.
+      await vi.advanceTimersByTimeAsync(500);
+      click(element("row-0"));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(element("chip").textContent).toBe("Settings › DigiBot");
+    } finally {
+      if (width) Object.defineProperty(window, "innerWidth", width);
+      else Reflect.deleteProperty(window, "innerWidth");
+    }
+  });
 });

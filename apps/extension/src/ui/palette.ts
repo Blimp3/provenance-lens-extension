@@ -312,6 +312,8 @@ let detailKey = "";
 /** The panel's latest IntersectionObserver v2 visibility; none yet is hidden. */
 let panelVisible = false;
 let panelVisibleSince = 0;
+/** The frame's size when the visible clock last restarted. */
+let clockSize = "";
 /** When the frame told its host it was ready; 0 until then. */
 let readyAt = 0;
 /** Whether the panel was reported hidden since the frame was ready. */
@@ -515,7 +517,7 @@ function watchPanelVisibility(): void {
       if (!entry) return;
       const visible = entry.isVisible === true;
       const shown = visible && !panelVisible;
-      if (shown) panelVisibleSince = performance.now();
+      if (shown) restartVisibleClock();
       panelVisible = visible;
       paletteRoot.dataset["visible"] = String(visible);
       if (visible) {
@@ -551,9 +553,18 @@ function watchPanelVisibility(): void {
   // transform, but the zoom resizes the frame and moves the rows under a
   // resting pointer, so each resize restarts the visible clock.
   window.addEventListener("resize", () => {
-    panelVisibleSince = performance.now();
+    restartVisibleClock();
     runHeldWhenAllowed();
   });
+}
+
+function frameSize(): string {
+  return `${innerWidth}x${innerHeight}`;
+}
+
+function restartVisibleClock(): void {
+  clockSize = frameSize();
+  panelVisibleSince = performance.now();
 }
 
 /**
@@ -564,6 +575,9 @@ function watchPanelVisibility(): void {
  */
 function inputAllowed(source: InputSource): boolean {
   if (!embedded) return true;
+  // The resize event waits for the frame's next rendering, but a click can
+  // land on the rows a zoom moved before it, so the size is checked here too.
+  if (frameSize() !== clockSize) restartVisibleClock();
   const visibleFor = source === "key" ? KEY_VISIBLE_MS : POINTER_VISIBLE_MS;
   return panelVisible && performance.now() - panelVisibleSince >= visibleFor;
 }
