@@ -388,7 +388,7 @@ describe("palette gating", () => {
     ).toEqual({
       reason: "Needs download access",
       disabled: false,
-      fix: { kind: "view", view: "access" },
+      fix: { kind: "tab", page: "access" },
     });
     expect(commandGate(entry("send-clip"), context())).toEqual({
       reason: "Enter a range first",

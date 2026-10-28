@@ -2,18 +2,18 @@
 
 ## [2.1.0] - not yet released
 
-Moves every setting that can change inside the palette into it. Every version
-field is 2.1.0, a minor version for the two new permissions, with no tag or
-release yet.
+Moves every setting that can change inside the palette into it, except site
+access. Every version field is 2.1.0, a minor version for the two new
+permissions, with no tag or release yet.
 
 ### Added
 
 - **Settings** in the Lens palette, in the groups DigiBot, Verification,
-  History and privacy, Access, Keys and About. Every row is also a search
-  result on the first view, every change saves at once, and **⌘K** offers
-  **Reset to default** on each setting row. The last row, **Advanced
-  settings ↗** (Backend URL, client token, connection test), opens the
-  Settings page in a tab: the API connection settings stay there, and the
+  History and privacy, Keys and About. Every row is also a search result on
+  the first view, every change saves at once, and **⌘K** offers **Reset to
+  default** on each setting row. The last row, **Advanced settings ↗**
+  (Backend URL, client token, site access), opens the Settings page in a
+  tab: the API connection settings and site access stay there, and the
   palette never shows or uses the client token. The Settings page stays the
   browser's Options page and does not change.
 - **Settings › DigiBot** pairs DigiBot inside the palette: the consent text,
@@ -28,26 +28,27 @@ release yet.
 - The other settings rows: **Verification mode**, with the two mode
   disclosures as its hint, and **Screenshot copy fallback**; **Keep
   history**, **Local cache**, **Save page title**, **Debug details**, **Clear
-  history…** and **Clear verification cache…**; **Optional access**, **Allow
-  one site…** and **Granted sites**; **Palette shortcut ↗**, **Command
-  hotkeys** and **Aliases** with **Reset aliases…**; the version, **What a
-  result means** and the line "Lens never scans pages." Switching the mode
-  only saves it: the first verification in a mode still shows its disclosure.
-  Each clear, **Disconnect DigiBot…** and **Reset aliases…** ask first, with
-  **Cancel** as the first choice.
+  history…** and **Clear verification cache…**; **Palette shortcut ↗**,
+  **Command hotkeys** and **Aliases** with **Reset aliases…**; the version,
+  **What a result means** and the line "Lens never scans pages." Switching
+  the mode only saves it: the first verification in a mode still shows its
+  disclosure. Each clear, **Disconnect DigiBot…** and **Reset aliases…** ask
+  first, with **Cancel** as the first choice.
 - **Finish setup** rows on the first view for **Connect DigiBot** (or
   **Complete DigiBot pairing**) and **Grant optional access**, next to
   **Choose a palette shortcut**, each shown until it is done.
 
 ### Changed
 
-- **Settings**, the toolbar's right-click **Settings…**, the rows **Connect
-  DigiBot** and **Needs download access**, the toast buttons **Connect
-  DigiBot**, **Grant access** and **Switch to API**, and **Also check with
-  Google ↗** without download access open the palette at Settings, Settings ›
-  DigiBot, Settings › Access or Settings › Verification mode, on the current
-  page or in the popup on a browser page, instead of the Settings page in a
-  tab. History and the browser's shortcuts page still open in a tab.
+- **Settings**, the toolbar's right-click **Settings…**, the row **Connect
+  DigiBot** and the toast buttons **Connect DigiBot** and **Switch to API**
+  open the palette at Settings, Settings › DigiBot or Settings › Verification
+  mode, on the current page or in the popup on a browser page, instead of the
+  Settings page in a tab. Site access stays on the Settings page: the rows
+  **Needs download access** and **Grant optional access**, the toast button
+  **Grant access** and **Also check with Google ↗** without download access
+  open its **Extension access** card in a tab, as before. History and the
+  browser's shortcuts page still open in a tab.
 - One copy path for the `/link` command: in the popup or a tab the palette
   uses the Clipboard API; over a page it asks Lens's worker, which copies
   through one offscreen document, so a page whose Permissions Policy blocks
@@ -65,22 +66,24 @@ release yet.
 - Every settings change, Run, form submit and confirmation goes through the
   palette's input gate (trusted input only, the 250 ms and 500 ms visibility
   rule, the host check), so a page cannot change a setting, start or stop
-  pairing, grant access or clear data with synthetic input or a covered
-  frame. Opening the palette or its Settings view starts no check and sends
-  no request; a pairing request starts only from **Start pairing and copy
-  /link** or **Start again**, one at a time, and **Complete DigiBot pairing**
-  resumes a pending one. Over a page, a key pressed before the palette shows
-  is dropped when it opens at a Settings view, which a page's click on a
-  toast button can open.
+  pairing or clear data with synthetic input or a covered frame. Opening the
+  palette or its Settings view starts no check and sends no request; a
+  pairing request starts only from **Start pairing and copy /link** or
+  **Start again**, one at a time, and **Complete DigiBot pairing** resumes a
+  pending one. Over a page, a key pressed before the palette shows is
+  dropped when it opens at a Settings view, which a page's click on a toast
+  button can open.
 
 ### Tests
 
 - Unit tests for the palette Settings rows, saves, validation messages,
   confirmations, the pairing checks, copy routing and the single offscreen
-  document; worker tests for the palette view each button opens and for
-  refused copy requests; browser tests for the copy on a page whose
-  Permissions Policy blocks the frame's clipboard, and for a synthetic click
-  or key on a settings row.
+  document, and that no Access row is in the palette or its search and each
+  Access link opens the Settings page's **Extension access** card; worker
+  tests for the palette view each button opens, for **Also check with
+  Google ↗** without download access and for refused copy requests; browser
+  tests for the copy on a page whose Permissions Policy blocks the frame's
+  clipboard, and for a synthetic click or key on a settings row.
 
 ## [Unreleased]
 

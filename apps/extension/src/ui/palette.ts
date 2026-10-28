@@ -67,8 +67,6 @@ import {
   type TabPage,
 } from "./palette-commands.js";
 import {
-  allowSite,
-  checkSiteOrigin,
   choicesFor,
   clearSavedCache,
   clearSavedHistory,
@@ -83,7 +81,6 @@ import {
   finishSetupItems,
   flipSetting,
   formatPairingCode,
-  grantOptionalAccess,
   MODE_DISCLOSURES,
   openTabPage,
   PAIR_INSTRUCTION,
@@ -92,11 +89,9 @@ import {
   pickPaletteSettings,
   pollPairing,
   PROVIDER_DETAILS_URL,
-  readGrantedSites,
   RESULT_MEANINGS,
   saveSetting,
   settingsItems,
-  SITE_RULE,
   type ChoiceView,
   type ConfirmView,
   type Outcome,
@@ -106,7 +101,6 @@ import {
   type SettingsItem,
   type SettingsRun,
   type SettingUpdate,
-  type SiteCheck,
 } from "./palette-settings.js";
 
 /**
@@ -177,7 +171,6 @@ type FrameData = {
   settings: PaletteSettings;
   pending: PendingPairing | null;
   optionalAccess: OptionalAccessState | null;
-  grantedSites: readonly string[] | null;
 };
 
 /** A job or footer message older than this is stale. */
@@ -207,9 +200,6 @@ const VIEW_LABELS: Readonly<Record<PaletteView, string>> = {
   "cache-limit": "Settings › Local cache",
   "clear-history": "Settings › Clear history",
   "clear-cache": "Settings › Clear verification cache",
-  access: "Settings › Access",
-  "allow-site": "Settings › Allow one site",
-  "granted-sites": "Settings › Granted sites",
   "command-hotkeys": "Settings › Command hotkeys",
   aliases: "Settings › Aliases",
   "reset-aliases": "Settings › Reset aliases",
@@ -220,12 +210,10 @@ const FORM_VIEWS: ReadonlySet<PaletteView> = new Set([
   "clip",
   "audio-range",
   "alias",
-  "allow-site",
 ]);
 /** Views the worker opens with Settings one step back. */
 const UNDER_SETTINGS: ReadonlySet<PaletteView> = new Set([
   "connect",
-  "access",
   "verification-mode",
 ]);
 /** The Settings views a toast's button can open the palette at. */
@@ -237,7 +225,6 @@ const RUN_VERBS: Readonly<Record<SettingsRun["kind"], string>> = {
   view: "Open",
   toggle: "Toggle",
   tab: "Open",
-  "optional-access": "Run",
   none: "Open",
 };
 const LENS_ROWS = [
@@ -401,7 +388,6 @@ async function loadData(): Promise<FrameData> {
     commands,
     pending,
     optionalAccess,
-    grantedSites,
   ] = await Promise.all([
     isIntegrationConnected().catch(() => false),
     getSettings()
@@ -420,7 +406,6 @@ async function loadData(): Promise<FrameData> {
     chrome.commands.getAll().catch(() => [] as chrome.commands.Command[]),
     getPendingPairing().catch(() => null),
     getOptionalAccessState().catch(() => null),
-    readGrantedSites(),
   ]);
   const shortcuts = new Map<string, string>();
   for (const entry of commands)
@@ -451,7 +436,6 @@ async function loadData(): Promise<FrameData> {
         }
       : null,
     optionalAccess,
-    grantedSites,
   };
 }
 
@@ -754,8 +738,6 @@ function buildView(view: PaletteView): BuiltView {
       return aliasView();
     case "settings":
       return filtered(settingsRows());
-    case "access":
-      return filtered(settingsRows("Access"));
     case "verification-mode":
     case "history-retention":
     case "cache-limit":
@@ -767,10 +749,6 @@ function buildView(view: PaletteView): BuiltView {
       return confirmView(view);
     case "connect":
       return connectView();
-    case "allow-site":
-      return allowSiteView();
-    case "granted-sites":
-      return grantedSitesView();
     case "command-hotkeys":
       return filtered(hotkeyRows());
     case "aliases":
@@ -927,12 +905,17 @@ function setupRows(): Row[] {
           ...row,
           icon: "plug",
           trailing: "›",
-          run: () => openView("connect"),
+          run: () => pushView("connect"),
         };
       case "complete-pairing":
         return { ...row, icon: "plug", verb: "Run", run: completePairing };
       case "optional-access":
-        return { ...row, icon: "lock", verb: "Run", run: runOptionalAccess };
+        return {
+          ...row,
+          icon: "lock",
+          trailing: "↗",
+          run: () => openTab("access"),
+        };
       case "palette-shortcut":
         return {
           ...row,
@@ -955,7 +938,7 @@ function downloadRows(): Row[] {
       icon: "plug",
       trailing: "›",
       verb: "Open",
-      run: () => openView("connect"),
+      run: () => pushView("connect"),
     });
   const target = page.hostname || "no page";
   const pageGroup =
@@ -1099,18 +1082,14 @@ function currentSettingsItems(): SettingsItem[] {
   return settingsItems({
     settings: data.settings,
     connected: data.context.connected,
-    optionalAccess: data.optionalAccess,
-    grantedSites: data.grantedSites,
     paletteShortcut: shortcutKeys(shortcut),
     version: chrome.runtime.getManifest().version,
   });
 }
 
-/** The Settings view's rows, or one group's. */
-function settingsRows(group?: SettingsItem["group"]): Row[] {
-  return currentSettingsItems()
-    .filter((item) => group === undefined || item.group === group)
-    .map((item) => settingRow(item, false));
+/** The Settings view's rows. */
+function settingsRows(): Row[] {
+  return currentSettingsItems().map((item) => settingRow(item, false));
 }
 
 /** A Settings row; in search it shows its place as "Settings › {group}". */
@@ -1130,7 +1109,7 @@ function settingRow(item: SettingsItem, search: boolean): Row {
   switch (run.kind) {
     case "view":
       row.trailing = "›";
-      row.run = () => openView(run.view);
+      row.run = () => pushView(run.view);
       break;
     case "toggle":
       row.run = () => toggleSetting(run.setting);
@@ -1138,9 +1117,6 @@ function settingRow(item: SettingsItem, search: boolean): Row {
     case "tab":
       row.trailing = "↗";
       row.run = () => openTab(run.page);
-      break;
-    case "optional-access":
-      row.run = runOptionalAccess;
       break;
     case "none":
       break;
@@ -1270,7 +1246,7 @@ function connectView(): BuiltView {
   if (connected)
     rows.push({
       ...row("Disconnect DigiBot…", "This browser only", () =>
-        openView("disconnect"),
+        pushView("disconnect"),
       ),
       icon: "x",
       trailing: "›",
@@ -1333,52 +1309,6 @@ function connectView(): BuiltView {
   };
 }
 
-function allowSiteView(): BuiltView {
-  const text = input.value.trim();
-  const check: SiteCheck | null = text ? checkSiteOrigin(text) : null;
-  return numbered({
-    rows: [
-      {
-        group: "Allow one site",
-        title: "Request host access",
-        subtitle:
-          check === null
-            ? "Type an origin, such as https://images.example"
-            : check.ok
-              ? check.origin
-              : check.message,
-        warn: check !== null && !check.ok,
-        icon: "link",
-        verb: "Run",
-        ...(check?.ok ? { run: () => requestSite(check) } : {}),
-      },
-    ],
-    hint:
-      check !== null && !check.ok
-        ? { text: check.message, error: true }
-        : { text: SITE_RULE, error: false },
-  });
-}
-
-function grantedSitesView(): BuiltView {
-  const sites = data?.grantedSites ?? null;
-  return numbered({
-    rows: (sites ?? []).map((site) => ({
-      group: "Granted sites",
-      title: site,
-      subtitle: "",
-      icon: "check",
-      verb: "Open",
-    })),
-    notes:
-      sites === null
-        ? ["Permission status is unavailable."]
-        : sites.length === 0
-          ? ["No optional image-host access granted."]
-          : [],
-  });
-}
-
 /** The 10 browser commands, each with its key; ↵ opens the shortcuts page. */
 function hotkeyRows(): Row[] {
   return DECLARED_COMMAND_IDS.map((id): Row => {
@@ -1423,7 +1353,7 @@ function aliasRows(): Row[] {
     icon: "x",
     trailing: "›",
     verb: "Open",
-    run: () => openView("reset-aliases"),
+    run: () => pushView("reset-aliases"),
   });
   return rows;
 }
@@ -1707,31 +1637,6 @@ function showSaved(text = "Saved"): void {
 function showNotice(outcome: Outcome): void {
   notice = { text: outcome.message, error: !outcome.ok };
   render();
-}
-
-/** The browser's request is the first await of the row's run. */
-async function runOptionalAccess(): Promise<void> {
-  const outcome = await grantOptionalAccess();
-  await reload();
-  showNotice(outcome);
-}
-
-/** The browser's request is the first await of the Form's run. */
-async function requestSite(
-  site: Extract<SiteCheck, { ok: true }>,
-): Promise<void> {
-  const outcome = await allowSite(site);
-  const grantedSites = await readGrantedSites();
-  if (data) data = { ...data, grantedSites };
-  if (outcome.ok) back();
-  showNotice(outcome);
-}
-
-/** Granted sites are read each time the view opens. */
-async function openView(view: PaletteView): Promise<void> {
-  if (view === "granted-sites" && data)
-    data = { ...data, grantedSites: await readGrantedSites() };
-  pushView(view);
 }
 
 // Pairing ------------------------------------------------------------------
@@ -2100,9 +2005,7 @@ function renderSearchBar(view: PaletteView): void {
           ? "Start-end, 1 to 60 s, e.g. 0:30-1:00"
           : view === "alias"
             ? `Alias for ${aliasTarget ? (paletteCommand(aliasTarget)?.title ?? "") : ""}`
-            : view === "allow-site"
-              ? "https://images.example"
-              : `Search ${VIEW_LABELS[view].split(" › ").at(-1) ?? ""}`;
+            : `Search ${VIEW_LABELS[view].split(" › ").at(-1) ?? ""}`;
   const label =
     view === "clip"
       ? "Clip range"
@@ -2110,9 +2013,7 @@ function renderSearchBar(view: PaletteView): void {
         ? "Audio range"
         : view === "alias"
           ? "Alias"
-          : view === "allow-site"
-            ? "Site origin"
-            : null;
+          : null;
   if (label) input.setAttribute("aria-label", label);
   else input.removeAttribute("aria-label");
   accessory.replaceChildren();

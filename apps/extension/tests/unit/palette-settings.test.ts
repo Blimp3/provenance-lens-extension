@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type * as IntegrationClient from "../../src/integration-client.js";
 import type * as Storage from "../../src/storage.js";
-import type * as OptionalAccess from "../../src/ui/optional-access.js";
 
 const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
@@ -15,7 +14,6 @@ const mocks = vi.hoisted(() => ({
   clearHistory: vi.fn(),
   exchangePairing: vi.fn(),
   getIntegrationSession: vi.fn(),
-  requestFullOptionalAccess: vi.fn(),
 }));
 
 vi.mock("../../src/cache.js", () => ({
@@ -34,18 +32,12 @@ vi.mock("../../src/integration-client.js", async (importOriginal) => ({
   exchangePairing: mocks.exchangePairing,
   getIntegrationSession: mocks.getIntegrationSession,
 }));
-vi.mock("../../src/ui/optional-access.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof OptionalAccess>()),
-  requestFullOptionalAccess: mocks.requestFullOptionalAccess,
-}));
 
 import { IntegrationClientError } from "../../src/integration-client.js";
 import { copyThroughOffscreen } from "../../src/offscreen-copy.js";
 import { defaultSettings } from "../../src/storage.js";
 import { checkAlias, effectiveAliases } from "../../src/ui/palette-commands.js";
 import {
-  allowSite,
-  checkSiteOrigin,
   choicesFor,
   clearSavedCache,
   clearSavedHistory,
@@ -57,7 +49,6 @@ import {
   defaultFor,
   finishSetupItems,
   flipSetting,
-  grantOptionalAccess,
   MODE_DISCLOSURES,
   openTabPage,
   PAIRING_LIMIT_MS,
@@ -65,7 +56,6 @@ import {
   pairingStartedAt,
   pickPaletteSettings,
   pollPairing,
-  readGrantedSites,
   saveSetting,
   settingsItems,
   type ChoiceView,
@@ -76,7 +66,6 @@ import {
 } from "../../src/ui/palette-settings.js";
 
 const TOKEN = "bundled-or-typed-client-token-0123456789";
-const REQUIRED_HOSTS = ["https://api.example/*", "https://bot.example/*"];
 const stored = {
   verificationMode: "api" as const,
   acknowledgedVerificationModes: ["api" as const],
@@ -94,8 +83,6 @@ function state(overrides: Partial<SettingsState> = {}): SettingsState {
   return {
     settings: pickPaletteSettings(stored),
     connected: false,
-    optionalAccess: { allSites: false, downloads: false, complete: false },
-    grantedSites: ["https://images.example/*"],
     paletteShortcut: ["⌥", "⇧", "Space"],
     version: "2.1.0",
     ...overrides,
@@ -115,11 +102,9 @@ function installChrome(extra: Record<string, unknown> = {}) {
   const api = {
     runtime: {
       getURL: (path: string) => `chrome-extension://test/${path}`,
-      getManifest: () => ({ host_permissions: REQUIRED_HOSTS }),
       sendMessage: vi.fn(),
       getContexts: vi.fn().mockResolvedValue([]),
     },
-    permissions: { request: vi.fn(), getAll: vi.fn() },
     tabs: { create: vi.fn().mockResolvedValue({}) },
     offscreen: { createDocument: vi.fn().mockResolvedValue(undefined) },
     ...extra,
@@ -273,7 +258,7 @@ describe("palette settings without the API connection", () => {
     const last = settingsItems(state()).at(-1);
     expect(last).toMatchObject({
       title: "Advanced settings",
-      subtitle: "Backend URL, client token, connection test",
+      subtitle: "Backend URL, client token, site access",
       run: { kind: "tab", page: "advanced" },
     });
     await openTabPage("advanced");
@@ -289,7 +274,6 @@ describe("palette settings without the API connection", () => {
       "DigiBot",
       "Verification",
       "History and privacy",
-      "Access",
       "Keys",
       "About",
       "More",
@@ -381,9 +365,6 @@ describe("palette settings without the API connection", () => {
         null,
         null,
       ],
-      ["Access", "Optional access", "optional-access", null, "Not granted"],
-      ["Access", "Allow one site…", "view allow-site", null, null],
-      ["Access", "Granted sites", "view granted-sites", null, "1 site"],
       ["Keys", "Palette shortcut", "tab shortcuts", null, null],
       ["Keys", "Command hotkeys", "view command-hotkeys", null, null],
       ["Keys", "Aliases", "view aliases", null, null],
@@ -459,56 +440,26 @@ describe("palette settings without the API connection", () => {
   });
 });
 
-describe("palette settings validation", () => {
-  it("allows one exact credential-free HTTP(S) origin with today's messages", () => {
-    expect(checkSiteOrigin("images.example")).toEqual({
-      ok: false,
-      message: "Enter a valid HTTP or HTTPS origin.",
-    });
-    for (const text of [
-      "ftp://images.example",
-      "https://user:secret@images.example",
-      "https://*.images.example",
-      "https://images.example/photos",
-      "https://images.example/?size=1",
-      "https://images.example/#top",
-    ])
-      expect(checkSiteOrigin(text)).toEqual({
-        ok: false,
-        message:
-          "Enter one exact credential-free HTTP(S) origin without a wildcard or path.",
-      });
-    expect(checkSiteOrigin(" https://images.example ")).toEqual({
-      ok: true,
-      origin: "https://images.example",
-      pattern: "https://images.example/*",
-    });
-  });
-
-  it("asks the browser for the site first and reports each answer", async () => {
+describe("palette settings without site access", () => {
+  it("opens Extension access on the Settings page and never asks the browser itself", async () => {
     const api = installChrome();
-    const site = checkSiteOrigin("https://images.example");
-    if (!site.ok) throw new Error("expected a valid origin");
-    api.permissions.request.mockResolvedValueOnce(true);
-    await expect(allowSite(site)).resolves.toEqual({
-      ok: true,
-      message: "Access granted for https://images.example.",
+    await openTabPage("access");
+    expect(api.tabs.create).toHaveBeenCalledWith({
+      url: "chrome-extension://test/settings.html#permissions-heading",
     });
-    expect(api.permissions.request).toHaveBeenCalledWith({
-      origins: ["https://images.example/*"],
-    });
-    api.permissions.request.mockResolvedValueOnce(false);
-    await expect(allowSite(site)).resolves.toEqual({
-      ok: false,
-      message: "Host access was not granted.",
-    });
-    api.permissions.request.mockRejectedValueOnce(new Error("no gesture"));
-    await expect(allowSite(site)).resolves.toEqual({
-      ok: false,
-      message: "The browser denied the permission request.",
-    });
+    for (const file of ["src/ui/palette.ts", "src/ui/palette-settings.ts"]) {
+      const source = await readFile(
+        resolve(import.meta.dirname, "../..", file),
+        "utf8",
+      );
+      expect(source).not.toMatch(
+        /permissions\.request|requestFullOptionalAccess|permissions\.getAll/u,
+      );
+    }
   });
+});
 
+describe("palette settings validation", () => {
   it("keeps the alias rule and its error text", () => {
     const aliases = effectiveAliases({ aliases: {}, lastUsed: [] });
     expect(checkAlias("D!", "open-history", aliases)).toEqual({
@@ -545,58 +496,6 @@ describe("palette settings validation", () => {
       (paragraph) => paragraph.textContent?.replace(/\s+/gu, " ").trim(),
     );
     expect(paragraphs.slice(0, 2)).toEqual([CONNECT_INTRO, CONNECT_CONSENT]);
-  });
-});
-
-describe("palette Access", () => {
-  it("counts only the optional host grants, never the manifest's own hosts", async () => {
-    const api = installChrome();
-    api.permissions.getAll.mockResolvedValueOnce({ origins: REQUIRED_HOSTS });
-    await expect(readGrantedSites()).resolves.toEqual([]);
-    expect(
-      settingsItems(state({ grantedSites: [] })).find(
-        ({ title }) => title === "Granted sites",
-      )?.value,
-    ).toBe("0 sites");
-    api.permissions.getAll.mockResolvedValueOnce({
-      origins: [
-        ...REQUIRED_HOSTS,
-        "https://images.example/*",
-        "chrome-extension://test/*",
-      ],
-    });
-    await expect(readGrantedSites()).resolves.toEqual([
-      "https://images.example/*",
-    ]);
-    api.permissions.getAll.mockRejectedValueOnce(new Error("gone"));
-    await expect(readGrantedSites()).resolves.toBeNull();
-  });
-
-  it("reports each answer to the optional access request", async () => {
-    mocks.requestFullOptionalAccess
-      .mockResolvedValueOnce({
-        outcome: "granted",
-        state: { allSites: true, downloads: true, complete: true },
-      })
-      .mockResolvedValueOnce({
-        outcome: "denied",
-        state: { allSites: true, downloads: false, complete: false },
-      })
-      .mockRejectedValueOnce(new Error("no gesture"));
-    await expect(grantOptionalAccess()).resolves.toEqual({
-      ok: true,
-      message: "Full optional access is ready.",
-    });
-    await expect(grantOptionalAccess()).resolves.toEqual({
-      ok: false,
-      message:
-        "The browser did not grant the full request. Image-host access is ready; exact-file download access is still optional.",
-    });
-    await expect(grantOptionalAccess()).resolves.toEqual({
-      ok: false,
-      message: "The browser could not complete the optional access request.",
-    });
-    expect(mocks.requestFullOptionalAccess).toHaveBeenCalledTimes(3);
   });
 });
 

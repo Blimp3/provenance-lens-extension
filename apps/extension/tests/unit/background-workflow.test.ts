@@ -2713,7 +2713,7 @@ describe("background verification workflow boundaries", () => {
 
   it("shows a picked handoff's failure with its button and opens Extension access from it", async () => {
     const chromeState = setupChrome();
-    const store = boundPage(chromeState);
+    boundPage(chromeState);
     mocks.getSynthIdDisclosureVersion.mockResolvedValue(1);
     mocks.actionHandler.mockResolvedValueOnce({
       kind: "website",
@@ -2759,12 +2759,16 @@ describe("background verification workflow boundaries", () => {
       { type: "toast-action", sessionToken, action: "grant-access" },
       pickerSender(),
     );
-    await expectPaletteAt(chromeState, store, "access");
+    await vi.waitFor(() =>
+      expect(chromeState.api.tabs.create).toHaveBeenCalledWith({
+        url: "chrome-extension://test/settings.html#permissions-heading",
+      }),
+    );
   });
 
   it("opens Extension access instead of the SynthID picker without download access", async () => {
     const chromeState = setupChrome();
-    const store = boundPage(chromeState);
+    boundPage(chromeState);
     (
       chromeState.api.permissions.contains as ReturnType<typeof vi.fn>
     ).mockResolvedValue(false);
@@ -2775,13 +2779,45 @@ describe("background verification workflow boundaries", () => {
       { type: "start-action", actionId: SYNTHID_ACTION_ID, trigger: "popup" },
       extensionPageSender("palette.html"),
     );
-    await expectPaletteAt(chromeState, store, "access");
-    // Only the palette's host was injected, never the picker.
-    expect(
-      chromeState.executeScript.mock.calls.map(
-        ([injection]) => (injection as { func?: () => unknown }).func?.name,
-      ),
-    ).toEqual(["mountPaletteHost"]);
+    await vi.waitFor(() =>
+      expect(chromeState.api.tabs.create).toHaveBeenCalledWith({
+        url: "chrome-extension://test/settings.html#permissions-heading",
+      }),
+    );
+    expect(chromeState.executeScript).not.toHaveBeenCalled();
+    expect(mocks.actionHandler).not.toHaveBeenCalled();
+  });
+
+  it("opens Extension access from Also check with Google ↗ without download access", async () => {
+    const chromeState = setupChrome();
+    const store = boundPage(chromeState);
+    (
+      chromeState.api.permissions.contains as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(false);
+    const sessionToken = "00000000-0000-4000-8000-000000000000";
+    store.set(TOAST_BINDINGS_KEY, [
+      {
+        resultId: null,
+        sessionToken,
+        tabId: TAB_ID,
+        frameId: 0,
+        documentId: DOCUMENT_ID,
+        actions: ["check-synthid"],
+      },
+    ]);
+    await loadBackground();
+
+    messageListenerOf(chromeState)(
+      { type: "toast-action", sessionToken, action: "check-synthid" },
+      pickerSender(),
+    );
+    await vi.waitFor(() =>
+      expect(chromeState.api.tabs.create).toHaveBeenCalledWith({
+        url: "chrome-extension://test/settings.html#permissions-heading",
+      }),
+    );
+    expect(store.has("provenanceLens.paletteOpen")).toBe(false);
+    expect(chromeState.executeScript).not.toHaveBeenCalled();
     expect(mocks.actionHandler).not.toHaveBeenCalled();
   });
 
@@ -2790,7 +2826,6 @@ describe("background verification workflow boundaries", () => {
     const store = boundPage(chromeState);
     const buttons = [
       ["connect-digibot", "connect"],
-      ["grant-access", "access"],
       ["switch-to-api", "verification-mode"],
     ] as const;
     store.set(

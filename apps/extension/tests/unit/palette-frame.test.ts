@@ -53,16 +53,18 @@ vi.mock("../../src/integration-client.js", async (importOriginal) => ({
 
 const TOKEN = "0b6f5f3c-2a8e-4c61-9d5e-7a1c3e9b2f40";
 const OPEN_KEY = "provenanceLens.paletteOpen";
-const REQUIRED_HOSTS = [
-  "https://api.example/*",
-  "https://bot.example/*",
-] as const;
 const CLIENT_TOKEN = "typed-client-token-0123456789abcdef";
 const BACKEND_URL = "https://backend.example";
 const COVERED = "The page is covering Lens. Press Esc and open it again.";
-const SITE_RULE =
-  "For narrower access, grant only the exact image-host origin. Existing grants are never removed when another request is denied.";
 const CREATING = "Creating a short-lived pairing request...";
+const EXTENSION_ACCESS_URL =
+  "chrome-extension://lens/settings.html#permissions-heading";
+/** The Access rows the palette had before they moved to the Settings page. */
+const REMOVED_ACCESS_ROWS = [
+  "Optional access",
+  "Allow one site…",
+  "Granted sites",
+] as const;
 
 const html = await readFile(
   resolve(import.meta.dirname, "../../public/palette.html"),
@@ -96,10 +98,6 @@ function chromeStub(record: Record<string, unknown>) {
   const session = new Map<string, unknown>([[OPEN_KEY, record]]);
   const stub = {
     calls,
-    /** The calls logged between a key or click and each permission request. */
-    beforeRequest: [] as string[][],
-    mark: 0,
-    answers: [] as Array<boolean | Error>,
     granted: false,
     onConnect: event(),
   };
@@ -107,10 +105,7 @@ function chromeStub(record: Record<string, unknown>) {
     runtime: {
       id: "lens",
       getURL: (path: string) => `chrome-extension://lens/${path}`,
-      getManifest: () => ({
-        version: "2.1.0",
-        host_permissions: [...REQUIRED_HOSTS],
-      }),
+      getManifest: () => ({ version: "2.1.0" }),
       sendMessage: logged("runtime.sendMessage", () => Promise.resolve(true)),
       onConnect: stub.onConnect,
     },
@@ -139,19 +134,6 @@ function chromeStub(record: Record<string, unknown>) {
       contains: logged("permissions.contains", () =>
         Promise.resolve(stub.granted),
       ),
-      getAll: logged("permissions.getAll", () =>
-        Promise.resolve({ origins: [...REQUIRED_HOSTS] }),
-      ),
-      // The browser asks only when the request is the run's first await.
-      request: vi.fn(() => {
-        stub.beforeRequest.push(
-          stub.calls.slice(stub.mark).map(({ name }) => name),
-        );
-        const answer = stub.answers.shift() ?? true;
-        if (answer instanceof Error) return Promise.reject(answer);
-        stub.granted = answer;
-        return Promise.resolve(answer);
-      }),
       onAdded: event(),
       onRemoved: event(),
     },
@@ -285,92 +267,100 @@ function click(target: Element): void {
     listener(trusted({ target }));
 }
 
-/** Runs input and marks where the permission request's run begins. */
-function act(stub: Stub, input: () => void): void {
-  stub.mark = stub.calls.length;
-  input();
-}
-
 const flush = () => new Promise<void>((done) => setTimeout(done, 0));
 
 function rowTitle(index: number): string | null | undefined {
   return document.querySelector(`#row-${index} .row-title`)?.textContent;
 }
 
+function shown(selector: string): Array<string | null> {
+  return [...document.querySelectorAll(selector)].map(
+    ({ textContent }) => textContent,
+  );
+}
+
+/** Types into the search field, as the input event the frame listens for. */
+function type(value: string): void {
+  const input = element("query") as HTMLInputElement;
+  input.value = value;
+  input.dispatchEvent(new Event("input"));
+}
+
 describe("the palette frame's Settings rows", () => {
-  it("asks the browser first for one site and shows each answer", async () => {
-    const stub = await openFrame("access");
+  it("shows no Access row in Settings", async () => {
+    await openFrame("settings");
+    expect(shown(".group-header")).not.toContain("Access");
+    for (const title of REMOVED_ACCESS_ROWS)
+      expect(shown(".row-title")).not.toContain(title);
+    expect(element("list").textContent).toContain(
+      "Backend URL, client token, site access",
+    );
+  });
+
+  it("finds no Access row in root search", async () => {
+    await openFrame("root");
+    for (const query of [
+      "access",
+      "optional access",
+      "allow one site",
+      "granted sites",
+    ]) {
+      type(query);
+      for (const title of REMOVED_ACCESS_ROWS)
+        expect(shown(".row-title")).not.toContain(title);
+      expect(shown(".row-subtitle")).not.toContain("Settings › Access");
+    }
+  });
+
+  it("opens Extension access on the Settings page from Finish setup", async () => {
+    const close = vi.spyOn(window, "close").mockImplementation(() => undefined);
+    const stub = await openFrame("root");
+    expect(rowTitle(1)).toBe("Grant optional access");
     press("ArrowDown");
     press("Enter");
-    await vi.waitFor(() =>
-      expect(element("chip").textContent).toBe("Settings › Allow one site"),
-    );
-    const input = element("query") as HTMLInputElement;
-    const type = (value: string) => {
-      input.value = value;
-      input.dispatchEvent(new Event("input"));
-    };
-    type("https://images.example");
-    expect(element("hint").textContent).toBe(SITE_RULE);
-
-    stub.answers.push(false, new Error("no gesture"), true);
-    act(stub, () => press("Enter"));
-    await vi.waitFor(() =>
-      expect(element("hint").textContent).toBe("Host access was not granted."),
-    );
-    expect(element("hint").getAttribute("role")).toBe("alert");
-    // The answer lasts until the next keystroke.
-    type("https://images.example/");
-    expect(element("hint").textContent).toBe(SITE_RULE);
-    act(stub, () => press("Enter"));
-    await vi.waitFor(() =>
-      expect(element("hint").textContent).toBe(
-        "The browser denied the permission request.",
-      ),
-    );
-    act(stub, () => press("Enter"));
-    await vi.waitFor(() =>
-      expect(element("chip").textContent).toBe("Settings › Access"),
-    );
-    expect(element("hint").textContent).toBe(
-      "Access granted for https://images.example.",
-    );
-    expect(element("live").textContent).toBe(
-      "Access granted for https://images.example.",
-    );
-    expect(stub.api.permissions.request).toHaveBeenCalledTimes(3);
-    expect(stub.api.permissions.request).toHaveBeenCalledWith({
-      origins: ["https://images.example/*"],
+    // The palette closes once the tab is open.
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    expect(stub.api.tabs.create).toHaveBeenCalledWith({
+      url: EXTENSION_ACCESS_URL,
     });
-    expect(stub.beforeRequest).toEqual([[], [], []]);
   });
 
-  it("asks the browser first for optional access and announces the answer", async () => {
-    const stub = await openFrame("access");
-    expect(rowTitle(0)).toBe("Optional access");
-    act(stub, () => press("Enter"));
+  it("opens Extension access on the Settings page from a command that needs download access", async () => {
+    const close = vi.spyOn(window, "close").mockImplementation(() => undefined);
+    const stub = await openFrame("root");
+    type("synthid");
+    expect(rowTitle(0)).toBe("Check with Google SynthID…");
+    expect(element("row-0").textContent).toContain("Needs download access");
+    press("Enter");
+    await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+    expect(stub.api.tabs.create).toHaveBeenCalledWith({
+      url: EXTENSION_ACCESS_URL,
+    });
+    expect(stub.api.runtime.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("shows a Clear notice until the next keystroke", async () => {
+    await openFrame("settings");
+    type("clear verification");
+    expect(rowTitle(0)).toBe("Clear verification cache…");
+    press("Enter");
     await vi.waitFor(() =>
-      expect(element("hint").textContent).toBe(
-        "Full optional access is ready.",
+      expect(element("chip").textContent).toBe(
+        "Settings › Clear verification cache",
       ),
     );
-    expect(element("hint").hasAttribute("role")).toBe(false);
-    expect(element("live").textContent).toBe("Full optional access is ready.");
-    expect(stub.api.permissions.request).toHaveBeenCalledTimes(1);
-    expect(stub.beforeRequest).toEqual([[]]);
-  });
-
-  it("counts only optional host grants", async () => {
-    await openFrame("access");
-    expect(rowTitle(2)).toBe("Granted sites");
-    expect(element("row-2").textContent).toContain("0 sites");
-    press("ArrowDown");
     press("ArrowDown");
     press("Enter");
     await vi.waitFor(() =>
-      expect(element("list").textContent).toContain(
-        "No optional image-host access granted.",
+      expect(element("hint").textContent).toBe(
+        "Local verification cache cleared.",
       ),
+    );
+    expect(element("chip").textContent).toBe("Settings");
+    // The notice lasts until the next keystroke.
+    type("d");
+    expect(element("hint").textContent).not.toBe(
+      "Local verification cache cleared.",
     );
   });
 
@@ -648,7 +638,6 @@ describe("the palette frame inside a page", () => {
   const ran: Record<string, (stub: Stub) => boolean> = {
     settings: () => element("chip").textContent === "Settings › DigiBot",
     connect: () => mocks.createPairing.mock.calls.length > 0,
-    access: (stub) => stub.api.permissions.request.mock.calls.length > 0,
     "verification-mode": () => mocks.updateSettings.mock.calls.length > 0,
   };
 

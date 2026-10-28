@@ -1,5 +1,4 @@
 import {
-  originPattern,
   type ExtensionMessage,
   type ExtensionSettings,
   type HistoryRetention,
@@ -19,11 +18,7 @@ import {
   getSettings,
   updateSettings,
 } from "../storage.js";
-import {
-  optionalAccessStatusText,
-  requestFullOptionalAccess,
-  type OptionalAccessState,
-} from "./optional-access.js";
+import type { OptionalAccessState } from "./optional-access.js";
 import {
   TAB_PAGE_URLS,
   type IconName,
@@ -33,10 +28,10 @@ import {
 
 /**
  * The palette's Settings table, its saves and the DigiBot pairing it runs.
- * The backend URL, the client token and the connection test stay on the
- * Settings page ("Advanced settings ↗"). The palette reads the whole stored
- * settings record but keeps only its own six fields, so it never shows,
- * keeps or sends them.
+ * The backend URL, the client token, the connection test and site access
+ * stay on the Settings page ("Advanced settings ↗"). The palette reads the
+ * whole stored settings record but keeps only its own six fields, so it
+ * never shows, keeps or sends them.
  */
 
 /** The settings the palette shows and changes. */
@@ -173,7 +168,6 @@ type SettingsGroup =
   | "DigiBot"
   | "Verification"
   | "History and privacy"
-  | "Access"
   | "Keys"
   | "About"
   | "More";
@@ -182,7 +176,6 @@ export type SettingsRun =
   | { kind: "view"; view: PaletteView }
   | { kind: "toggle"; setting: SettingKey }
   | { kind: "tab"; page: TabPage }
-  | { kind: "optional-access" }
   | { kind: "none" };
 
 export type SettingsItem = {
@@ -202,8 +195,6 @@ export type SettingsItem = {
 export type SettingsState = {
   settings: PaletteSettings;
   connected: boolean;
-  optionalAccess: OptionalAccessState | null;
-  grantedSites: readonly string[] | null;
   /** The palette key as the browser shows it; "" when none is set. */
   paletteShortcut: readonly string[];
   version: string;
@@ -226,15 +217,9 @@ function cacheText(limit: number): string {
   return limit.toLocaleString("en-US");
 }
 
-function sitesText(sites: readonly string[] | null): string {
-  if (sites === null) return "Unavailable";
-  return sites.length === 1 ? "1 site" : `${sites.length} sites`;
-}
-
 /** Every row of the Settings view, in order; each is also a search result. */
 export function settingsItems(state: SettingsState): SettingsItem[] {
   const { settings } = state;
-  const access = state.optionalAccess;
   return [
     {
       id: "setting-digibot",
@@ -313,38 +298,6 @@ export function settingsItems(state: SettingsState): SettingsItem[] {
       run: { kind: "view", view: "clear-cache" },
     },
     {
-      id: "setting-optional-access",
-      group: "Access",
-      title: "Optional access",
-      subtitle: "Read images on any site, save exact files",
-      icon: "lock",
-      value:
-        access === null
-          ? "Unavailable"
-          : access.complete
-            ? "Granted"
-            : "Not granted",
-      run:
-        access?.complete === true
-          ? { kind: "none" }
-          : { kind: "optional-access" },
-    },
-    {
-      id: "setting-allow-site",
-      group: "Access",
-      title: "Allow one site…",
-      icon: "link",
-      run: { kind: "view", view: "allow-site" },
-    },
-    {
-      id: "setting-granted-sites",
-      group: "Access",
-      title: "Granted sites",
-      icon: "check",
-      value: sitesText(state.grantedSites),
-      run: { kind: "view", view: "granted-sites" },
-    },
-    {
       id: "setting-palette-shortcut",
       group: "Keys",
       title: "Palette shortcut",
@@ -388,7 +341,7 @@ export function settingsItems(state: SettingsState): SettingsItem[] {
       id: "setting-advanced",
       group: "More",
       title: "Advanced settings",
-      subtitle: "Backend URL, client token, connection test",
+      subtitle: "Backend URL, client token, site access",
       icon: "sliders",
       run: { kind: "tab", page: "advanced" },
     },
@@ -541,90 +494,6 @@ export async function disconnectDigiBot(): Promise<Outcome> {
     return { ok: true, message: PAIRING_TEXT.notConnected };
   } catch {
     return { ok: false, message: PAIRING_TEXT.disconnectFailed };
-  }
-}
-
-/** The browser's request stays the first await, inside the user's gesture. */
-export async function grantOptionalAccess(): Promise<Outcome> {
-  try {
-    const result = await requestFullOptionalAccess();
-    const text = optionalAccessStatusText(result.state);
-    return result.outcome === "granted"
-      ? { ok: true, message: text }
-      : {
-          ok: false,
-          message: `The browser did not grant the full request. ${text}`,
-        };
-  } catch {
-    return {
-      ok: false,
-      message: "The browser could not complete the optional access request.",
-    };
-  }
-}
-
-export type SiteCheck =
-  | { ok: true; origin: string; pattern: string }
-  | { ok: false; message: string };
-
-export const SITE_RULE =
-  "For narrower access, grant only the exact image-host origin. Existing grants are never removed when another request is denied.";
-
-/** The Settings page's rule: one exact credential-free HTTP(S) origin. */
-export function checkSiteOrigin(text: string): SiteCheck {
-  let url: URL;
-  try {
-    url = new URL(text.trim());
-  } catch {
-    return { ok: false, message: "Enter a valid HTTP or HTTPS origin." };
-  }
-  if (
-    !["http:", "https:"].includes(url.protocol) ||
-    url.username ||
-    url.password ||
-    url.hostname.includes("*") ||
-    url.pathname !== "/" ||
-    url.search ||
-    url.hash
-  )
-    return {
-      ok: false,
-      message:
-        "Enter one exact credential-free HTTP(S) origin without a wildcard or path.",
-    };
-  return { ok: true, origin: url.origin, pattern: originPattern(url) };
-}
-
-/** The browser's request is the first await, inside the user's gesture. */
-export async function allowSite(
-  site: Extract<SiteCheck, { ok: true }>,
-): Promise<Outcome> {
-  try {
-    const granted = await chrome.permissions.request({
-      origins: [site.pattern],
-    });
-    return granted
-      ? { ok: true, message: `Access granted for ${site.origin}.` }
-      : { ok: false, message: "Host access was not granted." };
-  } catch {
-    return { ok: false, message: "The browser denied the permission request." };
-  }
-}
-
-/**
- * The optional HTTP(S) host grants, read when the view opens; null when
- * unavailable. The manifest's own hosts are always granted and not counted.
- */
-export async function readGrantedSites(): Promise<string[] | null> {
-  try {
-    const manifest = chrome.runtime.getManifest() as chrome.runtime.ManifestV3;
-    const required = new Set(manifest.host_permissions);
-    const permissions = await chrome.permissions.getAll();
-    return (permissions.origins ?? []).filter(
-      (origin) => /^https?:\/\//iu.test(origin) && !required.has(origin),
-    );
-  } catch {
-    return null;
   }
 }
 

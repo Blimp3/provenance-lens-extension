@@ -63,8 +63,15 @@ Use **Actions ⌘K** to set or clear an alias.
 These rows and buttons open the matching Settings view in the palette, on the
 current page or in the popup on a browser page:
 
-- the **Settings**, **Connect DigiBot** and **Needs download access** rows
-- the toast buttons **Connect DigiBot**, **Grant access** and **Switch to API**
+- the **Settings** and **Connect DigiBot** rows
+- the toast buttons **Connect DigiBot** and **Switch to API**
+
+These rows and buttons open the **Extension access** card of the Settings page
+in a tab:
+
+- the **Grant optional access** and **Needs download access** rows
+- the toast button **Grant access**, and **Also check with Google ↗** without
+  download access
 
 ### Keys in the palette
 
@@ -106,7 +113,6 @@ its rows is also a search result on the first view. A change saves at once.
 | DigiBot             | Connect or disconnect DigiBot                                                                                                   |
 | Verification        | **Verification mode** and **Screenshot copy fallback**                                                                          |
 | History and privacy | **Keep history**, **Local cache**, **Save page title**, **Debug details**, **Clear history…** and **Clear verification cache…** |
-| Access              | **Optional access**, **Allow one site…** and **Granted sites**                                                                  |
 | Keys                | **Palette shortcut**, **Command hotkeys** and **Aliases**                                                                       |
 | About               | The version, **What a result means** and the line "Lens never scans pages."                                                     |
 
@@ -129,9 +135,9 @@ verification cache…** and **Reset aliases…** ask first, with **Cancel** as t
 first choice. A switch of **Verification mode** only saves the mode. The first
 verification in a mode still shows its disclosure.
 
-The last row, **Advanced settings ↗** (Backend URL, client token, connection
-test), opens the Settings page in a tab. The API connection settings stay
-there. The palette never shows or uses the client token. The browser's
+The last row, **Advanced settings ↗** (Backend URL, client token, site
+access), opens the Settings page in a tab. The API connection settings and site
+access stay there. The palette never shows or uses the client token. The browser's
 **Options** entry for Lens opens the same page.
 
 Over a page, the palette copies the `/link` command through the Lens worker,
@@ -461,13 +467,12 @@ For local review, load `apps/extension/dist` as an unpacked extension.
   Google SynthID…** handoff.
 - The optional `http://*/*` and `https://*/*` permissions let Lens get an image
   that you select from its host.
-- **Settings › Optional access** in the palette, or **Grant optional access**
-  on the Settings page, asks the browser for site access and downloads at the
-  same time. The **Needs download access** rows and the **Grant access** toast
-  button open that row.
-- As an alternative, **Settings › Allow one site…** in the palette, or the
-  Settings page, can grant one exact origin, such as an image host or a
-  backend that you control.
+- **Grant optional access** on the Settings page asks the browser for site
+  access and downloads at the same time. The palette's **Grant optional
+  access** and **Needs download access** rows and the **Grant access** toast
+  button open it.
+- As an alternative, the Settings page can grant one exact origin, such as an
+  image host or a backend that you control.
 - `web_accessible_resources` lists only `palette.html`, for `http` and `https`
   pages. It is not a permission. See
   [Why `palette.html` is web-accessible](#why-palettehtml-is-web-accessible).

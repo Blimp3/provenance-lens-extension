@@ -3786,7 +3786,8 @@ async function openResultDetails(
 /**
  * A toast button other than Details, from the page and document that show
  * the toast. Its binding says which buttons that toast has; Retry and Cancel
- * act once. The settings buttons open the palette on that page at their view.
+ * act once. Grant access opens the Settings page's Extension access card; the
+ * other settings buttons open the palette on that page at their view.
  */
 async function handleToastAction(
   message: Extract<ExtensionMessage, { type: "toast-action" }>,
@@ -3847,7 +3848,7 @@ async function handleToastAction(
       await openPalette(await toastTab(binding.tabId), "connect");
       return;
     case "grant-access":
-      await openPalette(await toastTab(binding.tabId), "access");
+      await openSettingsAt("permissions-heading");
       return;
     case "switch-to-api":
       await openPalette(await toastTab(binding.tabId), "verification-mode");
@@ -3869,6 +3870,12 @@ async function handleToastAction(
 
 function toastTab(tabId: number): Promise<chrome.tabs.Tab | undefined> {
   return chrome.tabs.get(tabId).catch(() => undefined);
+}
+
+async function openSettingsAt(heading: string): Promise<void> {
+  await chrome.tabs.create({
+    url: `${chrome.runtime.getURL("settings.html")}#${heading}`,
+  });
 }
 
 async function hasDownloadsPermission(): Promise<boolean> {
@@ -3925,7 +3932,7 @@ async function startSynthIdPick(
       state: "refused",
       message: "Allow download access in Settings first.",
     });
-    await openPalette(tab, "access");
+    await openSettingsAt("permissions-heading");
     return;
   }
   if (!hasSynthIdAcknowledgement(await getSynthIdDisclosureVersion())) {
@@ -4133,7 +4140,6 @@ async function openPalette(
 const SETTINGS_OPEN_VIEWS: ReadonlySet<OpenView> = new Set([
   "settings",
   "connect",
-  "access",
   "verification-mode",
 ]);
 

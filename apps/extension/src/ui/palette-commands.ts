@@ -51,7 +51,6 @@ export type OpenView =
   | "recent"
   | "settings"
   | "connect"
-  | "access"
   | "verification-mode";
 /** The views under Settings, which open with Settings one step back. */
 type SettingsView =
@@ -62,9 +61,6 @@ type SettingsView =
   | "cache-limit"
   | "clear-history"
   | "clear-cache"
-  | "access"
-  | "allow-site"
-  | "granted-sites"
   | "command-hotkeys"
   | "aliases"
   | "reset-aliases"
@@ -142,7 +138,6 @@ const OPEN_VIEWS: readonly string[] = [
   "recent",
   "settings",
   "connect",
-  "access",
   "verification-mode",
 ];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
@@ -207,12 +202,14 @@ export type IconName =
 
 /**
  * Pages a row opens in a tab. "advanced" is the Settings page, which keeps
- * the backend settings the palette never shows.
+ * the backend settings and the site access the palette never shows;
+ * "access" is its Extension access card.
  */
-export type TabPage = "advanced" | "history" | "shortcuts";
+export type TabPage = "advanced" | "access" | "history" | "shortcuts";
 
 export const TAB_PAGE_URLS: Readonly<Record<TabPage, string>> = {
   advanced: "settings.html",
+  access: "settings.html#permissions-heading",
   history: "history.html",
   shortcuts: "chrome://extensions/shortcuts",
 };
@@ -742,7 +739,7 @@ export function commandGate(
     return {
       reason: "Needs download access",
       disabled: false,
-      fix: { kind: "view", view: "access" },
+      fix: { kind: "tab", page: "access" },
     };
   if (needs.includes("range") && context.range?.ok !== true)
     return { reason: "Enter a range first", disabled: true };
