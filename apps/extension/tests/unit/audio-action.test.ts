@@ -60,7 +60,7 @@ it("opens the audio page without the page address", async () => {
 
   const created = create.mock.calls[0]?.[0];
   if (!created?.url) throw new Error("Audio page was not opened.");
-  // The page has no video URL source since L4, so the tab address carries no
+  // The page has no video URL source since 2.1.0, so the tab address carries no
   // page address.
   expect(created.url).toBe("chrome-extension://fixture/audio.html");
 });

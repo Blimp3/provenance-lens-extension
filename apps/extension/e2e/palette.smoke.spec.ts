@@ -320,7 +320,7 @@ async function clickToolbar(lens: Lens, page: Page): Promise<void> {
 
 /**
  * The palette closed after it started an image check. The profile has not
- * acknowledged a verification mode, so since L4 the worker opens one palette
+ * acknowledged a verification mode, so since 2.1.0 the worker opens one palette
  * again, at the Disclosure view.
  */
 async function closedAfterImageRun(page: Page): Promise<void> {

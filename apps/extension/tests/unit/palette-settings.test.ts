@@ -279,7 +279,7 @@ describe("palette settings without the API connection", () => {
     ).toMatchObject({ value: "2.1.0", subtitle: "Lens never scans pages." });
   });
 
-  // Since L4 the palette is the only place for these settings: the Settings
+  // Since 2.1.0 the palette is the only place for these settings: the Settings
   // page keeps only the API connection and Extension access.
   it("lists every setting with the stored defaults row by row", () => {
     const defaults = pickPaletteSettings(defaultSettings);

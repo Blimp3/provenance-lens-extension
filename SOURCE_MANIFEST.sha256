@@ -8,12 +8,11 @@ e9ee6ed217f073ec0a13b0b1c9068e1336f108f2c78f72bb2bbde46281efb973  ./.prettierign
 ac287b5e82e63c10fde73a092c0077da0d59c2ffa82328d58b0d6c9a29f6a51f  ./CLAUDE.md
 b7d35f9202a9e47d4a747744631daa208068daf8432c143c1866bca2c21b0336  ./LICENSE
 be9d157d555471ca105a95d3cf10fec85f9c1553398714a8c5bf8fd927124f05  ./README.md
-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./README.md.patch
 d9cc82068de039542ed6f897b2585aae38591b28579e6caa9a4698edea6ced13  ./SOURCE_PROVENANCE.md
 b4683f46cda056f348356f7de8ab5595b1e28d5b6b2fada4ad6342a1f569af37  ./THIRD_PARTY_NOTICES.txt
 29bcfe7ada6876a297c6854a7a8b58b38ba1fcc8922abd2643f90eb5b3ddcc40  ./apps/extension/e2e/integration.smoke.spec.ts
 935055368fa24479176ad7a5c6c926b2b4fae0f0b86c645872deeb91ff124aee  ./apps/extension/e2e/media.smoke.spec.ts
-7703293640ec12591bf9a97fa947b81f9b053fcd8cca97f2a55064888516cbdb  ./apps/extension/e2e/palette.smoke.spec.ts
+53a21c9b396a80ae8058f813abb453ad0d7d9897e66fe1c5acbd37d6ab72cc95  ./apps/extension/e2e/palette.smoke.spec.ts
 e5b50b41c8b8b926d8f3deac6f9efccc93678dfb4e2bac8befc7f9e2abf297cb  ./apps/extension/e2e/picker-runtime.smoke.spec.ts
 4f857846b3d17c5aa8918e2ea07cc3582041daa21dab0f9b3ef3e8fa543ba6d3  ./apps/extension/e2e/popup.smoke.spec.ts
 1baafae1d2c27256fd367fb06d1c377f5e00e7405a0f5c9e7e9ba34512bd1843  ./apps/extension/manifest.json
@@ -68,8 +67,8 @@ ec9cee4f1b07052595086261cdd0070775f789c378898ce36984e2a784109254  ./apps/extensi
 223a8a64982c973b9be0a455c55cbf68369f7add5a8bd0aac765d7499e67c25f  ./apps/extension/src/ui/link-output.ts
 db55e670be804b058595df193a6ffa9d1b7198d865ecdede68526b5a9e3ba630  ./apps/extension/src/ui/optional-access.ts
 d0983e300378fc3e8c8ad6abf1dffe0627ad80c1c7200fb2703661424ef28ac8  ./apps/extension/src/ui/palette-commands.ts
-16a10ad8a512b9965d4b7c301624457bed273d6f82f6843f1207e3e0ecef5b65  ./apps/extension/src/ui/palette-settings.ts
-56ad59258b174286750be5b1d1155b58596da02f498e9a6bf961fab3cab0f664  ./apps/extension/src/ui/palette.ts
+b2cb35e8854e0afe46d4c6e07730d2575386ebe8ee16a28a0fc36bffa06f5540  ./apps/extension/src/ui/palette-settings.ts
+a759dd39bd3b5e1c5589fb86291e00d7fd071e8b94890c757d4081906ba4fc20  ./apps/extension/src/ui/palette.ts
 171034d68b2e6356580cf99aa28c5619d1627dd01a3c1ed8536a155a0e7297f1  ./apps/extension/src/ui/settings.ts
 633f7420ef5e808d1c9d3473a64392f8a9bd6aa653d00b9abaa35532ca7f608d  ./apps/extension/src/ui/tokens.ts
 ea5400753b8fe10c5dac507261c7c00a8fae85f1b09f0677f043fa0c1df2c92d  ./apps/extension/src/verification-runs.ts
@@ -80,7 +79,7 @@ b7a5e34f74bf0e3b0d3b3d6f626bdf7d343bc9d49d8ab0d84e3eb6119426b7b5  ./apps/extensi
 804f97180aad3c9fc413f8cedab91a9f7ef70f02d9ec04b1b0c5b23013ae5f27  ./apps/extension/tests/unit/action-cache.test.ts
 eb7ca5ba8cb3ec772729babff925c68f2f35369d6f92f772129e79581da9f2e1  ./apps/extension/tests/unit/activity.test.ts
 1768ae439bf1107101f6383025031ff56dbe1f2182e047d004ff07b686dc4b62  ./apps/extension/tests/unit/api-verification-policy.test.ts
-5af8227d08a3e870d4982eafffc9db9baf2da8501ee0eb9441768509a1d30173  ./apps/extension/tests/unit/audio-action.test.ts
+1a0701ee0b1f5684b70d703af46ed8b88589cd9a94bac55a9aadddf3704e6d89  ./apps/extension/tests/unit/audio-action.test.ts
 037ec5925f1bb89256c1027c6a305fb5ef99c6d829517c766e74c996d60e1ecc  ./apps/extension/tests/unit/audio-ui.test.ts
 1cf69662a6e99d07eaaeeabf72078d080a0ca2f7f806ea243821729e3a80462c  ./apps/extension/tests/unit/background-bootstrap.test.ts
 aed1882a4b6f51be44d222a38cc0f40316b8a50beca9b228cf2ff1339e5f5bcc  ./apps/extension/tests/unit/background-workflow.test.ts
@@ -105,7 +104,7 @@ b78b71e070320d11258897eaa3a0775191faccc518aa63216e45461afb5a1881  ./apps/extensi
 3d034131291633fa6bc949ed63e7493fbc0725a1de361951c095629bb303f2f4  ./apps/extension/tests/unit/palette-frame.test.ts
 557e023b8d23ee0ca16bb25fa1981a577357bdb91e1ff1b6009c227383bd26f2  ./apps/extension/tests/unit/palette-host.test.ts
 f971aa0d59b45952b4c109471af14ed93b6c56e9f0748d207cc9ab01844eead7  ./apps/extension/tests/unit/palette-keys.test.ts
-e401c69300518ac8b6cf3210038669be0806c68a8418ec94d2984c9aaf99d611  ./apps/extension/tests/unit/palette-settings.test.ts
+92469570759f6284018c8d3668b712f01ea3792e98978ba3a10feb08aa7c6505  ./apps/extension/tests/unit/palette-settings.test.ts
 cbb85e2ca71ae926632382f63796c314dc327b96dd1ecdf4ade9470cb0630db9  ./apps/extension/tests/unit/picker.test.ts
 e2ed9b23dbdf2254229bdf1edffd71c1b45ae5a3c18c610c8c16bb616deeddc3  ./apps/extension/tests/unit/registry.test.ts
 3a3d7e7841f136c472958e27528b2f0020c1ce163742c6d0c002023394ca46b0  ./apps/extension/tests/unit/retrieval.test.ts

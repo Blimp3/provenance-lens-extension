@@ -231,7 +231,7 @@ const RUN_VERBS: Readonly<Record<SettingsRun["kind"], string>> = {
 };
 const LIMITS =
   "Image API checks also verify embedded Content Credentials on the backend. Audio checks look for supported OpenAI SynthID signals. Finding no supported signal does not establish human origin; these checks are not universal AI detectors.";
-/** The Disclosure view's text, as the Disclosure page had it before L4. */
+/** The Disclosure view's text, as the Disclosure page had it before 2.1.0. */
 const DISCLOSURES: Readonly<
   Record<DisclosureMode, { heading: string; paragraphs: readonly string[] }>
 > = {
