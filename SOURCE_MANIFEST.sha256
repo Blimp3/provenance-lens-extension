@@ -12,7 +12,7 @@ d9cc82068de039542ed6f897b2585aae38591b28579e6caa9a4698edea6ced13  ./SOURCE_PROVE
 b4683f46cda056f348356f7de8ab5595b1e28d5b6b2fada4ad6342a1f569af37  ./THIRD_PARTY_NOTICES.txt
 140fd75576c0ad376c70b2005523f0cd1cc3515f8dc172790ffb227311726b13  ./apps/extension/e2e/integration.smoke.spec.ts
 54fde47505530b57a18337ffaf7aea6a00578ef938372c39dce36f2b1c87e301  ./apps/extension/e2e/media.smoke.spec.ts
-256b5ab2f0232eec82dbb7fdabc7c458045a3a4053e42139eedcd5bb818a7e05  ./apps/extension/e2e/palette.smoke.spec.ts
+b58d38babbfbbca82551951d30dc1c79463ad2dc53e385d9389093f43ce8162f  ./apps/extension/e2e/palette.smoke.spec.ts
 e5b50b41c8b8b926d8f3deac6f9efccc93678dfb4e2bac8befc7f9e2abf297cb  ./apps/extension/e2e/picker-runtime.smoke.spec.ts
 50f8ad878dd00bf5801e346a4868b2193af99fe5c936aafc2b92ac5fc4256c30  ./apps/extension/e2e/popup.smoke.spec.ts
 907431da3a3f496a825ade47fcf8c520cc4e9223c97d039d2f574f65161d3e2c  ./apps/extension/manifest.json
