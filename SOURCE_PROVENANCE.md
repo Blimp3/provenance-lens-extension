@@ -1,30 +1,26 @@
 # Source provenance and publication boundary
 
 This public source edition derives from private repository base
-`4978fa81dad8c13ee8ac5cff1512e0486e0fbcc0` (package version 1.0.0),
-reviewed for publication on 2026-10-02. The edition was first published from
+`eeba7e47f2187263c6dade17cc696633282a1146` (package version 2.0.0),
+reviewed for publication on 2026-10-28. The edition was first published from
 private base `91775e5` (package version 0.8.0) as this repository's first
-commit, `d0b453a`, on 2026-09-18, and synced to the 1.0.0 base on 2026-10-02.
+commit, `d0b453a`, on 2026-09-18, synced to the 1.0.0 base on 2026-10-02, and
+synced to the 2.0.0 base on 2026-10-28.
 Later changes are commits in this repository; the private repository's history
 is not part of it. Public releases are tagged `vX.Y.Z` and listed on this
 repository's GitHub Releases page; see
 [docs/release-checklist.md](docs/release-checklist.md).
 
-Sync status on 2026-10-02: v1.0.0 source from private base `4978fa8`, released
-on 2026-10-02 as tag `v1.0.0` on `c3aaf32`. The included paths below match that
-base except for the public-edition differences listed at the end and three
-comments in `packages/shared/tests`, which name no private pull request or
-private repository path. Compared with the 0.8.0 source, the sync brings the
-popup order and the background's extension-page-only message gate, the
-connected-check fixes, the **Send this page's link to Telegram** button with its
-**Send to Telegram as** dropdown, the **Pick a video on this page** picker, the
-link-download options and the DigiBot gateway contract fixture; the
+Sync status on 2026-10-28: v2.0.0 source from private base `eeba7e4`, released
+on 2026-10-28 as tag `v2.0.0`. The included paths below match that base except
+for the public-edition differences listed at the end and three comments in
+`packages/shared/tests`, which name no private pull request or private
+repository path. Compared with the 1.0.0 source, the sync brings the Lens
+palette, which replaces the toolbar popup, the pick banner and result toasts,
+**Pick to download…**, the voice-note and audio-file sends, the Recent list,
+the Google SynthID handoff, the connected-request deadlines with **Stop
+waiting**, and the security and dependency fixes; the
 [CHANGELOG](CHANGELOG.md) describes each by its effect for users.
-
-Unreleased since v1.0.0: the changes in the [CHANGELOG](CHANGELOG.md)
-Unreleased section. They add the pick banner and result toasts, and the Lens
-palette, which replaces the toolbar popup. Every version field is 2.0.0 and no
-2.0.0 release exists yet; the picker runtime is 0.9.0.
 
 Included:
 

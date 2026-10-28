@@ -1,10 +1,12 @@
 # Changelog
 
-## [Unreleased]
+## [2.0.0] - 2026-10-28
 
-Adds the pick banner and result toasts, and the Lens palette, which replaces
-the toolbar popup. Every version field is 2.0.0, with no tag or release yet,
-and the picker runtime is 0.9.0.
+The extension and shared code are the private edition's 2.0.0 (base
+`eeba7e4`), with only the public-edition differences recorded in
+[SOURCE_PROVENANCE.md](SOURCE_PROVENANCE.md). This release adds the pick banner
+and result toasts, and the Lens palette, which replaces the toolbar popup. The
+picker runtime is 0.9.0.
 
 ### Added
 
@@ -24,9 +26,10 @@ and the picker runtime is 0.9.0.
   wait. The palette closes when the page restyles or hides its host or
   cancels its show. The key that closes the palette sends no keyup to the
   page, though a page's own capture listener on window can still see that
-  keyup. Over a fullscreen element, Lens holds Esc with Keyboard Lock while the
-  palette is open, so Esc steps back in the palette; press and hold Esc to
-  leave fullscreen. Known limits: while the palette is open its Esc lock
+  keyup. Over a fullscreen element, Lens asks for Keyboard Lock on Esc while
+  the palette is open, so that Esc steps back in the palette and a press and
+  hold leaves fullscreen. In Brave, one Esc still leaves fullscreen (checked on
+  a YouTube player). Known limits: while the palette is open its Esc lock
   replaces a wider keyboard lock the page held, and closing the palette ends
   that lock; Keyboard Lock exists only on secure (https) pages, so on an http
   page Esc still leaves fullscreen. When a video element itself is
@@ -92,8 +95,8 @@ and the picker runtime is 0.9.0.
   **Pick a post → voice note…** and **Pick a post → audio file…**, for a post
   you click. The page link's output is now `voice`, `m4a` or `mp3`, and the
   pinned DigiBot contract fixture records a voice and an M4A request. These
-  rows need DigiBot's link route to accept the voice-note and M4A outputs;
-  DigiBot 5.0.0 accepts only MP3 and refuses them.
+  rows need DigiBot 5.5.0 or later, whose link route accepts the voice-note
+  and M4A outputs; DigiBot 5.0.0 accepts only MP3 and refuses them.
 - **Verify audio of this page…** and **Clip › Verify this clip's audio** check 1
   to 60 seconds of the page's video through DigiBot in the background. The
   page shows the progress and the result as a toast.
@@ -227,13 +230,15 @@ and the picker runtime is 0.9.0.
   source-map-js 1.2.2 (CVE-2026-93749).
 - Dependency updates for the October 2026 npm advisories: zod 4.6.7
   (GHSA-mrhx-c7xc-m3w5), undici 8.12.3 and vite 8.3.5 (through vitest 4.1.12).
+- Node.js 24.22.1 in `.nvmrc`, the fixed release of the October 2026 Node.js
+  security release.
 
 ### Documentation
 
 - README: the Lens palette (opening, keys, the ten commands, the right-click
   list, restricted pages, why `palette.html` is web-accessible and the Google
   SynthID handoff). The note "There is no right-click menu for videos" is gone.
-- README: the popup actions include **Check with Google SynthID…**, with what
+- README: the Verify view includes **Check with Google SynthID…**, with what
   it saves and sends.
 
 ## [1.0.0] - 2026-10-02
