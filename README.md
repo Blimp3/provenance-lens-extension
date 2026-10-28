@@ -90,10 +90,12 @@ in a tab:
 These keys reach only the palette. The page under it does not get them. When
 the palette closes, focus goes back to the page element that had it.
 
-Over a fullscreen element, Lens holds Esc with the browser's Keyboard Lock
-while the palette is open. Esc then goes back in the palette, and the browser
-asks you to press and hold Esc to leave fullscreen. Known limits:
+Over a fullscreen element, Lens asks for the browser's Keyboard Lock on Esc
+while the palette is open. Where the browser holds Esc, Esc then goes back in
+the palette, and the browser asks you to press and hold Esc to leave
+fullscreen. Known limits:
 
+- In Brave, one Esc still leaves fullscreen (checked on a YouTube player).
 - When a video element itself is fullscreen (not a player around it), the
   palette shows and its keys work, but clicks and Esc do not: a click on a row
   does nothing, and Esc does not close the palette.
@@ -303,8 +305,8 @@ The Download view sets what DigiBot posts:
 A clip must start before it ends. A clip must stay within 24 hours. If a range
 is not valid, an inline error shows under the search field and Lens sends
 nothing. Clip needs DigiBot 5.0.0 or later. **Send voice note** and **Send
-audio file** need DigiBot's link route to accept the voice-note and M4A outputs;
-DigiBot 5.0.0 accepts only MP3 and refuses them.
+audio file** need DigiBot 5.5.0 or later, whose link route accepts the
+voice-note and M4A outputs; DigiBot 5.0.0 accepts only MP3 and refuses them.
 
 **Verify audio of this page…** and **Clip › Verify this clip's audio** check 1
 to 60 seconds of the page's video through DigiBot. The check runs in the
@@ -517,20 +519,20 @@ For local review, load `apps/extension/dist` as an unpacked extension.
 
 ## Release status
 
-This edition is the v1.0.0 source from private base `4978fa8`. The sync and
-review date is 2026-10-02. The full private base commit is
-`4978fa81dad8c13ee8ac5cff1512e0486e0fbcc0`.
+This edition is the v2.0.0 source from private base `eeba7e4`. The sync and
+review date is 2026-10-28. The full private base commit is
+`eeba7e47f2187263c6dade17cc696633282a1146`.
 [SOURCE_PROVENANCE.md](SOURCE_PROVENANCE.md) gives the exact publication
 boundary and the public-edition differences.
 
-The owner published the v1.0.0 release on 2026-10-02:
+The owner published the v2.0.0 release on 2026-10-28 as tag `v2.0.0` and a
+[GitHub Release](https://github.com/Blimp3/provenance-lens-extension/releases/tag/v2.0.0)
+with the public ZIP attached. The release notes give the ZIP's SHA-256.
 
-- tag `v1.0.0` on `c3aaf32`
-- a
-  [GitHub Release](https://github.com/Blimp3/provenance-lens-extension/releases/tag/v1.0.0)
-  with the public ZIP attached
-- SHA-256 of the public ZIP:
-  `627035ac41b91875769a35c25a90d2987bdfe6f6a23c8f4b94b475a0a826382e`
+Earlier: the v1.0.0 release on 2026-10-02, tag `v1.0.0` on `c3aaf32`, with a
+[GitHub Release](https://github.com/Blimp3/provenance-lens-extension/releases/tag/v1.0.0)
+whose public ZIP has the SHA-256
+`627035ac41b91875769a35c25a90d2987bdfe6f6a23c8f4b94b475a0a826382e`.
 
 The owner tags each release `vX.Y.Z` with the procedure in
 [docs/release-checklist.md](docs/release-checklist.md).

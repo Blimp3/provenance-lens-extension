@@ -4,11 +4,13 @@ a6b98ea7cb6d61ed8d430dd0dffa46c87012b5cf859d4ce7207898954951fdcd  ./.editorconfi
 7151cf397def0c2cb0ab65643701d27d335a72c90f775675b5f826bc7005818a  ./.npmrc
 d9f318747a126ce2247661af67852b185def7789492eabfad7bba322be087c33  ./.nvmrc
 e9ee6ed217f073ec0a13b0b1c9068e1336f108f2c78f72bb2bbde46281efb973  ./.prettierignore
-bcda2528de9f5ab393bae94b02ed88498f1ad44804d38785b6e9e7eba05525fe  ./CHANGELOG.md
-4f3c4e7989c8b403f751811f6a21076ae66dc4edc2f9bcaf8de8d52b5fd89fd6  ./CLAUDE.md
+ac1516a8584c1860d9d920d102a825ee4979a78432a33a1668d01129c6bdb2d8  ./CHANGELOG.md
+ac1516a8584c1860d9d920d102a825ee4979a78432a33a1668d01129c6bdb2d8  ./CHANGELOG.md
+ac1516a8584c1860d9d920d102a825ee4979a78432a33a1668d01129c6bdb2d8  ./CHANGELOG.md
+ac287b5e82e63c10fde73a092c0077da0d59c2ffa82328d58b0d6c9a29f6a51f  ./CLAUDE.md
 b7d35f9202a9e47d4a747744631daa208068daf8432c143c1866bca2c21b0336  ./LICENSE
-795662fe0e3e2935475bc40544cd723dc6a32407a537c75b975d02d1dfe40bd3  ./README.md
-3f93cdacdf0732307a2e61ad47b356f2553e3d62c8d88c397261e2733a1c3a6e  ./SOURCE_PROVENANCE.md
+62e573cc7cd6d0b21127285c656989b227f563cf52955a31061db0abe468fd13  ./README.md
+d9cc82068de039542ed6f897b2585aae38591b28579e6caa9a4698edea6ced13  ./SOURCE_PROVENANCE.md
 b4683f46cda056f348356f7de8ab5595b1e28d5b6b2fada4ad6342a1f569af37  ./THIRD_PARTY_NOTICES.txt
 140fd75576c0ad376c70b2005523f0cd1cc3515f8dc172790ffb227311726b13  ./apps/extension/e2e/integration.smoke.spec.ts
 54fde47505530b57a18337ffaf7aea6a00578ef938372c39dce36f2b1c87e301  ./apps/extension/e2e/media.smoke.spec.ts
@@ -104,7 +106,7 @@ f234af890dba2b367b248564965f22ad3349eba02097f31349de61284a95fdad  ./apps/extensi
 b8637724226fea08c210eee5f563521c871fb0522c40e317c5ff447155c6d6b1  ./apps/extension/tests/unit/page-link-candidates.test.ts
 b78b71e070320d11258897eaa3a0775191faccc518aa63216e45461afb5a1881  ./apps/extension/tests/unit/page-policy.test.ts
 4feb4e68b98d1ca80a0fc7a43f24053cf7dd8bbcb4d43f2567fd034a6b1f1b03  ./apps/extension/tests/unit/palette-commands.test.ts
-ad4b690db09fb024fdbf73465cdf6d640a5d87375bf3aef5a32aa6ea50aca9d3  ./apps/extension/tests/unit/palette-frame.test.ts
+2bb062678bb0bf2262efe4e42d495da2309e2729f97f1e3cc3c2f4de855faa29  ./apps/extension/tests/unit/palette-frame.test.ts
 557e023b8d23ee0ca16bb25fa1981a577357bdb91e1ff1b6009c227383bd26f2  ./apps/extension/tests/unit/palette-host.test.ts
 f971aa0d59b45952b4c109471af14ed93b6c56e9f0748d207cc9ab01844eead7  ./apps/extension/tests/unit/palette-keys.test.ts
 939e108edaebbf0d86cab35b7605de40d99ea4c6d537b1971620c135e496edef  ./apps/extension/tests/unit/palette-settings.test.ts
@@ -121,7 +123,7 @@ fc74a409ba47dbcc3be899ae008a842a7a1d6762f640b501038a32598cc17d88  ./apps/extensi
 c9b5e93b7440339a4c6a9fc52b693bf096e552fb9bb0e2f14d488af9b5da542d  ./apps/extension/tsconfig.json
 7d91dc8d7cfdf11c16d290dadd2f3354877fc1c5ef4170680249926526b14eaf  ./apps/extension/vitest.config.ts
 067f4ea1e0785bf70f58da5ae0b9aac717078f8d92b2040a604ca0cb10b54271  ./docs/portfolio-demo.md
-ae33364be95d2b3264dba1d36ddbf58fcb7b73487610b770512efb25d19e8a48  ./docs/release-checklist.md
+3b5effb63972fd061ff41acf4fd83fd2e0c1bfb588c1eaa540cd489488a87a77  ./docs/release-checklist.md
 e858905287d8e82a519167678a5d507278c2801e1405a1892edf4447c0a87e52  ./eslint.config.js
 f06087e804a13befbeb82091739f605e3bafccec2e46d5948f621c085aaf07f4  ./package-lock.json
 4a9aa1178839a9583893a968df966c69e3e73d963b477ff0a37b29adf41969a4  ./package.json
