@@ -4,13 +4,13 @@ a6b98ea7cb6d61ed8d430dd0dffa46c87012b5cf859d4ce7207898954951fdcd  ./.editorconfi
 7151cf397def0c2cb0ab65643701d27d335a72c90f775675b5f826bc7005818a  ./.npmrc
 d9f318747a126ce2247661af67852b185def7789492eabfad7bba322be087c33  ./.nvmrc
 e9ee6ed217f073ec0a13b0b1c9068e1336f108f2c78f72bb2bbde46281efb973  ./.prettierignore
-eec383c84f04dfb9e48d343c8a0ffb607514ab4c8116e2e71e311ad0c9ef795f  ./CHANGELOG.md
+5152a0ad81c9186d45d10d919fbf7b397c750c6d3b11e7b35fbf92250985db8a  ./CHANGELOG.md
 4f3c4e7989c8b403f751811f6a21076ae66dc4edc2f9bcaf8de8d52b5fd89fd6  ./CLAUDE.md
 b7d35f9202a9e47d4a747744631daa208068daf8432c143c1866bca2c21b0336  ./LICENSE
 9d43ab58373edf1f481e8796d026be243c61a53a9dfe4e957550b9f4d928a06f  ./README.md
 3f93cdacdf0732307a2e61ad47b356f2553e3d62c8d88c397261e2733a1c3a6e  ./SOURCE_PROVENANCE.md
 b4683f46cda056f348356f7de8ab5595b1e28d5b6b2fada4ad6342a1f569af37  ./THIRD_PARTY_NOTICES.txt
-19107acd399942e99a6928aed963cb033e00a766c9a2bb231a85f6fbd179f514  ./apps/extension/e2e/integration.smoke.spec.ts
+140fd75576c0ad376c70b2005523f0cd1cc3515f8dc172790ffb227311726b13  ./apps/extension/e2e/integration.smoke.spec.ts
 54fde47505530b57a18337ffaf7aea6a00578ef938372c39dce36f2b1c87e301  ./apps/extension/e2e/media.smoke.spec.ts
 256b5ab2f0232eec82dbb7fdabc7c458045a3a4053e42139eedcd5bb818a7e05  ./apps/extension/e2e/palette.smoke.spec.ts
 e5b50b41c8b8b926d8f3deac6f9efccc93678dfb4e2bac8befc7f9e2abf297cb  ./apps/extension/e2e/picker-runtime.smoke.spec.ts
@@ -54,7 +54,7 @@ d7dfc1d0d76bc35fbea66a7c8895dbedfb91794592d7a4361929895724514ae5  ./apps/extensi
 37bc05c7e6932122cfbfde9e49d8feca39f39a52e41520dac6e124127942074c  ./apps/extension/src/page-link-candidates.ts
 e7fa7318ab70c18279367e2d45cfd275f9a323b4a6547712c617939c59ecb4db  ./apps/extension/src/page-policy.ts
 a52995bf52bda995609e1a8fdde7d8084364e94474f36a042f02ef3b36d0a3b1  ./apps/extension/src/palette-host.ts
-9256fb9ed9dfbf7b154179d801e9be48860952876195c7f79130f6c5f52a88a6  ./apps/extension/src/picker.ts
+bf3abadfc1bd94b8be4ecfbcaeb9cfef0efa50eced5e46f869c5634b88155279  ./apps/extension/src/picker.ts
 f8027d0f661d426b57fe52b8177e25b601b480dd749c37e34302ca96f9c36066  ./apps/extension/src/routing.ts
 27d10af97e653a26360c6ad50b3621c30636b9669faf0610ebfc055a014b2087  ./apps/extension/src/screenshot-binding.ts
 c3b475fe7ea60ed7f8468c9a741d9e94063b2882a748bf682b7ea549e383dd95  ./apps/extension/src/screenshot-guard.ts
@@ -101,7 +101,7 @@ b78b71e070320d11258897eaa3a0775191faccc518aa63216e45461afb5a1881  ./apps/extensi
 9c2a4e071ecf259375e1525ca6e5ecf948f5bbdf791284c1f7fb176851bfa64b  ./apps/extension/tests/unit/palette-commands.test.ts
 557e023b8d23ee0ca16bb25fa1981a577357bdb91e1ff1b6009c227383bd26f2  ./apps/extension/tests/unit/palette-host.test.ts
 2110d2fd57361481fc910fdda9725eba3ae07729bd669e8037dd7c54543df947  ./apps/extension/tests/unit/palette-keys.test.ts
-89d6ab7d9b571f960d8e044a4a527a820fc2617bc772de34618ac73fbfc32c7f  ./apps/extension/tests/unit/picker.test.ts
+cbb85e2ca71ae926632382f63796c314dc327b96dd1ecdf4ade9470cb0630db9  ./apps/extension/tests/unit/picker.test.ts
 e2ed9b23dbdf2254229bdf1edffd71c1b45ae5a3c18c610c8c16bb616deeddc3  ./apps/extension/tests/unit/registry.test.ts
 3a3d7e7841f136c472958e27528b2f0020c1ce163742c6d0c002023394ca46b0  ./apps/extension/tests/unit/retrieval.test.ts
 d99ff2b34ccf50da689db0a0c79009cbbd060556893cfc0be42b6cab7803b26d  ./apps/extension/tests/unit/routing.test.ts
