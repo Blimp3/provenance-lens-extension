@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PICKER_RUNTIME_VERSION } from "@provenance-lens/shared";
 
@@ -302,6 +302,12 @@ function resetPickerEnvironment(): void {
     window as Window & { __provenanceLensPickerInstalled?: boolean | string }
   ).__provenanceLensPickerInstalled = false;
 }
+
+// An armed picker watches the document for player embeds, so Esc cancels
+// every picker a test leaves armed.
+afterEach(() => {
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+});
 
 describe("image picker lifecycle", () => {
   beforeEach(resetPickerEnvironment);
@@ -1482,6 +1488,278 @@ describe("download picker (media mode)", () => {
     picker.click(5, 5);
     expect(picker.sendMessage).not.toHaveBeenCalled();
     expect(picker.banner()).toBe("Nothing to download here");
+  });
+});
+
+describe("shields over embedded players", () => {
+  beforeEach(resetPickerEnvironment);
+
+  const YOUTUBE_EMBED = "https://www.youtube-nocookie.com/embed/y08TrAsHZzI";
+  const VIMEO_EMBED = "https://player.vimeo.com/video/76979871";
+
+  function embed(src: string, left: number, top: number): HTMLIFrameElement {
+    const frame = placed(document.createElement("iframe"), left, top, 320, 180);
+    frame.src = src;
+    document.body.append(frame);
+    return frame;
+  }
+
+  function shields(shadow: ShadowRoot | null): HTMLElement[] {
+    return Array.from(
+      shadow?.querySelectorAll<HTMLElement>("[data-picker-shield]") ?? [],
+    );
+  }
+
+  /** Each shield's box as "left top width height", sorted. */
+  function shieldBoxes(shadow: ShadowRoot | null): string[] {
+    return shields(shadow)
+      .map(({ style }) =>
+        [style.left, style.top, style.width, style.height].join(" "),
+      )
+      .sort();
+  }
+
+  async function armed(): Promise<{
+    sendMessage: ReturnType<typeof vi.fn>;
+    shadows: ReturnType<typeof captureShadows>;
+    addEventListener: { mock: { calls: unknown[][] } };
+    restart: () => void;
+  }> {
+    const { sendMessage, sendPickerMessage } = installChrome();
+    const shadows = captureShadows();
+    const addEventListener = vi.spyOn(document, "addEventListener");
+    await import("../../src/picker.js");
+    startMediaMessage(sendPickerMessage);
+    return {
+      sendMessage,
+      shadows,
+      addEventListener,
+      restart: () => startMediaMessage(sendPickerMessage),
+    };
+  }
+
+  /**
+   * The browser's hit test and event delivery: the topmost element at the
+   * point takes a pointer event, a shield counts only while it shows with its
+   * pointer events on, and an event over a frame goes to the frame's own
+   * document, never to this page. frameEvents lists what the frames took.
+   */
+  function browser(
+    shadows: ReturnType<typeof captureShadows>,
+    addEventListener: { mock: { calls: unknown[][] } },
+  ): {
+    frameEvents: string[];
+    hover: (x: number, y: number) => Promise<void>;
+    click: (x: number, y: number) => void;
+  } {
+    const shieldAt = (x: number, y: number): boolean => {
+      const overlay = shadows.overlay?.host;
+      if (!(overlay instanceof HTMLElement) || !overlay.isConnected)
+        return false;
+      if (overlay.style.display !== "block") return false;
+      return shields(shadows.overlay).some(({ style }) => {
+        const [left, top, width, height] = [
+          style.left,
+          style.top,
+          style.width,
+          style.height,
+        ].map(parseFloat) as [number, number, number, number];
+        return (
+          style.display === "block" &&
+          style.pointerEvents === "auto" &&
+          x >= left &&
+          x < left + width &&
+          y >= top &&
+          y < top + height
+        );
+      });
+    };
+    Object.defineProperty(document, "elementsFromPoint", {
+      configurable: true,
+      value: (x: number, y: number): Element[] => [
+        ...(shieldAt(x, y) && shadows.overlay ? [shadows.overlay.host] : []),
+        ...Array.from(document.querySelectorAll("iframe")).filter((frame) => {
+          const box = frame.getBoundingClientRect();
+          return (
+            x >= box.left && x < box.right && y >= box.top && y < box.bottom
+          );
+        }),
+        document.body,
+        document.documentElement,
+      ],
+    });
+    const frameEvents: string[] = [];
+    const reachesPage = (type: string, x: number, y: number): boolean => {
+      if (!(document.elementsFromPoint(x, y)[0] instanceof HTMLIFrameElement))
+        return true;
+      frameEvents.push(type);
+      return false;
+    };
+    return {
+      frameEvents,
+      hover: async (x, y) => {
+        if (!reachesPage("pointermove", x, y)) return;
+        document.dispatchEvent(
+          new PointerEvent("pointermove", { clientX: x, clientY: y }),
+        );
+        await flush();
+      },
+      click: (x, y) => {
+        if (reachesPage("click", x, y))
+          trustedClick(clickListenerOf(addEventListener), x, y);
+      },
+    };
+  }
+
+  it("shields each YouTube and Vimeo embed that shows at its box, and no other frame", async () => {
+    setPageUrl("https://news.example/story");
+    embed(YOUTUBE_EMBED, 0, 0);
+    embed(VIMEO_EMBED, 0, 200);
+    embed("https://player.example/v/1", 0, 400);
+    // A playlist embed names no video.
+    embed("https://www.youtube.com/embed/videoseries?list=PL1", 0, 600);
+    embed(YOUTUBE_EMBED, 400, 0).style.visibility = "hidden";
+    const { shadows } = await armed();
+    expect(shieldBoxes(shadows.overlay)).toEqual([
+      "0px 0px 320px 180px",
+      "0px 200px 320px 180px",
+    ]);
+    // The overlay shows the shields before any highlight.
+    expect(overlayElement()?.style.display).toBe("block");
+    for (const shield of shields(shadows.overlay))
+      expect(shield.style.pointerEvents).toBe("auto");
+  });
+
+  it("keeps each shield on its frame's box and follows embeds the page adds and removes", async () => {
+    setPageUrl("https://news.example/story");
+    const { shadows } = await armed();
+    expect(shields(shadows.overlay)).toHaveLength(0);
+    expect(overlayElement()?.style.display).toBe("none");
+
+    const youtube = embed(YOUTUBE_EMBED, 0, 100);
+    await vi.waitFor(() =>
+      expect(shieldBoxes(shadows.overlay)).toEqual(["0px 100px 320px 180px"]),
+    );
+
+    // A scroll or a layout change moves the frame with no event on it.
+    placed(youtube, 0, -40, 320, 180);
+    await vi.waitFor(() =>
+      expect(shieldBoxes(shadows.overlay)).toEqual(["0px -40px 320px 180px"]),
+    );
+
+    const vimeo = embed(VIMEO_EMBED, 0, 300);
+    await vi.waitFor(() =>
+      expect(shieldBoxes(shadows.overlay)).toEqual([
+        "0px -40px 320px 180px",
+        "0px 300px 320px 180px",
+      ]),
+    );
+
+    youtube.remove();
+    await vi.waitFor(() =>
+      expect(shieldBoxes(shadows.overlay)).toEqual(["0px 300px 320px 180px"]),
+    );
+    vimeo.remove();
+    await vi.waitFor(() => expect(shields(shadows.overlay)).toHaveLength(0));
+    expect(overlayElement()?.style.display).toBe("none");
+  });
+
+  it("a click on a shield picks the embed's video page, and the player gets nothing", async () => {
+    setPageUrl("https://news.example/story");
+    embed(YOUTUBE_EMBED, 0, 0);
+    embed(VIMEO_EMBED, 0, 200);
+    const { sendMessage, shadows, addEventListener, restart } = await armed();
+    const page = browser(shadows, addEventListener);
+
+    await page.hover(160, 90);
+    expect(
+      shadows.overlay?.querySelector("[data-picker-label]")?.textContent,
+    ).toBe("Video · www.youtube.com · Send · Esc to cancel");
+    const focus = shadows.overlay?.querySelector<HTMLElement>(
+      "[data-picker-focus]",
+    );
+    expect([
+      focus?.style.left,
+      focus?.style.top,
+      focus?.style.width,
+      focus?.style.height,
+    ]).toEqual(["0px", "0px", "320px", "180px"]);
+    page.click(160, 90);
+    expect(sendMessage).toHaveBeenLastCalledWith({
+      type: "picker-link-selected",
+      sessionToken: SESSION_TOKEN,
+      url: "https://www.youtube.com/watch?v=y08TrAsHZzI",
+    });
+
+    restart();
+    page.click(160, 290);
+    expect(sendMessage).toHaveBeenLastCalledWith({
+      type: "picker-link-selected",
+      sessionToken: SESSION_TOKEN,
+      url: "https://vimeo.com/76979871",
+    });
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(page.frameEvents).toEqual([]);
+  });
+
+  it("removes the shields on cancel and on a pick, and none comes back", async () => {
+    const callbacks: FrameRequestCallback[] = [];
+    const requestAnimationFrame = vi.fn(
+      (callback: FrameRequestCallback): number => callbacks.push(callback),
+    );
+    Object.defineProperty(window, "requestAnimationFrame", {
+      configurable: true,
+      value: requestAnimationFrame,
+    });
+    Object.defineProperty(window, "cancelAnimationFrame", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    setPageUrl("https://news.example/story");
+    embed(YOUTUBE_EMBED, 0, 0);
+    const { shadows, addEventListener, restart } = await armed();
+    const page = browser(shadows, addEventListener);
+    const ends = [
+      (): void => {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      },
+      (): void => page.click(160, 90),
+    ];
+    for (const [index, end] of ends.entries()) {
+      if (index > 0) restart();
+      const overlay = shadows.overlay;
+      expect(shields(overlay)).toHaveLength(1);
+      expect(overlay?.host.isConnected).toBe(true);
+
+      end();
+      expect(overlay?.host.isConnected).toBe(false);
+      expect(overlayElement()).toBeNull();
+      // A frame that was already scheduled and an embed added later bring
+      // no shield back and schedule no frame.
+      requestAnimationFrame.mockClear();
+      for (const callback of callbacks.splice(0)) callback(16);
+      const added = embed(VIMEO_EMBED, 0, 200);
+      await flush();
+      expect(requestAnimationFrame).not.toHaveBeenCalled();
+      expect(shields(overlay)).toHaveLength(1);
+      added.remove();
+      await flush();
+    }
+  });
+
+  it("puts a toast shown before the pick back above the shields", async () => {
+    const showPopover = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "showPopover", {
+      configurable: true,
+      value: showPopover,
+    });
+    embed(YOUTUBE_EMBED, 0, 0);
+    const { sendPickerMessage } = installChrome();
+    await import("../../src/picker.js");
+    bindMessage(sendPickerMessage);
+    sendPickerMessage(showToastMessage());
+    startMessage(sendPickerMessage);
+    expect(showPopover.mock.contexts.at(-1)).toBe(toastRoot());
   });
 });
 

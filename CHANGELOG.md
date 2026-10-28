@@ -287,6 +287,10 @@ and the picker runtime is 0.9.0.
 - An audio check that starts while Lens's worker wakes up stays **Started** in
   Recent. The worker's start-up sweep could mark it "Lens stopped before this
   action ended." while it still ran.
+- **Pick to download…** on an embedded YouTube or Vimeo player sends the
+  video's page. The click went to the player, which paused, because a
+  cross-origin frame gets the clicks over it; while a pick is armed, a
+  transparent shield in the picker overlay covers each such player that shows.
 
 ### Security and privacy
 

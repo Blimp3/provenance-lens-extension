@@ -1,4 +1,11 @@
-import { chromium, expect, test, type Route } from "@playwright/test";
+import {
+  chromium,
+  expect,
+  test,
+  type Frame,
+  type Page,
+  type Route,
+} from "@playwright/test";
 import {
   DOWNLOAD_ACTION_ID,
   LINK_ACTION_ID,
@@ -566,6 +573,232 @@ test("pairs DigiBot, separates image Check and Download operations, sends a page
     await expect(history.locator("#history-list")).toContainText(
       "Telegram copy saved.",
     );
+  } finally {
+    await context.close();
+  }
+});
+
+// A YouTube embed is routed to this player fixture, so it loads as a real
+// cross-origin frame. The fixture records every pointer and mouse button
+// event it gets.
+const EMBED_URL = "https://www.youtube-nocookie.com/embed/y08TrAsHZzI";
+const PLAYER_HTML = `<!doctype html>
+<html lang="en">
+  <head><title>Player fixture</title></head>
+  <body style="margin: 0; height: 100vh; background: #000;">
+    <script>
+      window.received = [];
+      for (const type of ["pointerdown", "mousedown", "mouseup", "click"])
+        addEventListener(type, (event) => window.received.push(event.type), true);
+    </script>
+  </body>
+</html>`;
+
+/**
+ * Resolves once the page or frame has drawn: a second animation frame runs
+ * only after the first was drawn. The browser sends a click over a
+ * cross-origin frame by what the page and the frame last drew, so a click
+ * waits for this.
+ */
+function painted(target: Page | Frame): Promise<unknown> {
+  return target.evaluate(
+    () =>
+      new Promise((done) =>
+        requestAnimationFrame(() => requestAnimationFrame(done)),
+      ),
+  );
+}
+
+const EMBED_PAGES: Record<string, string> = {
+  "/story": `<!doctype html>
+<html lang="en">
+  <head><title>Story fixture</title></head>
+  <body style="margin: 0;">
+    <main style="padding: 40px;">
+      <h1>A story</h1>
+      <iframe width="560" height="315" src="${EMBED_URL}" title="Video player"></iframe>
+    </main>
+  </body>
+</html>`,
+  "/story-dialog": `<!doctype html>
+<html lang="en">
+  <head><title>Story dialog fixture</title></head>
+  <body style="margin: 0;">
+    <p>A story</p>
+    <dialog id="viewer">
+      <iframe width="480" height="270" src="${EMBED_URL}" title="Video player"></iframe>
+    </dialog>
+    <script>document.querySelector("#viewer").showModal();</script>
+  </body>
+</html>`,
+};
+
+test("a download pick on an embedded YouTube player sends its watch page, also in a modal dialog, and the player gets no click", async () => {
+  const linkDownloads: { operationId: string; sourceUrl: string }[] = [];
+  const context = await chromium.launchPersistentContext(
+    test.info().outputPath("profile"),
+    {
+      channel: "chromium",
+      headless: true,
+      args: [
+        `--disable-extensions-except=${resolve(process.cwd(), "dist")}`,
+        `--load-extension=${resolve(process.cwd(), "dist")}`,
+      ],
+    },
+  );
+  await context.route("https://www.youtube-nocookie.com/embed/*", (route) =>
+    route.fulfill({ status: 200, contentType: "text/html", body: PLAYER_HTML }),
+  );
+  await context.route(`${INTEGRATION_BACKEND_URL}/**`, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const page = EMBED_PAGES[path];
+    if (page !== undefined) {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body: page,
+      });
+      return;
+    }
+    if (path === "/api/integration/pairings" && request.method() === "POST") {
+      await json(
+        route,
+        {
+          pairId: "pair-e2e",
+          confirmationCode: "482731",
+          expiresAt: fixtureTime(300_000),
+        },
+        201,
+      );
+      return;
+    }
+    if (path === "/api/integration/pairings/pair-e2e/exchange") {
+      await json(route, {
+        tokenType: "Bearer",
+        accountId,
+        sessionId,
+        accessToken,
+        accessExpiresAt: fixtureTime(900_000),
+        refreshToken,
+        refreshExpiresAt: fixtureTime(7 * 86_400_000),
+        absoluteExpiresAt: fixtureTime(30 * 86_400_000),
+      });
+      return;
+    }
+    if (
+      path === "/api/integration/link-downloads" &&
+      request.method() === "POST"
+    ) {
+      linkDownloads.push(
+        JSON.parse(request.postData() ?? "{}") as {
+          operationId: string;
+          sourceUrl: string;
+        },
+      );
+      await json(
+        route,
+        {
+          jobId: `55555555-5555-4555-8555-00000000000${linkDownloads.length}`,
+          state: "queued",
+        },
+        202,
+      );
+      return;
+    }
+    await json(route, { ok: true });
+  });
+
+  try {
+    const worker =
+      context.serviceWorkers()[0] ??
+      (await context.waitForEvent("serviceworker"));
+    const extensionId = new URL(worker.url()).hostname;
+    const settings = await context.newPage();
+    await settings.goto(`chrome-extension://${extensionId}/settings.html`);
+    await settings.locator("#start-pairing").click();
+    await expect(settings.locator("#integration-pairing")).toBeVisible();
+    await settings.locator("#complete-pairing").click();
+    await expect(settings.locator("#integration-status")).toHaveText(
+      /DigiBot is connected/u,
+    );
+
+    const targetPage = await context.newPage();
+    for (const [index, path] of Object.keys(EMBED_PAGES).entries()) {
+      await targetPage.goto(`${INTEGRATION_BACKEND_URL}${path}`);
+      const frame = targetPage.locator("iframe");
+      await expect
+        .poll(() => targetPage.frames().some((one) => one.url() === EMBED_URL))
+        .toBe(true);
+      const player = targetPage.frames().find((one) => one.url() === EMBED_URL);
+      if (!player) throw new Error("Missing player frame");
+      await player.waitForFunction(() => "received" in window);
+      // The frame is cross-origin: the page cannot reach its document.
+      expect(
+        await frame.evaluate(
+          (element) => (element as HTMLIFrameElement).contentDocument === null,
+        ),
+      ).toBe(true);
+      const box = await frame.boundingBox();
+      if (!box) throw new Error("Missing player box");
+      const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      const received = (): Promise<string[]> =>
+        player.evaluate(
+          () => (window as unknown as { received: string[] }).received,
+        );
+
+      // Without a picker the player gets the click, once the player and then
+      // the page around it have drawn.
+      await painted(player);
+      await painted(targetPage);
+      await targetPage.mouse.click(center.x, center.y);
+      await expect
+        .poll(received)
+        .toEqual(["pointerdown", "mousedown", "mouseup", "click"]);
+      await player.evaluate(() => {
+        (window as unknown as { received: string[] }).received = [];
+      });
+
+      // The message the Lens palette sends for "Pick to download…", while
+      // the target tab is the active one.
+      await targetPage.bringToFront();
+      await worker.evaluate(async (targetUrl) => {
+        const tabs = await chrome.tabs.query({});
+        const tab = tabs.find((candidate) => candidate.url === targetUrl);
+        if (tab?.id === undefined) throw new Error("Target tab was not found.");
+        await chrome.tabs.update(tab.id, { active: true });
+        if (tab.windowId !== undefined)
+          await chrome.windows.update(tab.windowId, { focused: true });
+      }, targetPage.url());
+      await settings.evaluate(
+        (actionId) =>
+          chrome.runtime.sendMessage({
+            type: "start-action",
+            actionId,
+            trigger: "popup",
+          }),
+        DOWNLOAD_ACTION_ID,
+      );
+      const overlay = targetPage.locator(
+        '[data-provenance-lens-picker="overlay"]',
+      );
+      await expect(overlay).toBeAttached();
+      // The shields draw before the click.
+      await painted(targetPage);
+      await targetPage.mouse.click(center.x, center.y);
+
+      await expect.poll(() => linkDownloads.length).toBe(index + 1);
+      expect(linkDownloads[index]?.sourceUrl).toBe(
+        "https://www.youtube.com/watch?v=y08TrAsHZzI",
+      );
+      await expect(overlay).toHaveCount(0);
+      expect(await received()).toEqual([]);
+      await expect
+        .poll(() =>
+          targetPage.locator('[data-provenance-lens-toast="true"]').count(),
+        )
+        .toBeGreaterThan(0);
+    }
   } finally {
     await context.close();
   }
