@@ -381,7 +381,7 @@ describe("palette gating", () => {
     ).toEqual({
       reason: "Needs DigiBot",
       disabled: false,
-      fix: { kind: "tab", page: "connect" },
+      fix: { kind: "view", view: "connect" },
     });
     expect(
       commandGate(entry("check-synthid"), context({ downloadAccess: false })),

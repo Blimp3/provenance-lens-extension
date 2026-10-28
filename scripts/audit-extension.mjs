@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -6,9 +6,13 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifestPath = resolve(root, "apps/extension/dist/manifest.json");
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 
+// clipboardWrite and offscreen: the worker's offscreen document copies the
+// palette's /link command when the page blocks the frame's Clipboard API.
 const expectedPermissions = [
   "activeTab",
+  "clipboardWrite",
   "contextMenus",
+  "offscreen",
   "scripting",
   "storage",
 ].sort();
@@ -87,6 +91,17 @@ if (
 ) {
   failures.push(
     "web_accessible_resources must be exactly palette.html for HTTP(S) pages",
+  );
+}
+// The offscreen document copies one string for the worker; an import of the
+// shared schemas would add hundreds of kilobytes of code it never runs.
+const offscreenLimit = 4096;
+const offscreenSize = (
+  await stat(resolve(root, "apps/extension/dist/offscreen.js"))
+).size;
+if (offscreenSize > offscreenLimit) {
+  failures.push(
+    `dist/offscreen.js is ${offscreenSize} bytes, over ${offscreenLimit}: the offscreen document only copies text, so it imports nothing but offscreen-copy.ts`,
   );
 }
 
