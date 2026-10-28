@@ -45,9 +45,12 @@ type PickerMode = "image" | "link" | "media";
 type PickerOverlay = {
   root: HTMLElement;
   shadowRoot: ShadowRoot;
+  surface: HTMLDivElement;
   dimmers: HTMLDivElement[];
   focus: HTMLDivElement;
   label: HTMLDivElement;
+  /** The transparent shield over each embedded player that shows. */
+  shields: Map<HTMLIFrameElement, HTMLDivElement>;
   stopTheme: () => void;
 };
 
@@ -260,6 +263,9 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     activePicker?.cleanup();
     const overlay = createPickerOverlay(mode);
     const banner = createPickerBanner(label);
+    // A toast shown before the pick goes back on top, where no shield covers
+    // its buttons.
+    if (activeToast) mountOnTop(activeToast.root);
 
     const previousCursor = document.documentElement.style.cursor;
     document.documentElement.style.cursor = "crosshair";
@@ -282,14 +288,19 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     const renderCandidate = (): void => {
       pendingFrame = null;
       pendingFrameKind = null;
-      if (closed || !latestPointer) return;
-      const found = candidateAt(latestPointer.x, latestPointer.y, mode);
+      if (closed) return;
+      // While the page holds a player embed, the overlay renders every frame,
+      // so each shield follows its frame through scrolls and layout changes.
+      if (placeShields(overlay)) scheduleRender();
+      const found = latestPointer
+        ? candidateAt(latestPointer.x, latestPointer.y, mode)
+        : null;
       const candidate = found?.kind === "refused" ? null : found;
       state.candidate = candidate;
       if (candidate) {
         renderOverlay(overlay, candidate, HOVER_VERB[label], mode);
       } else {
-        overlay.root.style.setProperty("display", "none", "important");
+        hideHighlight(overlay);
       }
     };
 
@@ -320,10 +331,14 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       }
     };
 
+    // A player embed the page adds while the picker is armed gets a shield.
+    const embedWatch = new MutationObserver(scheduleRender);
+
     const cleanup = (): void => {
       if (closed) return;
       closed = true;
       cancelPendingRender();
+      embedWatch.disconnect();
       latestPointer = null;
       document.removeEventListener("pointermove", onPointerMove, true);
       document.removeEventListener("pointerdown", consumeHostGesture, true);
@@ -363,6 +378,13 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     });
     document.addEventListener("click", onClick, true);
     document.addEventListener("keydown", onKeyDown, true);
+    embedWatch.observe(document, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["src"],
+    });
+    renderCandidate();
 
     function onPointerMove(event: PointerEvent): void {
       latestPointer = { x: event.clientX, y: event.clientY };
@@ -738,7 +760,16 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
     surface.append(label);
 
     mountOnTop(root);
-    return { root, shadowRoot, dimmers, focus, label, stopTheme };
+    return {
+      root,
+      shadowRoot,
+      surface,
+      dimmers,
+      focus,
+      label,
+      shields: new Map(),
+      stopTheme,
+    };
   }
 
   function createPickerBanner(label: PickerLabel): PickerBanner {
@@ -1312,6 +1343,70 @@ if (window.__provenanceLensPickerInstalled !== PICKER_RUNTIME_VERSION) {
       preferredTop >= 8 ? preferredTop : clamp(bottom + 8, 8, maxLabelTop);
     overlay.label.style.left = `${labelLeft}px`;
     overlay.label.style.top = `${labelTop}px`;
+  }
+
+  /** Hides the highlight; the overlay stays shown while it holds a shield. */
+  function hideHighlight(overlay: PickerOverlay): void {
+    for (const part of [...overlay.dimmers, overlay.focus, overlay.label])
+      part.style.display = "none";
+    overlay.root.style.setProperty(
+      "display",
+      overlay.shields.size > 0 ? "block" : "none",
+      "important",
+    );
+  }
+
+  /**
+   * A cross-origin frame gets the pointer events over it, so a click on an
+   * embedded player never reaches this page. While the picker is armed, each
+   * YouTube or Vimeo embed that shows has a transparent shield in the overlay
+   * at its box: the events over it reach this page, whose hit test still
+   * finds the frame under the overlay, and the player gets none. Other
+   * frames keep their events. Returns whether the page holds such an embed,
+   * shown or not.
+   */
+  function placeShields(overlay: PickerOverlay): boolean {
+    const embeds = Array.from(document.querySelectorAll("iframe")).filter(
+      (frame) =>
+        embedVideoUrl(frame.getAttribute("src") ?? "", document.baseURI) !==
+        null,
+    );
+    const shown = new Set(embeds.filter(isShownFrame));
+    for (const [frame, shield] of overlay.shields) {
+      if (shown.has(frame)) continue;
+      shield.remove();
+      overlay.shields.delete(frame);
+    }
+    for (const frame of shown) {
+      let shield = overlay.shields.get(frame);
+      if (!shield) {
+        shield = document.createElement("div");
+        shield.dataset["pickerShield"] = "true";
+        Object.assign(shield.style, {
+          position: "fixed",
+          pointerEvents: "auto",
+          cursor: "crosshair",
+          background: "transparent",
+        });
+        overlay.surface.prepend(shield);
+        overlay.shields.set(frame, shield);
+      }
+      const rect = frame.getBoundingClientRect();
+      setOverlayRect(shield, rect.left, rect.top, rect.width, rect.height);
+    }
+    return embeds.length > 0;
+  }
+
+  /** A frame with a box that shows, its opacity counted. */
+  function isShownFrame(frame: HTMLIFrameElement): boolean {
+    const rect = frame.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    return typeof frame.checkVisibility === "function"
+      ? frame.checkVisibility({
+          opacityProperty: true,
+          visibilityProperty: true,
+        })
+      : getComputedStyle(frame).visibility !== "hidden";
   }
 
   function setOverlayRect(
