@@ -404,6 +404,20 @@ describe("the palette frame's Settings rows", () => {
     expect(document.activeElement).toBe(input);
   });
 
+  it("gives the search field focus back when Esc goes back a view", async () => {
+    await openFrame("settings");
+    press("Enter");
+    await vi.waitFor(() =>
+      expect(element("chip").textContent).toBe("Settings › DigiBot"),
+    );
+    const input = element("query");
+    input.blur();
+    expect(document.activeElement).toBe(document.body);
+    press("Escape");
+    expect(element("chip").textContent).toBe("Settings");
+    expect(document.activeElement).toBe(input);
+  });
+
   it("turns a switch back for a second quick press", async () => {
     // Each save reads, waits and writes, as storage.ts does.
     let persisted = (await mocks.getSettings()) as {
