@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -6,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   getIntegrationSession: vi.fn(),
   getSettings: vi.fn(),
   runIntegratedAudioFileAction: vi.fn(),
-  runIntegratedAudioSegmentAction: vi.fn(),
+  sendMessage: vi.fn(),
   startActivity: vi.fn(),
   updateActivity: vi.fn(),
   updateSettings: vi.fn(),
@@ -19,7 +22,6 @@ vi.mock("../../src/actions/verify-openai-audio.js", () => ({
 }));
 vi.mock("../../src/actions/integration-audio.js", () => ({
   runIntegratedAudioFileAction: mocks.runIntegratedAudioFileAction,
-  runIntegratedAudioSegmentAction: mocks.runIntegratedAudioSegmentAction,
 }));
 vi.mock("../../src/integration-client.js", () => ({
   getIntegrationSession: mocks.getIntegrationSession,
@@ -82,23 +84,15 @@ const record = {
 function renderPage(): void {
   document.body.innerHTML = `
     <form id="audio-form">
-      <select id="audio-source">
-        <option value="file" selected>Audio file</option>
-        <option value="video">Video segment</option>
-      </select>
       <input id="audio-file" type="file">
-      <div id="video-segment-fields" hidden>
-        <input id="video-source-url" type="url">
-        <input id="video-start-seconds" type="number">
-        <input id="video-end-seconds" type="number">
-      </div>
-      <button id="check-audio" type="submit"></button>
       <p id="audio-status"></p>
       <div id="audio-result" hidden></div>
       <div id="api-authorization" hidden>
         <input id="api-acknowledgement" type="checkbox">
       </div>
-      <p id="api-only-message" hidden><a href="settings.html">Settings</a></p>
+      <p id="api-only-message" hidden>
+        <a id="open-verification-mode" href="#">Verification mode</a>
+      </p>
     </form>
     <button id="open-settings" type="button"></button>
   `;
@@ -114,24 +108,9 @@ function chooseAudioFile(): File {
   });
   const selected = input.files?.[0];
   if (!selected) throw new Error("Missing selected audio file");
+  // The choice alone starts the check: the page has no Check button.
+  input.dispatchEvent(new Event("change"));
   return selected;
-}
-
-function chooseVideoSegment(url: string, start: string, end: string): void {
-  const source = document.getElementById("audio-source");
-  if (!(source instanceof HTMLSelectElement))
-    throw new Error("Missing audio source select");
-  source.value = "video";
-  source.dispatchEvent(new Event("change"));
-  for (const [id, value] of [
-    ["video-source-url", url],
-    ["video-start-seconds", start],
-    ["video-end-seconds", end],
-  ] as const) {
-    const input = document.getElementById(id);
-    if (!(input instanceof HTMLInputElement)) throw new Error(`Missing ${id}`);
-    input.value = value;
-  }
 }
 
 describe("audio check authorization", () => {
@@ -162,12 +141,12 @@ describe("audio check authorization", () => {
     mocks.updateSettings.mockReset();
     mocks.getIntegrationSession.mockReset().mockResolvedValue(null);
     mocks.runIntegratedAudioFileAction.mockReset();
-    mocks.runIntegratedAudioSegmentAction.mockReset();
+    mocks.sendMessage.mockReset().mockResolvedValue(undefined);
     mocks.startActivity.mockReset().mockResolvedValue(undefined);
     mocks.updateActivity.mockReset().mockResolvedValue(undefined);
     Object.defineProperty(globalThis, "chrome", {
       configurable: true,
-      value: { runtime: { openOptionsPage: vi.fn() } },
+      value: { runtime: { sendMessage: mocks.sendMessage } },
     });
   });
 
@@ -186,11 +165,16 @@ describe("audio check authorization", () => {
     const checkbox = document.getElementById("api-acknowledgement");
     expect(authorization?.hidden).toBe(false);
     expect((checkbox as HTMLInputElement).required).toBe(true);
-    (checkbox as HTMLInputElement).checked = true;
+    // A file chosen before the acknowledgement waits for it.
     const file = chooseAudioFile();
-    document
-      .getElementById("audio-form")
-      ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() =>
+      expect(document.getElementById("audio-status")?.textContent).toContain(
+        "Acknowledge the API privacy disclosure",
+      ),
+    );
+    expect(mocks.verifyAudioFile).not.toHaveBeenCalled();
+    (checkbox as HTMLInputElement).checked = true;
+    checkbox?.dispatchEvent(new Event("change"));
 
     await vi.waitFor(() =>
       expect(mocks.updateSettings).toHaveBeenCalledWith({
@@ -240,9 +224,6 @@ describe("audio check authorization", () => {
     );
     expect(document.getElementById("api-authorization")?.hidden).toBe(true);
     chooseAudioFile();
-    document
-      .getElementById("audio-form")
-      ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await vi.waitFor(() =>
       expect(document.getElementById("audio-status")?.textContent).toContain(
         "automatic API",
@@ -280,9 +261,6 @@ describe("audio check authorization", () => {
     await import("../../src/ui/audio.js");
     await vi.waitFor(() => expect(mocks.getSettings).toHaveBeenCalled());
     const file = chooseAudioFile();
-    document
-      .getElementById("audio-form")
-      ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
 
     await vi.waitFor(() =>
       expect(mocks.runIntegratedAudioFileAction).toHaveBeenCalledWith(
@@ -311,66 +289,84 @@ describe("audio check authorization", () => {
     });
   });
 
-  it("shows the segment check as complete once its verdict is saved", async () => {
+  it("runs one check at a time, even when the box is ticked during one", async () => {
     mocks.getSettings.mockResolvedValue(apiSettings);
     mocks.getIntegrationSession.mockResolvedValue({
       accountId: "account-fixture-1",
       sessionId: "session-fixture-1",
     });
-    mocks.runIntegratedAudioSegmentAction.mockResolvedValue({
-      status: {
-        operationId: "423e4567-e89b-42d3-a456-426614174000",
-        state: "processing",
-        segment: { startSeconds: 5, endSeconds: 20 },
-        error: null,
-        envelope: { result: { evidence: result } },
-      },
-      mediaSha256: null,
-    });
+    mocks.runIntegratedAudioFileAction.mockReturnValue(
+      new Promise(() => undefined),
+    );
     await import("../../src/ui/audio.js");
     await vi.waitFor(() => expect(mocks.getSettings).toHaveBeenCalled());
-    chooseVideoSegment("https://video.example/watch?v=fixture", "5", "20");
-    document
-      .getElementById("audio-form")
-      ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    chooseAudioFile();
+    await vi.waitFor(() =>
+      expect(mocks.runIntegratedAudioFileAction).toHaveBeenCalledTimes(1),
+    );
+    const checkbox = document.getElementById(
+      "api-acknowledgement",
+    ) as HTMLInputElement;
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event("change"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mocks.runIntegratedAudioFileAction).toHaveBeenCalledTimes(1);
+  });
 
-    // The pending operation keeps the entry, so a resume can end it.
-    await vi.waitFor(() =>
-      expect(mocks.runIntegratedAudioSegmentAction).toHaveBeenCalledWith(
-        "https://video.example/watch?v=fixture",
-        5,
-        20,
-        startedEntryId(),
-      ),
-    );
-    expect(lockNames).toEqual([
-      `provenance-lens.activity:${String(startedEntryId())}`,
-    ]);
-    const status = document.getElementById("audio-status");
-    await vi.waitFor(() =>
-      expect(status?.textContent).toBe(
-        "Audio segment check complete. The result was saved to DigiBot History.",
-      ),
-    );
-    expect(status?.className).toBe("status success");
-    expect(document.getElementById("audio-result")?.textContent).toContain(
-      "Checked audio segment: 5–20 seconds.",
-    );
-    expect(mocks.runIntegratedAudioFileAction).not.toHaveBeenCalled();
-    expect(mocks.verifyAudioFile).not.toHaveBeenCalled();
-    expect(mocks.startActivity).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: "Verify a video's audio",
-        kind: "verify",
-        // Only the origin and the path: a query can hold a token.
-        pageUrl: "https://video.example/watch",
-      }),
-      20,
-    );
-    expect(mocks.updateActivity).toHaveBeenCalledWith(expect.any(String), {
-      state: "done",
-      message: "OpenAI audio signal detected",
-      operationId: "423e4567-e89b-42d3-a456-426614174000",
+  it("clears the chosen file after an error, so the same file can be chosen again", async () => {
+    mocks.getSettings.mockResolvedValue(apiSettings);
+    mocks.getIntegrationSession.mockResolvedValue({
+      accountId: "account-fixture-1",
+      sessionId: "session-fixture-1",
     });
+    mocks.runIntegratedAudioFileAction.mockRejectedValue(
+      new TypeError("Failed to fetch"),
+    );
+    await import("../../src/ui/audio.js");
+    await vi.waitFor(() => expect(mocks.getSettings).toHaveBeenCalled());
+    const input = document.getElementById("audio-file") as HTMLInputElement;
+    const setValue = vi.fn();
+    Object.defineProperty(input, "value", {
+      configurable: true,
+      get: () => "",
+      set: setValue,
+    });
+    chooseAudioFile();
+    await vi.waitFor(() =>
+      expect(document.getElementById("audio-status")?.className).toBe(
+        "status error",
+      ),
+    );
+    expect(setValue).toHaveBeenCalledWith("");
+    expect(input.disabled).toBe(false);
+  });
+
+  it("opens the palette's Verification mode view from Settings and the API-only link", async () => {
+    mocks.getSettings.mockResolvedValue(apiSettings);
+    await import("../../src/ui/audio.js");
+    for (const id of ["open-settings", "open-verification-mode"]) {
+      mocks.sendMessage.mockClear();
+      document.getElementById(id)?.click();
+      expect(mocks.sendMessage).toHaveBeenCalledExactlyOnceWith({
+        type: "open-palette-view",
+        view: "verification-mode",
+      });
+    }
+  });
+
+  it("has no video URL segment, Check button or Settings page link", () => {
+    const html = readFileSync(
+      resolve(import.meta.dirname, "../../public/audio.html"),
+      "utf8",
+    );
+    for (const gone of [
+      "audio-source",
+      "video-source-url",
+      "video-start-seconds",
+      "check-audio",
+      'type="submit"',
+      "settings.html",
+    ])
+      expect(html).not.toContain(gone);
   });
 });

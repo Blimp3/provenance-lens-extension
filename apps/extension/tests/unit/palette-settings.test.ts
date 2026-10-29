@@ -42,17 +42,13 @@ import {
   clearSavedCache,
   clearSavedHistory,
   confirmFor,
-  CONNECT_CONSENT,
-  CONNECT_INTRO,
   COPY_HINT_MAC,
   copyText,
   defaultFor,
   finishSetupItems,
   flipSetting,
-  MODE_DISCLOSURES,
   openTabPage,
   PAIRING_LIMIT_MS,
-  PAIRING_TEXT,
   pairingStartedAt,
   pickPaletteSettings,
   pollPairing,
@@ -283,12 +279,9 @@ describe("palette settings without the API connection", () => {
     ).toMatchObject({ value: "2.1.0", subtitle: "Lens never scans pages." });
   });
 
-  it("matches the Settings page and the stored defaults row by row", async () => {
-    const html = await readFile(
-      resolve(import.meta.dirname, "../../public/settings.html"),
-      "utf8",
-    );
-    const page = new DOMParser().parseFromString(html, "text/html");
+  // Since 2.1.0 the palette is the only place for these settings: the Settings
+  // page keeps only the API connection and Extension access.
+  it("lists every setting with the stored defaults row by row", () => {
     const defaults = pickPaletteSettings(defaultSettings);
     const run = ({ run: target }: { run: SettingsRun }): string =>
       target.kind === "view"
@@ -373,28 +366,6 @@ describe("palette settings without the API connection", () => {
       ["More", "Advanced settings", "tab advanced", null, null],
     ]);
 
-    // Each field is the Settings page's own control: a checkbox for a
-    // toggle, a select with the same values for a choice.
-    const controls: Record<SettingKey, string> = {
-      verificationMode: "verification-mode",
-      screenshotFallbackEnabled: "screenshot-fallback",
-      historyRetention: "history-retention",
-      localCacheLimit: "local-cache-limit",
-      includePageTitle: "include-page-title",
-      debugMode: "debug-mode",
-    };
-    for (const key of [
-      "screenshotFallbackEnabled",
-      "includePageTitle",
-      "debugMode",
-    ] as const)
-      expect(page.getElementById(controls[key])?.getAttribute("type")).toBe(
-        "checkbox",
-      );
-    const options = (key: SettingKey) =>
-      [
-        ...page.querySelectorAll<HTMLOptionElement>(`#${controls[key]} option`),
-      ].map(({ value }) => value);
     const choices = (view: ChoiceView) =>
       choicesFor(view, defaults).map(({ title, update, current }) => [
         title,
@@ -418,25 +389,16 @@ describe("palette settings without the API connection", () => {
       ["250 results", "250", false],
       ["1,000 results", "1000", false],
     ]);
-    for (const [view, key] of [
-      ["verification-mode", "verificationMode"],
-      ["history-retention", "historyRetention"],
-      ["cache-limit", "localCacheLimit"],
-    ] as const)
-      expect(choices(view).map(([, value]) => value)).toEqual(options(key));
-
     // ⌘K › Reset to default restores storage.ts's own default.
-    for (const key of Object.keys(controls) as SettingKey[])
+    for (const key of [
+      "verificationMode",
+      "screenshotFallbackEnabled",
+      "historyRetention",
+      "localCacheLimit",
+      "includePageTitle",
+      "debugMode",
+    ] satisfies SettingKey[])
       expect(defaultFor(key)).toEqual({ [key]: defaultSettings[key] });
-
-    // The Connect status lines are the Settings page's, word for word; only
-    // the waiting line is the palette's own.
-    const source = await readFile(
-      resolve(import.meta.dirname, "../../src/ui/settings.ts"),
-      "utf8",
-    );
-    for (const [key, text] of Object.entries(PAIRING_TEXT))
-      if (key !== "waiting") expect(source).toContain(JSON.stringify(text));
   });
 });
 
@@ -474,28 +436,6 @@ describe("palette settings validation", () => {
       ok: true,
       alias: null,
     });
-  });
-
-  it("shows today's two disclosure lines for the verification mode", async () => {
-    const html = await readFile(
-      resolve(import.meta.dirname, "../../public/settings.html"),
-      "utf8",
-    );
-    document.body.innerHTML = html;
-    const text = (id: string) =>
-      document.getElementById(id)?.textContent?.replace(/\s+/gu, " ").trim();
-    expect(MODE_DISCLOSURES).toEqual([
-      text("website-mode-disclosure"),
-      text("api-mode-disclosure"),
-    ]);
-    // Card 3, word for word.
-    const card = document
-      .getElementById("integration-heading")
-      ?.closest("section");
-    const paragraphs = [...(card?.querySelectorAll("p.muted") ?? [])].map(
-      (paragraph) => paragraph.textContent?.replace(/\s+/gu, " ").trim(),
-    );
-    expect(paragraphs.slice(0, 2)).toEqual([CONNECT_INTRO, CONNECT_CONSENT]);
   });
 });
 

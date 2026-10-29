@@ -179,8 +179,17 @@ describe("the palette open record", () => {
       { scope: "audio" },
       { needsPick: "yes" },
       { hostname: "a".repeat(256) },
+      // Only the Disclosure view carries a pending action, and it must.
+      { disclosure: { pendingId: TOKEN, synthId: false } },
+      { view: "disclosure" },
+      { view: "disclosure", disclosure: { pendingId: "x", synthId: false } },
+      { view: "disclosure", disclosure: { pendingId: TOKEN, synthId: "no" } },
     ])
       expect(parsePaletteOpenRecord({ ...record, ...change })).toBeNull();
+    const disclosure = { pendingId: TOKEN, synthId: true };
+    expect(
+      parsePaletteOpenRecord({ ...record, view: "disclosure", disclosure }),
+    ).toEqual({ ...record, view: "disclosure", disclosure });
     expect(parsePaletteOpenRecord(null)).toBeNull();
     expect(parsePaletteOpenRecord("token")).toBeNull();
   });

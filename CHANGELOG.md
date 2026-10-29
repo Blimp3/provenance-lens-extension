@@ -4,7 +4,8 @@
 
 Moves every setting that can change inside the palette into it, except site
 access. Every version field is 2.1.0, a minor version for the two new
-permissions, with no tag or release yet.
+permissions, with no tag or release yet. It also trims the Settings page
+and the audio page and moves the first-use disclosure into the palette.
 
 ### Added
 
@@ -15,7 +16,7 @@ permissions, with no tag or release yet.
   (Backend URL, client token, site access), opens the Settings page in a
   tab: the API connection settings and site access stay there, and the
   palette never shows or uses the client token. The Settings page stays the
-  browser's Options page and does not change.
+  browser's Options page.
 - **Settings › DigiBot** pairs DigiBot inside the palette: the consent text,
   **Provider processing details ↗** and **Start pairing and copy /link**,
   which creates the pairing, shows the `/link` command and its confirmation
@@ -37,6 +38,17 @@ permissions, with no tag or release yet.
 - **Finish setup** rows on the first view for **Connect DigiBot** (or
   **Complete DigiBot pairing**) and **Grant optional access**, next to
   **Choose a palette shortcut**, each shown until it is done.
+- The palette's **Disclosure** view: the one-time acknowledgement before
+  a verification mode's first use, or before the first Google SynthID handoff,
+  opens in the palette on the action's page with the same Website, API or
+  SynthID text and the limits text. **Acknowledge and pick an image** (⌥1)
+  continues. **Cancel** (⌥2) or **Esc** cancels the action, and so does
+  closing the palette on the page; a fallback popup or tab closed another way
+  leaves the action to the 10-minute rule. If the page closes the palette
+  again before it shows, the view opens once more and then in the fallback
+  popup; if the action's tab is gone, the action is cancelled. The stored
+  acknowledgements and their keys do not change, so a mode already
+  acknowledged is not asked again.
 
 ### Changed
 
@@ -49,12 +61,31 @@ permissions, with no tag or release yet.
   **Grant access** and **Also check with Google ↗** without download access
   open its **Extension access** card in a tab, as before. History and the
   browser's shortcuts page still open in a tab.
+- The Settings page keeps only the **API connection** group (Backend
+  URL, Client token, **Test connection**, **Allow backend access**) and the
+  **Extension access** card, and stays the browser's Options page. Its save
+  writes only the backend URL and the client token.
+- The audio page starts the check when you choose the file, runs one
+  check at a time and clears the file after each check, except a file that
+  waits for the API acknowledgement, so the same file can be chosen again. Its **Settings** button and the "Switch to API mode" link
+  open the palette's **Verification mode** view instead of the Settings page.
 - One copy path for the `/link` command: in the popup or a tab the palette
   uses the Clipboard API; over a page it asks Lens's worker, which copies
   through one offscreen document, so a page whose Permissions Policy blocks
   its frames from the clipboard does not stop the copy. If that fails, the
   palette selects the command and asks you to press ⌘C (Ctrl+C outside a
   Mac).
+
+### Removed
+
+- From the Settings page: the Connect DigiBot, Verification mode,
+  Privacy and history and Fallbacks cards and **Refresh status**; these
+  settings are in the palette.
+- The Disclosure page (`disclosure.html`), which opened in its own tab.
+- From the audio page: the **Video URL segment** source with its seconds
+  fields and its message (the palette's **Verify audio of this page…** range
+  replaces it), the **Check audio** button, and the page address that Lens put
+  in the audio page's tab address for that source.
 
 ### Fixed
 
@@ -79,6 +110,12 @@ permissions, with no tag or release yet.
   pending one. Over a page, a key pressed before the palette shows is
   dropped when it opens at a Settings view, which a page's click on a toast
   button can open.
+- The **Disclosure** view's buttons go through the same input gate, and in
+  every host a key pressed before the view has shown for 250 ms never
+  acknowledges. From a page, only the palette frame that shows the
+  disclosure, mounted by the worker on the action's own tab, may acknowledge
+  or cancel it. Only Lens's own pages, not a palette frame inside a page, may
+  ask the worker to open the **Verification mode** view.
 
 ### Tests
 
@@ -90,6 +127,16 @@ permissions, with no tag or release yet.
   Google ↗** without download access and for refused copy requests; browser
   tests for the copy on a page whose Permissions Policy blocks the frame's
   clipboard, and for a synthetic click or key on a settings row.
+- Settings page tests for the two remaining cards and the two-field save;
+  audio page tests for the check on file choice and the **Verification mode**
+  link, one check at a time and the cleared file; palette tests for the
+  **Disclosure** view's text per mode, its acknowledgement, **Cancel**,
+  **Esc**, early keys and an unreadable mode; worker tests that the
+  disclosure opens in the palette, not a tab, at most twice before the
+  fallback popup, that closing that palette or its **Cancel** cancels the
+  action, that a gone tab cancels it, and that a foreign frame, another tab's
+  palette or a later palette cannot acknowledge it. `disclosure.test.ts` is
+  deleted.
 
 ## [2.0.0] - 2026-10-28
 

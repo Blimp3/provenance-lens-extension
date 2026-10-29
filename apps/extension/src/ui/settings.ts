@@ -1,50 +1,22 @@
 import {
   DEFAULT_BACKEND_URL,
-  ExtensionSettingsSchema,
-  HistoryRetentionSchema,
-  VerificationModeSchema,
   originPattern,
   parseBackendBaseUrl,
   sanitizeDisplayText,
-  type ExtensionSettings,
-  type VerificationMode,
 } from "@provenance-lens/shared";
 
-import { clearVerificationCache, setCacheLimit } from "../cache.js";
 import { getBundledClientTokenForBackend } from "../bundled-client.js";
-import {
-  clearHistory,
-  defaultSettings,
-  getSettings,
-  saveSettings,
-} from "../storage.js";
+import { getSettings, updateSettings } from "../storage.js";
 import {
   getOptionalAccessState,
   optionalAccessStatusText,
   requestFullOptionalAccess,
 } from "./optional-access.js";
-import {
-  createPairing,
-  disconnectIntegration,
-  exchangePairing,
-  getIntegrationSession,
-  getPendingPairing,
-} from "../integration-client.js";
 
 const form = required<HTMLFormElement>("settings-form");
-const verificationMode = required<HTMLSelectElement>("verification-mode");
-const websiteModeDisclosure = required<HTMLElement>("website-mode-disclosure");
-const apiModeDisclosure = required<HTMLElement>("api-mode-disclosure");
 const backendUrl = required<HTMLInputElement>("backend-url");
 const clientToken = required<HTMLInputElement>("client-token");
-const retention = required<HTMLSelectElement>("history-retention");
-const localCacheLimit = required<HTMLSelectElement>("local-cache-limit");
-const includePageTitle = required<HTMLInputElement>("include-page-title");
-const debugMode = required<HTMLInputElement>("debug-mode");
-const screenshotFallback = required<HTMLInputElement>("screenshot-fallback");
 const connectionStatus = required<HTMLElement>("connection-status");
-const historyStatus = required<HTMLElement>("history-status");
-const cacheStatus = required<HTMLElement>("cache-status");
 const permissionOrigin = required<HTMLInputElement>("permission-origin");
 const permissionStatus = required<HTMLElement>("permission-status");
 const optionalAccessButton = required<HTMLButtonElement>(
@@ -58,37 +30,13 @@ const backendPermissionNote = required<HTMLElement>("backend-permission-note");
 const requestBackendPermissionButton = required<HTMLButtonElement>(
   "request-backend-permission",
 );
-const integrationStatus = document.getElementById("integration-status");
-const integrationPairing = document.getElementById("integration-pairing");
-const integrationCommand = document.getElementById("integration-command");
-const integrationCode = document.getElementById("integration-code");
-const startPairingButton = document.getElementById(
-  "start-pairing",
-) as HTMLButtonElement | null;
-const completePairingButton = document.getElementById(
-  "complete-pairing",
-) as HTMLButtonElement | null;
-const disconnectIntegrationButton = document.getElementById(
-  "disconnect-integration",
-) as HTMLButtonElement | null;
 
 void loadSettings();
-void refreshIntegrationUI();
-verificationMode.addEventListener("change", () => {
-  const parsed = VerificationModeSchema.safeParse(verificationMode.value);
-  if (parsed.success) setVerificationModeDisclosure(parsed.data);
-});
 required<HTMLButtonElement>("test-connection").addEventListener("click", () => {
   void testConnection();
 });
 requestBackendPermissionButton.addEventListener("click", () => {
   void requestBackendAccess();
-});
-required<HTMLButtonElement>("clear-history").addEventListener("click", () => {
-  void clearSavedHistory();
-});
-required<HTMLButtonElement>("clear-cache").addEventListener("click", () => {
-  void clearSavedCache();
 });
 required<HTMLButtonElement>("request-permission").addEventListener(
   "click",
@@ -99,21 +47,6 @@ required<HTMLButtonElement>("request-permission").addEventListener(
 optionalAccessButton.addEventListener("click", () => {
   void grantOptionalAccess();
 });
-startPairingButton?.addEventListener("click", () => {
-  void startIntegrationPairing();
-});
-completePairingButton?.addEventListener("click", () => {
-  void completeIntegrationPairing();
-});
-disconnectIntegrationButton?.addEventListener("click", () => {
-  void disconnectLinkedIntegration();
-});
-required<HTMLButtonElement>("refresh-permissions").addEventListener(
-  "click",
-  () => {
-    void refreshPermissionDisplays();
-  },
-);
 backendUrl.addEventListener("input", refreshBackendConnectionUI);
 form.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -132,28 +65,16 @@ function refreshPermissionsFromBrowser(): void {
 
 async function loadSettings(): Promise<void> {
   const settings = await getSettings();
-  verificationMode.value = settings.verificationMode;
-  setVerificationModeDisclosure(settings.verificationMode);
   backendUrl.value = settings.backendBaseUrl || DEFAULT_BACKEND_URL;
   const bundledToken = getBundledClientTokenForBackend(settings.backendBaseUrl);
   clientToken.value = settings.clientToken;
-  retention.value = String(settings.historyRetention);
-  localCacheLimit.value = String(settings.localCacheLimit);
-  includePageTitle.checked = settings.includePageTitle;
-  debugMode.checked = settings.debugMode;
-  screenshotFallback.checked = settings.screenshotFallbackEnabled;
   refreshBackendConnectionUI();
   await refreshPermissionDisplays();
   if (bundledToken) await testConnection(bundledToken, true);
 }
 
+/** Saves only the API connection; the palette owns every other setting. */
 async function saveFormSettings(): Promise<void> {
-  const parsedMode = VerificationModeSchema.safeParse(verificationMode.value);
-  if (!parsedMode.success) {
-    setStatus(connectionStatus, "Choose a valid verification mode.", true);
-    return;
-  }
-  const mode = parsedMode.data;
   let parsedUrl: URL;
   try {
     parsedUrl = parseBackendBaseUrl(
@@ -167,49 +88,11 @@ async function saveFormSettings(): Promise<void> {
     );
     return;
   }
-  const parsedRetention = HistoryRetentionSchema.safeParse(
-    Number(retention.value),
-  );
-  if (!parsedRetention.success) {
-    setStatus(
-      connectionStatus,
-      "Choose a valid history retention setting.",
-      true,
-    );
-    return;
-  }
-  const parsedCacheLimit = Number(localCacheLimit.value);
-  if (
-    !Number.isInteger(parsedCacheLimit) ||
-    parsedCacheLimit < 10 ||
-    parsedCacheLimit > 1_000
-  ) {
-    setStatus(connectionStatus, "Choose a valid local cache limit.", true);
-    return;
-  }
-  const previous = await getSettings();
-  const settings: ExtensionSettings = ExtensionSettingsSchema.parse({
-    ...defaultSettings,
-    verificationMode: mode,
-    acknowledgedVerificationModes: previous.acknowledgedVerificationModes,
+  await updateSettings({
     backendBaseUrl: parsedUrl.toString().replace(/\/$/u, ""),
     clientToken: clientToken.value,
-    historyRetention: parsedRetention.data,
-    localCacheLimit: parsedCacheLimit,
-    screenshotFallbackEnabled: screenshotFallback.checked,
-    includePageTitle: includePageTitle.checked,
-    debugMode: debugMode.checked,
-    disclosureVersion: previous.disclosureVersion,
   });
-  await saveSettings(settings);
-  await setCacheLimit(settings.localCacheLimit);
   setStatus(connectionStatus, "Settings saved.", false);
-}
-
-function setVerificationModeDisclosure(mode: VerificationMode): void {
-  const websiteMode = mode === "website";
-  websiteModeDisclosure.hidden = !websiteMode;
-  apiModeDisclosure.hidden = websiteMode;
 }
 
 async function testConnection(
@@ -307,122 +190,6 @@ async function requestBackendAccess(): Promise<void> {
       "The browser denied the backend permission request.",
       true,
     );
-  }
-}
-
-async function clearSavedHistory(): Promise<void> {
-  await clearHistory();
-  const connected = await getIntegrationSession().catch(() => null);
-  setStatus(
-    historyStatus,
-    connected
-      ? "Local standalone history cleared. Manage connected History from the History page."
-      : "History cleared.",
-    false,
-  );
-}
-
-async function clearSavedCache(): Promise<void> {
-  await clearVerificationCache();
-  setStatus(cacheStatus, "Local verification cache cleared.", false);
-}
-
-async function refreshIntegrationUI(): Promise<void> {
-  if (
-    !integrationStatus ||
-    !integrationPairing ||
-    !integrationCommand ||
-    !integrationCode ||
-    !startPairingButton ||
-    !completePairingButton ||
-    !disconnectIntegrationButton
-  )
-    return;
-  try {
-    const [session, pending] = await Promise.all([
-      getIntegrationSession(),
-      getPendingPairing(),
-    ]);
-    if (session) {
-      integrationStatus.textContent =
-        "DigiBot is connected for this browser. Connected checks and downloads use that account.";
-      integrationStatus.className = "status success";
-      integrationPairing.hidden = true;
-      startPairingButton.hidden = true;
-      completePairingButton.hidden = true;
-      disconnectIntegrationButton.hidden = false;
-      return;
-    }
-    disconnectIntegrationButton.hidden = true;
-    startPairingButton.hidden = false;
-    if (pending) {
-      integrationStatus.textContent =
-        "Pairing request ready. Approve the matching code in your private DigiBot chat.";
-      integrationStatus.className = "status";
-      integrationPairing.hidden = false;
-      integrationCommand.textContent = `/link ${pending.pairId}`;
-      integrationCode.textContent = pending.confirmationCode;
-      completePairingButton.hidden = false;
-      return;
-    }
-    integrationStatus.textContent = "DigiBot is not connected.";
-    integrationStatus.className = "status";
-    integrationPairing.hidden = true;
-    completePairingButton.hidden = true;
-  } catch {
-    integrationStatus.textContent = "DigiBot connection status is unavailable.";
-    integrationStatus.className = "status error";
-  }
-}
-
-async function startIntegrationPairing(): Promise<void> {
-  if (!integrationStatus || !startPairingButton) return;
-  startPairingButton.disabled = true;
-  integrationStatus.textContent = "Creating a short-lived pairing request...";
-  integrationStatus.className = "status";
-  try {
-    await createPairing();
-    await refreshIntegrationUI();
-  } catch {
-    integrationStatus.textContent =
-      "The DigiBot pairing request could not be created.";
-    integrationStatus.className = "status error";
-  } finally {
-    startPairingButton.disabled = false;
-  }
-}
-
-async function completeIntegrationPairing(): Promise<void> {
-  if (!integrationStatus || !completePairingButton) return;
-  completePairingButton.disabled = true;
-  integrationStatus.textContent = "Completing the DigiBot pairing...";
-  integrationStatus.className = "status";
-  try {
-    await exchangePairing();
-    await refreshIntegrationUI();
-  } catch {
-    integrationStatus.textContent =
-      "The pairing was not approved yet or has expired. Start again after approving it in DigiBot.";
-    integrationStatus.className = "status error";
-  } finally {
-    completePairingButton.disabled = false;
-  }
-}
-
-async function disconnectLinkedIntegration(): Promise<void> {
-  if (!integrationStatus || !disconnectIntegrationButton) return;
-  disconnectIntegrationButton.disabled = true;
-  integrationStatus.textContent = "Disconnecting DigiBot...";
-  integrationStatus.className = "status";
-  try {
-    await disconnectIntegration();
-    await refreshIntegrationUI();
-  } catch {
-    integrationStatus.textContent =
-      "The DigiBot connection could not be cleared.";
-    integrationStatus.className = "status error";
-  } finally {
-    disconnectIntegrationButton.disabled = false;
   }
 }
 

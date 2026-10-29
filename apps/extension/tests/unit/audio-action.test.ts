@@ -35,7 +35,7 @@ const settings: ExtensionSettings = {
   disclosureVersion: 2,
 };
 
-it("removes the active tab fragment before prefilling a video URL", async () => {
+it("opens the audio page without the page address", async () => {
   const create = vi
     .fn<(properties: chrome.tabs.CreateProperties) => Promise<void>>()
     .mockResolvedValue(undefined);
@@ -60,10 +60,9 @@ it("removes the active tab fragment before prefilling a video URL", async () => 
 
   const created = create.mock.calls[0]?.[0];
   if (!created?.url) throw new Error("Audio page was not opened.");
-  const opened = new URL(created.url);
-  expect(opened.searchParams.get("source")).toBe(
-    "https://video.example/watch?id=fixture&sig=query-secret",
-  );
+  // The page has no video URL source since 2.1.0, so the tab address carries no
+  // page address.
+  expect(created.url).toBe("chrome-extension://fixture/audio.html");
 });
 
 function audioFile(): File {

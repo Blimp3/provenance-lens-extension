@@ -318,6 +318,24 @@ async function clickToolbar(lens: Lens, page: Page): Promise<void> {
   }, page.url());
 }
 
+/**
+ * The palette closed after it started an image check. The profile has not
+ * acknowledged a verification mode, so since 2.1.0 the worker opens one palette
+ * again, at the Disclosure view.
+ */
+async function closedAfterImageRun(page: Page): Promise<void> {
+  await expect
+    .poll(async () =>
+      (await hostCount(page)) === 1
+        ? await paletteFrame(page)
+            ?.locator("#chip")
+            .textContent()
+            .catch(() => null)
+        : null,
+    )
+    .toBe("Disclosure");
+}
+
 function paletteFrame(page: Page): Frame | undefined {
   // A frame that is still attaching has an empty URL.
   return page
@@ -569,7 +587,7 @@ test("Alt+Digit1 sends start-action from the palette frame for its own tab", asy
 
     await pressClosing(page, "Alt", "Digit1");
 
-    await expect.poll(() => hostCount(page)).toBe(0);
+    await closedAfterImageRun(page);
     const tabId = await tabIdOf(lens, page);
     await expect
       .poll(async () =>
@@ -592,13 +610,11 @@ test("Alt+Digit1 sends start-action from the palette frame for its own tab", asy
           sender: tabId,
         },
       ]);
-    // The worker took it: the run started (or asked for its disclosure).
+    // The worker took it: the run started (or opened the Disclosure view).
     await expect
       .poll(async () => {
         const workflow = await workflowState(lens);
-        const disclosure = lens.context
-          .pages()
-          .some((open) => open.url().includes("/disclosure.html"));
+        const disclosure = (await hostCount(page)) > 0;
         return disclosure || (workflow?.status ?? "idle") !== "idle";
       })
       .toBe(true);
@@ -667,11 +683,7 @@ test("a palette without its token stays blank, and an embedding page gets nothin
         .toBe(true);
       await embedding.waitForTimeout(500);
       expect(await workflowState(lens)).toBeNull();
-      expect(
-        lens.context
-          .pages()
-          .some((open) => open.url().includes("/disclosure.html")),
-      ).toBe(false);
+      expect(await hostCount(embedding)).toBe(0);
       await embedding.close();
     }
 
@@ -933,7 +945,7 @@ test("ignores a click, a key and an action while a page element covers the palet
     await page.keyboard.press("Escape");
     await expect(frame.locator("#actions")).toBeHidden();
     await pickRow.click();
-    await expect.poll(() => hostCount(page)).toBe(0);
+    await closedAfterImageRun(page);
     await expect
       .poll(() => startActions(lens))
       .toEqual([
@@ -1103,7 +1115,7 @@ test("an alias and Enter typed as the palette opens run the row", async () => {
     await page.keyboard.type("v");
     await page.keyboard.press("Enter");
 
-    await expect.poll(() => hostCount(page)).toBe(0);
+    await closedAfterImageRun(page);
     await expect
       .poll(() => startActions(lens))
       .toEqual([
@@ -1160,7 +1172,7 @@ test("a page cover lifted 15 ms in every 100 ms lets no key through", async () =
     });
     await takesClicks(frame);
     await page.keyboard.press("Enter");
-    await expect.poll(() => hostCount(page)).toBe(0);
+    await closedAfterImageRun(page);
     await expect
       .poll(() => startActions(lens))
       .toEqual([
@@ -1259,20 +1271,31 @@ test("the first SynthID pick resumes above a modal dialog after the acknowledgem
     await expect(frame.getByRole("option").first()).toHaveAccessibleName(
       /^Check with Google SynthID/u,
     );
-    const opened = lens.context.waitForEvent("page");
+    await page.keyboard.press("Enter");
+
+    // The one-time acknowledgement opens in the palette, then it closes.
+    await expect
+      .poll(() =>
+        paletteFrame(page)
+          ?.locator("#chip")
+          .textContent()
+          .catch(() => null),
+      )
+      .toBe("Disclosure");
+    const disclosure = paletteFrame(page) as Frame;
+    await expect(disclosure.getByRole("option").first()).toHaveAccessibleName(
+      /^Acknowledge and pick an image/u,
+    );
+    await expect(disclosure.locator("#query")).toBeFocused();
+    await expect(disclosure.locator("#detail")).toContainText(
+      "Google's SynthID Detector",
+    );
+    await page.waitForTimeout(400);
     await page.keyboard.press("Enter");
     await expect.poll(() => hostCount(page)).toBe(0);
-
-    // The one-time acknowledgement opens in its own tab, then closes.
-    const disclosure = await opened;
-    await disclosure.waitForLoadState("load");
-    expect(new URL(disclosure.url()).pathname).toBe("/disclosure.html");
-    await expect(disclosure.locator("#acknowledge")).toBeEnabled();
-    const closed = disclosure.waitForEvent("close");
-    await disclosure.locator("#acknowledge").click();
-    await closed;
-
-    await page.bringToFront();
+    expect(
+      lens.context.pages().map((open) => new URL(open.url()).pathname),
+    ).not.toContain("/disclosure.html");
     for (const surface of ["banner", "overlay"]) {
       const root = page.locator(`[data-provenance-lens-picker="${surface}"]`);
       await expect(root).toHaveCount(1);
@@ -1433,7 +1456,7 @@ test("a page that stops the host's closing beforetoggle and hides it gets no run
     await openPalette(lens, page);
     await page.keyboard.type("v");
     await page.keyboard.press("Enter");
-    await expect.poll(() => hostCount(page)).toBe(0);
+    await closedAfterImageRun(page);
     await expect
       .poll(() => startActions(lens))
       .toEqual([
@@ -1625,7 +1648,7 @@ test("the palette mounts on a page whose player's open shadow root is at the top
     await takesClicks(frame);
     await page.keyboard.type("v");
     await page.keyboard.press("Enter");
-    await expect.poll(() => hostCount(page)).toBe(0);
+    await closedAfterImageRun(page);
     await expect
       .poll(() => startActions(lens))
       .toEqual([

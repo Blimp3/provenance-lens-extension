@@ -2185,6 +2185,7 @@ describe("background verification workflow boundaries", () => {
       { type: "verify-screenshot", fallbackId: FIRST_RESULT_ID },
       { type: "download-fallback", resultId: SECOND_RESULT_ID },
       { type: "cancel-active" },
+      { type: "open-palette-view", view: "verification-mode" },
     ];
     const untrustedSenders: chrome.runtime.MessageSender[] = [
       {},
@@ -2224,7 +2225,7 @@ describe("background verification workflow boundaries", () => {
         pendingId: FIRST_RESULT_ID,
         verificationMode: "api",
       },
-      extensionPageSender("disclosure.html"),
+      extensionPageSender("palette.html"),
     );
     await vi.waitFor(() => {
       expect(tabQueries).toHaveBeenCalledTimes(baseline.tabQueries + 1);
@@ -2657,7 +2658,7 @@ describe("background verification workflow boundaries", () => {
 
   it("asks for the SynthID acknowledgement once, then arms the SynthID picker", async () => {
     const chromeState = setupChrome();
-    boundPage(chromeState);
+    const store = boundPage(chromeState);
     mocks.setSynthIdDisclosureVersion.mockImplementation((version: number) => {
       mocks.getSynthIdDisclosureVersion.mockResolvedValue(version);
       return Promise.resolve();
@@ -2668,28 +2669,21 @@ describe("background verification workflow boundaries", () => {
       { type: "start-action", actionId: SYNTHID_ACTION_ID, trigger: "popup" },
       extensionPageSender("palette.html"),
     );
-    await waitForCall(
-      chromeState.api.tabs.create as ReturnType<typeof vi.fn>,
-      1,
-    );
-    const [created] =
-      (
-        chromeState.api.tabs.create as ReturnType<
-          typeof vi.fn<(options: chrome.tabs.CreateProperties) => unknown>
-        >
-      ).mock.calls[0] ?? [];
-    const url = new URL(created?.url ?? "");
-    expect(url.pathname).toBe("/disclosure.html");
-    expect(url.searchParams.get("kind")).toBe("synthid");
-    expect(chromeState.executeScript).not.toHaveBeenCalled();
+    // The palette opens on the page at the Disclosure view; no tab opens.
+    await expectPaletteAt(chromeState, store, "disclosure");
+    const { disclosure } = store.get("provenanceLens.paletteOpen") as {
+      disclosure: { pendingId: string; synthId: boolean };
+    };
+    expect(disclosure.synthId).toBe(true);
+    expect(tabMessages(chromeState, "picker-start")).toHaveLength(0);
 
     messageListenerOf(chromeState)(
       {
         type: "resume-permission",
-        pendingId: url.searchParams.get("pending"),
+        pendingId: disclosure.pendingId,
         verificationMode: "synthid",
       },
-      extensionPageSender("disclosure.html"),
+      extensionPageSender("palette.html"),
     );
     await vi.waitFor(() =>
       expect(tabMessages(chromeState, "picker-start")).toHaveLength(1),
@@ -2708,7 +2702,7 @@ describe("background verification workflow boundaries", () => {
     await vi.waitFor(() =>
       expect(tabMessages(chromeState, "picker-start")).toHaveLength(2),
     );
-    expect(chromeState.api.tabs.create).toHaveBeenCalledTimes(1);
+    expect(chromeState.api.tabs.create).not.toHaveBeenCalled();
   });
 
   it("shows a picked handoff's failure with its button and opens Extension access from it", async () => {
@@ -4314,53 +4308,97 @@ describe("Recent's activity list", () => {
     ]);
   });
 
-  it("cancels a check whose disclosure tab closes unacknowledged, and not one acknowledged", async () => {
-    const DISCLOSURE_TAB_ID = 99;
-    const chromeState = setupChrome();
+  /** The in-page palette's host answers ready; other injections bind. */
+  function readyPaletteHost(chromeState: ReturnType<typeof setupChrome>) {
     chromeState.setBadgeText.mockResolvedValue(undefined);
-    chromeState.executeScript.mockResolvedValue([
-      { frameId: 0, documentId: DOCUMENT_ID },
-    ]);
-    const create = chromeState.api.tabs.create as ReturnType<typeof vi.fn>;
-    create.mockResolvedValue({ id: DISCLOSURE_TAB_ID });
+    chromeState.executeScript.mockImplementation(
+      (injection: { func?: () => unknown }) =>
+        Promise.resolve([
+          injection.func?.name === "mountPaletteHost"
+            ? {
+                frameId: 0,
+                documentId: DOCUMENT_ID,
+                result: { status: "ready" },
+              }
+            : { frameId: 0, documentId: DOCUMENT_ID },
+        ]),
+    );
+  }
+
+  /** The Disclosure view's pending id, and a close of its palette's port. */
+  function shownDisclosure(chromeState: ReturnType<typeof setupChrome>) {
+    const mount = chromeState.executeScript.mock.calls
+      .map(
+        ([injection]) =>
+          injection as { func?: () => unknown; args?: unknown[] },
+      )
+      .filter((injection) => injection.func?.name === "mountPaletteHost")
+      .at(-1);
+    const token = String(mount?.args?.[1]);
+    const opened = chromeState.sessionSet.mock.calls
+      .map(
+        ([values]) =>
+          (values as Record<string, unknown>)["provenanceLens.paletteOpen"],
+      )
+      .filter(
+        (record) => (record as { token?: string } | undefined)?.token === token,
+      )
+      .at(-1) as { view: string; disclosure: { pendingId: string } };
+    expect(opened.view).toBe("disclosure");
+    const disconnect = event();
+    const connect = chromeState.onConnect.addListener.mock.calls[0]?.[0] as (
+      port: unknown,
+    ) => void;
+    connect({ name: `lens-palette:${token}`, onDisconnect: disconnect });
+    return {
+      pendingId: opened.disclosure.pendingId,
+      close: () => (disconnect.addListener.mock.calls[0]?.[0] as () => void)(),
+    };
+  }
+
+  it("cancels a check whose Disclosure view closes unacknowledged, and not one acknowledged", async () => {
+    const chromeState = setupChrome();
+    readyPaletteHost(chromeState);
     mocks.setSynthIdDisclosureVersion.mockImplementation((version: number) => {
       mocks.getSynthIdDisclosureVersion.mockResolvedValue(version);
       return Promise.resolve();
     });
     await loadBackground();
-    const onRemoved = (
-      chrome.tabs.onRemoved.addListener as ReturnType<typeof vi.fn>
-    ).mock.calls[0]?.[0] as (tabId: number) => void;
+    const mounts = () =>
+      chromeState.executeScript.mock.calls.filter(
+        ([injection]) =>
+          (injection as { func?: () => unknown }).func?.name ===
+          "mountPaletteHost",
+      ).length;
 
-    // Acknowledged: the page closes its own tab, and the pick goes on.
+    // Acknowledged: the view closes its palette, and the pick goes on.
     start(chromeState, SYNTHID_ACTION_ID);
-    await waitForCall(create, 1);
+    await vi.waitFor(() => expect(mounts()).toBe(1));
     await flushWorker();
-    const [created] =
-      (create.mock.calls[0] as [chrome.tabs.CreateProperties] | undefined) ??
-      [];
+    const first = shownDisclosure(chromeState);
     listenerOf(chromeState)(
       {
         type: "resume-permission",
-        pendingId: new URL(created?.url ?? "").searchParams.get("pending"),
+        pendingId: first.pendingId,
         verificationMode: "synthid",
       },
-      extensionPageSender("disclosure.html"),
+      extensionPageSender("palette.html"),
     );
     await vi.waitFor(() =>
       expect(tabMessages(chromeState, "picker-start")).toHaveLength(1),
     );
-    onRemoved(DISCLOSURE_TAB_ID);
+    first.close();
     await new Promise((resolve) => setTimeout(resolve, 1_200));
     await onlyEntry({ state: "running" });
+    expect(chromeState.api.tabs.create).not.toHaveBeenCalled();
 
     // Closed without the acknowledgement: cancelled.
     recent.entries = [];
     mocks.getSynthIdDisclosureVersion.mockResolvedValue(null);
     start(chromeState, SYNTHID_ACTION_ID);
-    await waitForCall(create, 2);
+    await vi.waitFor(() => expect(mounts()).toBe(2));
     await flushWorker();
-    onRemoved(DISCLOSURE_TAB_ID);
+    shownDisclosure(chromeState).close();
     await vi.waitFor(
       () =>
         expect(recent.entries).toEqual([
@@ -4374,15 +4412,13 @@ describe("Recent's activity list", () => {
     );
   });
 
-  it("starts a check acknowledged as its disclosure tab closes after a restart", async () => {
+  it("starts a check acknowledged as its Disclosure view closes after a restart", async () => {
     const [disclosed] = ENTRY_IDS;
     const pendingId = "623e4567-e89b-42d3-a456-426614174000";
+    const paletteToken = "723e4567-e89b-42d3-a456-426614174000";
     recent.entries = [leftRunning(disclosed, "Check with Google SynthID")];
     const chromeState = setupChrome();
-    chromeState.setBadgeText.mockResolvedValue(undefined);
-    chromeState.executeScript.mockResolvedValue([
-      { frameId: 0, documentId: DOCUMENT_ID },
-    ]);
+    readyPaletteHost(chromeState);
     // The disclosure a stopped worker opened, as session storage keeps it.
     const stored: Record<string, unknown> = {
       "provenanceLens.pendingDisclosures": {
@@ -4396,7 +4432,7 @@ describe("Recent's activity list", () => {
           selection: null,
           pageTarget: null,
           activityId: disclosed,
-          disclosureTabId: 99,
+          disclosureToken: paletteToken,
         },
       },
     };
@@ -4416,21 +4452,276 @@ describe("Recent's activity list", () => {
       return Promise.resolve();
     });
     await loadBackground();
-    const onRemoved = (
-      chrome.tabs.onRemoved.addListener as ReturnType<typeof vi.fn>
-    ).mock.calls[0]?.[0] as (tabId: number) => void;
+    const disconnect = event();
+    const connect = chromeState.onConnect.addListener.mock.calls[0]?.[0] as (
+      port: unknown,
+    ) => void;
+    connect({ name: `lens-palette:${paletteToken}`, onDisconnect: disconnect });
 
-    // The page acknowledges and closes its tab; the worker hears both.
-    onRemoved(99);
+    // The view acknowledges and closes its palette; the worker hears both.
+    (disconnect.addListener.mock.calls[0]?.[0] as () => void)();
     listenerOf(chromeState)(
       { type: "resume-permission", pendingId, verificationMode: "synthid" },
-      extensionPageSender("disclosure.html"),
+      extensionPageSender("palette.html"),
     );
     await vi.waitFor(() =>
       expect(tabMessages(chromeState, "picker-start")).toHaveLength(1),
     );
     await new Promise((resolve) => setTimeout(resolve, 1_200));
     await onlyEntry({ id: disclosed, state: "running" });
+  });
+
+  /** Session storage that keeps what the worker writes. */
+  function liveSession(chromeState: ReturnType<typeof setupChrome>) {
+    const stored = new Map<string, unknown>();
+    chromeState.sessionGet.mockImplementation((key: string) =>
+      Promise.resolve(
+        stored.has(key) ? { [key]: structuredClone(stored.get(key)) } : {},
+      ),
+    );
+    chromeState.sessionSet.mockImplementation(
+      (values: Record<string, unknown>) => {
+        for (const [key, value] of Object.entries(values))
+          stored.set(key, structuredClone(value));
+        return Promise.resolve();
+      },
+    );
+    chromeState.sessionRemove.mockImplementation((key: string) => {
+      stored.delete(key);
+      return Promise.resolve();
+    });
+    return stored;
+  }
+
+  /** A palette frame inside a page: its tab and the token in its address. */
+  function frameSender(
+    tabId: number,
+    token: string,
+  ): chrome.runtime.MessageSender {
+    return {
+      tab: { id: tabId, active: true } as chrome.tabs.Tab,
+      frameId: 4,
+      url: `chrome-extension://test/palette.html#t=${token}`,
+    };
+  }
+
+  const PENDING_ID = "623e4567-e89b-42d3-a456-426614174000";
+  const SHOWN_IN = "723e4567-e89b-42d3-a456-426614174000";
+  const MOUNTS_KEY = "provenanceLens.paletteMounts";
+
+  /** A SynthID disclosure a palette on TAB_ID shows, from session storage. */
+  async function storedDisclosure() {
+    const [disclosed] = ENTRY_IDS;
+    recent.entries = [leftRunning(disclosed, "Check with Google SynthID")];
+    const chromeState = setupChrome();
+    readyPaletteHost(chromeState);
+    const stored = liveSession(chromeState);
+    stored.set("provenanceLens.pendingDisclosures", {
+      [PENDING_ID]: {
+        id: PENDING_ID,
+        actionId: SYNTHID_ACTION_ID,
+        tabId: TAB_ID,
+        frameId: 0,
+        trigger: "popup",
+        verificationMode: "synthid",
+        selection: null,
+        pageTarget: null,
+        activityId: disclosed,
+        disclosureToken: SHOWN_IN,
+      },
+    });
+    mocks.setSynthIdDisclosureVersion.mockImplementation((version: number) => {
+      mocks.getSynthIdDisclosureVersion.mockResolvedValue(version);
+      return Promise.resolve();
+    });
+    await loadBackground();
+    return { chromeState, stored, disclosed };
+  }
+
+  it("takes a page frame's acknowledgement only from the frame that shows it, on its tab", async () => {
+    const { chromeState, stored } = await storedDisclosure();
+    const acknowledge = {
+      type: "resume-permission",
+      pendingId: PENDING_ID,
+      verificationMode: "synthid",
+    };
+    const refused: [Array<{ tabId: number; token: string }>, number, string][] =
+      [
+        // No palette is mounted at all.
+        [[], TAB_ID, SHOWN_IN],
+        // A frame the page embeds itself, beside the mounted one.
+        [[{ tabId: TAB_ID, token: SHOWN_IN }], TAB_ID, "foreign-frame"],
+        // The palette mounted on another tab.
+        [
+          [
+            { tabId: TAB_ID, token: SHOWN_IN },
+            { tabId: 8, token: "other-tab" },
+          ],
+          8,
+          "other-tab",
+        ],
+        // A later palette on the same tab, not the one that shows it.
+        [[{ tabId: TAB_ID, token: "later-palette" }], TAB_ID, "later-palette"],
+      ];
+    for (const [mounts, tabId, token] of refused) {
+      stored.set(MOUNTS_KEY, mounts);
+      listenerOf(chromeState)(acknowledge, frameSender(tabId, token));
+      listenerOf(chromeState)(
+        { type: "cancel-disclosure", pendingId: PENDING_ID },
+        frameSender(tabId, token),
+      );
+      await flushWorker();
+      await flushWorker();
+    }
+    // The mounted frame may not ask for another palette view either.
+    stored.set(MOUNTS_KEY, [{ tabId: TAB_ID, token: SHOWN_IN }]);
+    listenerOf(chromeState)(
+      { type: "open-palette-view", view: "verification-mode" },
+      frameSender(TAB_ID, SHOWN_IN),
+    );
+    await flushWorker();
+    await flushWorker();
+    expect(tabMessages(chromeState, "picker-start")).toHaveLength(0);
+    expect(chromeState.executeScript).not.toHaveBeenCalled();
+    expect(chromeState.api.action.setPopup).not.toHaveBeenCalled();
+    expect(chromeState.api.tabs.create).not.toHaveBeenCalled();
+    await onlyEntry({ state: "running" });
+
+    listenerOf(chromeState)(acknowledge, frameSender(TAB_ID, SHOWN_IN));
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "picker-start")).toHaveLength(1),
+    );
+  });
+
+  it("keeps a page frame's acknowledgement when its palette closes right after it", async () => {
+    const { chromeState, stored, disclosed } = await storedDisclosure();
+    stored.set(MOUNTS_KEY, [{ tabId: TAB_ID, token: SHOWN_IN }]);
+    let disconnect: () => void = () => undefined;
+    const onConnect = chromeState.onConnect.addListener.mock.calls[0]?.[0] as (
+      port: chrome.runtime.Port,
+    ) => void;
+    onConnect({
+      name: `lens-palette:${SHOWN_IN}`,
+      onDisconnect: {
+        addListener: (listener: () => void) => {
+          disconnect = listener;
+        },
+      },
+      disconnect: vi.fn(),
+    } as unknown as chrome.runtime.Port);
+    listenerOf(chromeState)(
+      {
+        type: "resume-permission",
+        pendingId: PENDING_ID,
+        verificationMode: "synthid",
+      },
+      frameSender(TAB_ID, SHOWN_IN),
+    );
+    // The frame closes as soon as it has answered.
+    disconnect();
+    await vi.waitFor(() =>
+      expect(tabMessages(chromeState, "picker-start")).toHaveLength(1),
+    );
+    expect(recent.entries).toEqual([
+      expect.objectContaining({ id: disclosed, state: "running" }),
+    ]);
+  });
+
+  it("cancels a disclosure from its Cancel in the popup or a tab", async () => {
+    const { chromeState, disclosed } = await storedDisclosure();
+    listenerOf(chromeState)(
+      { type: "cancel-disclosure", pendingId: PENDING_ID },
+      extensionPageSender("palette.html?host=popup"),
+    );
+    await vi.waitFor(() =>
+      expect(recent.entries).toEqual([
+        expect.objectContaining({
+          id: disclosed,
+          state: "cancelled",
+          message: "The disclosure was closed before it was acknowledged.",
+        }),
+      ]),
+    );
+    // A cancelled disclosure cannot be acknowledged after all.
+    listenerOf(chromeState)(
+      {
+        type: "resume-permission",
+        pendingId: PENDING_ID,
+        verificationMode: "synthid",
+      },
+      extensionPageSender("palette.html"),
+    );
+    await flushWorker();
+    await flushWorker();
+    expect(tabMessages(chromeState, "picker-start")).toHaveLength(0);
+  });
+
+  it("mounts the Disclosure view twice at most, then opens it in the fallback popup", async () => {
+    const chromeState = setupChrome();
+    chromeState.setBadgeText.mockResolvedValue(undefined);
+    const stored = liveSession(chromeState);
+    // The page closes every host before it is ready.
+    chromeState.executeScript.mockImplementation(
+      (injection: { func?: () => unknown }) =>
+        Promise.resolve([
+          injection.func?.name === "mountPaletteHost"
+            ? {
+                frameId: 0,
+                documentId: DOCUMENT_ID,
+                result: { status: "closed" },
+              }
+            : { frameId: 0, documentId: DOCUMENT_ID },
+        ]),
+    );
+    await loadBackground();
+    start(chromeState, SYNTHID_ACTION_ID);
+    const setPopup = chromeState.api.action.setPopup as ReturnType<
+      typeof vi.fn
+    >;
+    await vi.waitFor(() =>
+      expect(
+        setPopup.mock.calls.some(([details]) =>
+          /^palette\.html\?host=popup#t=/u.test(
+            (details as { popup: string }).popup,
+          ),
+        ),
+      ).toBe(true),
+    );
+    const mounts = chromeState.executeScript.mock.calls.filter(
+      ([injection]) =>
+        (injection as { func?: () => unknown }).func?.name ===
+        "mountPaletteHost",
+    );
+    expect(mounts).toHaveLength(2);
+    const opened = stored.get("provenanceLens.paletteOpen") as {
+      view: string;
+      host: string;
+      disclosure?: { pendingId: string };
+    };
+    expect([opened.view, opened.host]).toEqual(["disclosure", "popup"]);
+    expect(opened.disclosure?.pendingId).toMatch(/^[0-9a-f-]{36}$/u);
+  });
+
+  it("cancels the action when its page is gone before the disclosure shows", async () => {
+    recent.entries = [];
+    const chromeState = setupChrome();
+    readyPaletteHost(chromeState);
+    // The pick's own tab check passes; the page is gone by the disclosure.
+    (chromeState.api.tabs.get as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ id: TAB_ID, url: PAGE_URL, windowId: WINDOW_ID })
+      .mockRejectedValue(new Error("No tab with id: 7."));
+    await loadBackground();
+    start(chromeState, SYNTHID_ACTION_ID);
+    await vi.waitFor(() =>
+      expect(recent.entries).toEqual([
+        expect.objectContaining({
+          state: "cancelled",
+          message: "The page closed before the disclosure was shown.",
+        }),
+      ]),
+    );
+    expect(chromeState.executeScript).not.toHaveBeenCalled();
+    expect(chromeState.api.action.setPopup).not.toHaveBeenCalled();
   });
 
   it("ends the oldest pending disclosure's entry when a ninth drops it", async () => {
@@ -4445,12 +4736,12 @@ describe("Recent's activity list", () => {
         return Promise.resolve();
       },
     );
-    const create = chromeState.api.tabs.create as ReturnType<typeof vi.fn>;
+    readyPaletteHost(chromeState);
     await loadBackground();
 
     for (let index = 1; index <= 9; index += 1) {
       start(chromeState, SYNTHID_ACTION_ID);
-      await waitForCall(create, index);
+      await waitForCall(chromeState.executeScript, index);
       await flushWorker();
     }
 

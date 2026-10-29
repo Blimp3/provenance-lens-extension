@@ -727,6 +727,13 @@ export const ExtensionMessageSchema = z.discriminatedUnion("type", [
       verificationMode: DisclosureModeSchema,
     })
     .strict(),
+  // The Disclosure view's Cancel or Esc: its pending action ends.
+  z
+    .object({
+      type: z.literal("cancel-disclosure"),
+      pendingId: z.string().uuid(),
+    })
+    .strict(),
   z
     .object({
       type: z.literal("open-result-details"),
@@ -740,6 +747,14 @@ export const ExtensionMessageSchema = z.discriminatedUnion("type", [
       type: z.literal("toast-action"),
       sessionToken: z.string().uuid(),
       action: ToastActionSchema.exclude(["details"]),
+    })
+    .strict(),
+  // An extension page (audio.html) asks for the palette's Verification mode
+  // view, since the Settings page no longer has that setting.
+  z
+    .object({
+      type: z.literal("open-palette-view"),
+      view: z.literal("verification-mode"),
     })
     .strict(),
   // Text a palette frame inside a page asks the worker to copy, because the

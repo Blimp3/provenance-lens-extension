@@ -51,7 +51,8 @@ export type OpenView =
   | "recent"
   | "settings"
   | "connect"
-  | "verification-mode";
+  | "verification-mode"
+  | "disclosure";
 /** The views under Settings, which open with Settings one step back. */
 type SettingsView =
   | "connect"
@@ -129,7 +130,10 @@ export type PaletteOpenRecord = {
   scope: "page" | "video";
   /** An X or YouTube listing page, such as a timeline, channel or search. */
   needsPick: boolean;
+  /** The Disclosure view's pending action: its id and whether it is SynthID. */
+  disclosure?: PaletteDisclosure;
 };
+export type PaletteDisclosure = { pendingId: string; synthId: boolean };
 
 const OPEN_VIEWS: readonly string[] = [
   "root",
@@ -139,6 +143,7 @@ const OPEN_VIEWS: readonly string[] = [
   "settings",
   "connect",
   "verification-mode",
+  "disclosure",
 ];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
@@ -148,6 +153,7 @@ export function parsePaletteOpenRecord(
   if (typeof value !== "object" || value === null) return null;
   const record = value as Record<string, unknown>;
   const { token, tabId, view, host, page, hostname, scope, needsPick } = record;
+  const disclosure = parseDisclosure(record["disclosure"]);
   if (
     typeof token !== "string" ||
     !UUID.test(token) ||
@@ -161,7 +167,9 @@ export function parsePaletteOpenRecord(
     typeof hostname !== "string" ||
     hostname.length > 255 ||
     (scope !== "page" && scope !== "video") ||
-    typeof needsPick !== "boolean"
+    typeof needsPick !== "boolean" ||
+    // The Disclosure view, and only it, carries its pending action.
+    (view === "disclosure") !== (disclosure !== null)
   )
     return null;
   return {
@@ -173,7 +181,18 @@ export function parsePaletteOpenRecord(
     hostname,
     scope,
     needsPick,
+    ...(disclosure ? { disclosure } : {}),
   };
+}
+
+function parseDisclosure(value: unknown): PaletteDisclosure | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { pendingId, synthId } = value as Record<string, unknown>;
+  return typeof pendingId === "string" &&
+    UUID.test(pendingId) &&
+    typeof synthId === "boolean"
+    ? { pendingId, synthId }
+    : null;
 }
 
 export type IconName =

@@ -135,12 +135,15 @@ While a pairing waits, the first view shows **Complete DigiBot pairing**, which
 checks again. **Disconnect DigiBot…**, **Clear history…**, **Clear
 verification cache…** and **Reset aliases…** ask first, with **Cancel** as the
 first choice. A switch of **Verification mode** only saves the mode. The first
-verification in a mode still shows its disclosure.
+verification in a mode still shows its disclosure, in the palette's
+**Disclosure** view.
 
 The last row, **Advanced settings ↗** (Backend URL, client token, site
-access), opens the Settings page in a tab. The API connection settings and site
-access stay there. The palette never shows or uses the client token. The browser's
-**Options** entry for Lens opens the same page.
+access), opens the Settings page in a tab. The Settings page holds only the
+**API connection** group (Backend URL, Client token, **Test connection**,
+**Allow backend access**) and the **Extension access** card. Every other
+setting is in the palette, and the palette never shows or uses the client
+token. The browser's **Options** entry for Lens opens the same page.
 
 Over a page, the palette copies the `/link` command through the Lens worker,
 so a page that keeps the clipboard from its frames does not stop the copy. In
@@ -401,10 +404,12 @@ History page. **Result history** stays under **More**.
 An entry that Lens can no longer finish ends as **Failed** with "Lens stopped
 before this action ended." This happens when the browser stops Lens between an
 action's start and its end: at its next start, Lens ends every running entry
-that no armed pick, open disclosure tab or pending DigiBot operation still
+that no armed pick, pending disclosure or pending DigiBot operation still
 holds. A DigiBot operation that Lens resumes ends its own entry. Recent also
-shows an entry that is still running after ten minutes this way. A disclosure
-tab that you close without **Continue** ends its action as **Cancelled**.
+shows an entry that is still running after ten minutes this way. **Cancel** or
+**Esc** on the **Disclosure** view, or closing the in-page palette there
+without the acknowledgement, ends its action as **Cancelled**. A fallback popup
+or tab closed another way leaves it to that ten-minute rule.
 
 ## Requirements
 

@@ -3,6 +3,7 @@ import {
   DOWNLOAD_ACTION_ID,
   PICK_VIDEO_ACTION_ID,
   type ActivityEntry,
+  type DisclosureMode,
   type ExtensionMessage,
   type HistoryRecord,
   type LinkDownloadOptions,
@@ -204,6 +205,7 @@ const VIEW_LABELS: Readonly<Record<PaletteView, string>> = {
   aliases: "Settings › Aliases",
   "reset-aliases": "Settings › Reset aliases",
   "about-results": "Settings › What a result means",
+  disclosure: "Disclosure",
 };
 /** Views whose input is a field, not a search. */
 const FORM_VIEWS: ReadonlySet<PaletteView> = new Set([
@@ -226,6 +228,34 @@ const RUN_VERBS: Readonly<Record<SettingsRun["kind"], string>> = {
   toggle: "Toggle",
   tab: "Open",
   none: "Open",
+};
+const LIMITS =
+  "Image API checks also verify embedded Content Credentials on the backend. Audio checks look for supported OpenAI SynthID signals. Finding no supported signal does not establish human origin; these checks are not universal AI detectors.";
+/** The Disclosure view's text, as the Disclosure page had it before 2.1.0. */
+const DISCLOSURES: Readonly<
+  Record<DisclosureMode, { heading: string; paragraphs: readonly string[] }>
+> = {
+  website: {
+    heading: "Before your first verification",
+    paragraphs: [
+      "Website mode downloads the exact bytes Lens retrieved for the selected image and opens OpenAI Verify. You choose the downloaded file and review the result on OpenAI's website. Your browser saves the file and may retain a record in its download history.",
+      "Provenance Lens does not upload the file to OpenAI, automate or scrape the Verify page, read its result, or add a website result to extension history or cache.",
+    ],
+  },
+  api: {
+    heading: "Before your first verification",
+    paragraphs: [
+      "API mode uploads the exact bytes of the selected image or audio file to your configured verification server, which sends them to the documented OpenAI Content Provenance API. The backend and a valid OpenAI API key are required; the key remains on the backend and is never stored in this extension.",
+      "Successful API verdicts may be stored in the separate authenticated server cache and bounded local cache. Media bytes and source URLs are not stored in either cache or in result history.",
+    ],
+  },
+  synthid: {
+    heading: "Before you check with Google SynthID",
+    paragraphs: [
+      "Google has no SynthID API yet, so this handoff saves the exact bytes Lens retrieved for the selected image and opens Google's SynthID Detector in a new tab. You upload the file there yourself, signed in to Google, under Google's terms. Your browser keeps the copy in its download folder and may retain a record in its download history.",
+      "Google's site says that Google keeps a signature of each uploaded file for 24 hours. Provenance Lens does not upload the file to Google, automate or read the SynthID Detector page, or add the handoff to extension history or cache.",
+    ],
+  },
 };
 const LENS_ROWS = [
   "view-download",
@@ -316,6 +346,10 @@ let panelVisibleSince = 0;
 let clockSize = "";
 /** When the frame told its host it was ready; 0 until then. */
 let readyAt = 0;
+/** When the frame first rendered its view. */
+let renderedAt = 0;
+/** The stored settings could not be read; the palette shows the defaults. */
+let settingsUnavailable = false;
 /** Whether the panel was reported hidden since the frame was ready. */
 let hiddenSinceReady = false;
 /** The latest early key, waiting until the panel has been visible long enough. */
@@ -344,9 +378,10 @@ async function start(): Promise<void> {
   }
   document.documentElement.classList.add(`host-${hostKind}`);
   const view = record?.view ?? "root";
+  // The Disclosure view has nothing to go back to: Esc cancels it.
   stack =
-    view === "root"
-      ? ["root"]
+    view === "root" || view === "disclosure"
+      ? [view]
       : UNDER_SETTINGS.has(view)
         ? ["root", "settings", view]
         : ["root", view];
@@ -355,6 +390,7 @@ async function start(): Promise<void> {
   paletteRoot.hidden = false;
   if (embedded) watchPanelVisibility();
   render();
+  renderedAt = performance.now();
   input.focus();
   if (embedded) {
     readyAt = performance.now();
@@ -394,7 +430,10 @@ async function loadData(): Promise<FrameData> {
     isIntegrationConnected().catch(() => false),
     getSettings()
       .then(pickPaletteSettings)
-      .catch(() => pickPaletteSettings(defaultSettings)),
+      .catch(() => {
+        settingsUnavailable = true;
+        return pickPaletteSettings(defaultSettings);
+      }),
     chrome.permissions
       .contains({ permissions: ["downloads"] })
       .catch(() => false),
@@ -592,6 +631,14 @@ function inputAllowed(source: InputSource): boolean {
  * and the footer says why.
  */
 function gated(source: InputSource, run: () => Promise<void>): void {
+  // In every host, a key the Disclosure view did not show for long enough
+  // was meant for something else: it never acknowledges.
+  if (
+    source === "key" &&
+    currentView() === "disclosure" &&
+    performance.now() - renderedAt < KEY_VISIBLE_MS
+  )
+    return;
   if (inputAllowed(source)) {
     clearHeld();
     clearCovered();
@@ -603,6 +650,8 @@ function gated(source: InputSource, run: () => Promise<void>): void {
     readyAt > 0 &&
     !hiddenSinceReady &&
     !SETTINGS_OPENS.has(record?.view ?? "root") &&
+    // An acknowledgement needs a key pressed after the view is visible.
+    record?.view !== "disclosure" &&
     performance.now() - readyAt < EARLY_KEY_MS
   ) {
     heldRun = run;
@@ -772,7 +821,73 @@ function buildView(view: PaletteView): BuiltView {
         rows: [],
         detail: { heading: "What a result means", paragraphs: RESULT_MEANINGS },
       };
+    case "disclosure":
+      return disclosureView();
   }
+}
+
+/**
+ * The one-time acknowledgement before a verification mode's first use, or
+ * before the first SynthID handoff. Closing the palette without it cancels
+ * the action (the worker watches the in-page palette's port).
+ */
+function disclosureView(): BuiltView {
+  const pending = record?.disclosure;
+  if (!pending) return { rows: [], empty: "This disclosure is invalid." };
+  const cancel: Row = {
+    group: "Disclosure",
+    title: "Cancel",
+    subtitle: "",
+    icon: "x",
+    verb: "Run",
+    run: cancelDisclosure,
+  };
+  // Without the stored mode, the right text is unknown: nothing to acknowledge.
+  if (!pending.synthId && settingsUnavailable)
+    return numbered({
+      rows: [cancel],
+      detail: {
+        heading: DISCLOSURES.website.heading,
+        status: {
+          text: "The verification mode could not be loaded. Cancel and try again.",
+          error: true,
+        },
+        paragraphs: [],
+      },
+    });
+  const mode: DisclosureMode = pending.synthId
+    ? "synthid"
+    : (data?.settings.verificationMode ?? "website");
+  const { heading, paragraphs } = DISCLOSURES[mode];
+  return numbered({
+    rows: [
+      {
+        group: "Disclosure",
+        title: "Acknowledge and pick an image",
+        subtitle: "",
+        icon: "shield-check",
+        verb: "Run",
+        run: () =>
+          sendThenClose({
+            type: "resume-permission",
+            pendingId: pending.pendingId,
+            verificationMode: mode,
+          }),
+      },
+      cancel,
+    ],
+    detail: {
+      heading,
+      paragraphs: mode === "synthid" ? paragraphs : [...paragraphs, LIMITS],
+    },
+  });
+}
+
+/** Cancel, or Esc on the Disclosure view: the worker ends the action. */
+async function cancelDisclosure(): Promise<void> {
+  const pendingId = record?.disclosure?.pendingId;
+  if (pendingId) await sendThenClose({ type: "cancel-disclosure", pendingId });
+  else close();
 }
 
 function rootView(): BuiltView {
@@ -1830,6 +1945,7 @@ function onKeyDown(event: KeyboardEvent): void {
         active = 0;
         render();
       } else if (key.step === "back") back();
+      else if (currentView() === "disclosure") void cancelDisclosure();
       else close();
       return;
     case "back":

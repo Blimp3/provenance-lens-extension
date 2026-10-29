@@ -75,6 +75,7 @@ import {
   MEDIA_PICK_MESSAGE,
   PALETTE_OPEN_KEY,
   type OpenView,
+  type PaletteDisclosure,
   type PaletteOpenRecord,
 } from "./ui/palette-commands.js";
 import {
@@ -223,8 +224,8 @@ type PendingDisclosure = {
   selection: ImageSelection | null;
   pageTarget: PageTarget | null;
   activityId: ActivityId;
-  // The tab that shows the disclosure, once it is open.
-  disclosureTabId?: number | undefined;
+  // The token of the in-page palette that shows the Disclosure view.
+  disclosureToken?: string | undefined;
 } & (
   | { actionId: typeof ACTION_ID; verificationMode: VerificationMode }
   // The SynthID handoff's own one-time acknowledgement; it has no selection.
@@ -302,8 +303,10 @@ let resultToastBindingMutation = Promise.resolve();
 // One shared menu rebuild, so install, startup and load cannot race.
 let menusReady: Promise<void> | null = null;
 let paletteMountMutation: Promise<void> = Promise.resolve();
-/** How long a closed disclosure tab's acknowledgement may still take. */
+/** How long a closed Disclosure view's acknowledgement may still take. */
 const DISCLOSURE_CLOSE_GRACE_MS = 1_000;
+const DISCLOSURE_CLOSED_MESSAGE =
+  "The disclosure was closed before it was acknowledged.";
 
 chrome.runtime.onInstalled.addListener(() => {
   void ensureTrustedStorageAccess();
@@ -336,12 +339,12 @@ chrome.runtime.onConnect?.addListener((port) => {
   const token = port.name.slice(palettePortName("").length);
   port.onDisconnect.addListener(() => {
     void forgetPaletteMount({ token });
+    void endClosedDisclosure(token);
   });
 });
 chrome.tabs?.onRemoved?.addListener((tabId) => {
   void forgetPaletteMount({ tabId });
   void endArmedPicks((session) => session.tabId === tabId, PICK_TAB_CLOSED);
-  void endClosedDisclosure(tabId);
 });
 
 const contextMenus = getContextMenusApi();
@@ -352,7 +355,7 @@ if (contextMenus) {
 }
 
 // Messages that start, resume, cancel or retry a verification come only from
-// the extension's own pages (palette, details, disclosure). Picker and result
+// the extension's own pages (palette, details, audio). Picker and result
 // toast messages come from content scripts and keep their tab, frame and
 // document binding checks instead.
 const EXTENSION_PAGE_MESSAGE_TYPES: ReadonlySet<ExtensionMessage["type"]> =
@@ -362,10 +365,12 @@ const EXTENSION_PAGE_MESSAGE_TYPES: ReadonlySet<ExtensionMessage["type"]> =
     "verify-screenshot",
     "download-fallback",
     "cancel-active",
+    "open-palette-view",
+    "cancel-disclosure",
   ]);
 /** What a palette frame inside a web page may ask for. */
 const PAGE_FRAME_MESSAGE_TYPES: ReadonlySet<ExtensionMessage["type"]> = new Set(
-  ["start-action", "cancel-active"],
+  ["start-action", "cancel-active", "resume-permission", "cancel-disclosure"],
 );
 
 chrome.runtime.onMessage.addListener(
@@ -411,8 +416,38 @@ async function handlePageFrameMessage(
   message: ExtensionMessage,
   sender: chrome.runtime.MessageSender,
 ): Promise<void> {
-  if (await isMountedPaletteFrame(sender))
-    await handleExtensionMessage(message, sender);
+  if (!(await isMountedPaletteFrame(sender))) return;
+  // A Disclosure view answers only for the action the worker showed in it.
+  if (
+    (message.type === "resume-permission" ||
+      message.type === "cancel-disclosure") &&
+    !(await isFrameDisclosure(message.pendingId, sender))
+  )
+    return;
+  await handleExtensionMessage(message, sender);
+}
+
+/**
+ * The pending action is this tab's, shown in this frame. isMountedPaletteFrame
+ * has already matched the frame's token to the mount; the mounts are not read
+ * again, because the frame closes right after it answers and its port's close
+ * can forget the mount first.
+ */
+async function isFrameDisclosure(
+  pendingId: string,
+  sender: chrome.runtime.MessageSender,
+): Promise<boolean> {
+  const tabId = sender.tab?.id;
+  if (tabId === undefined) return false;
+  const pending =
+    pendingDisclosures.get(pendingId) ??
+    (await readPendingDisclosure(pendingId));
+  return (
+    pending?.tabId === tabId &&
+    pending.disclosureToken !== undefined &&
+    sender.url ===
+      chrome.runtime.getURL(`palette.html#t=${pending.disclosureToken}`)
+  );
 }
 
 async function isMountedPaletteFrame(
@@ -494,6 +529,9 @@ async function handleExtensionMessage(
     case "resume-permission":
       await resumeDisclosure(message.pendingId, message.verificationMode);
       return;
+    case "cancel-disclosure":
+      await cancelDisclosure(message.pendingId, DISCLOSURE_CLOSED_MESSAGE);
+      return;
     case "picker-selected":
       await handlePickerSelected(message, sender);
       return;
@@ -520,6 +558,9 @@ async function handleExtensionMessage(
       return;
     case "toast-action":
       await handleToastAction(message, sender);
+      return;
+    case "open-palette-view":
+      await openPalette(sender.tab, message.view);
       return;
     default:
       return;
@@ -1115,48 +1156,57 @@ async function resumeDisclosure(
   }
 }
 
+/** Opens the palette's Disclosure view on the action's page. */
 async function openDisclosure(pending: PendingDisclosure): Promise<void> {
-  // A reopened disclosure gets its own tab.
-  const opening = { ...pending, disclosureTabId: undefined };
+  const opening = { ...pending, disclosureToken: undefined };
   pendingDisclosures.set(opening.id, opening);
   await persistPendingDisclosure(opening);
-  const kind = opening.actionId === SYNTHID_ACTION_ID ? "&kind=synthid" : "";
-  const tab = await chrome.tabs.create({
-    url: `${chrome.runtime.getURL("disclosure.html")}?pending=${encodeURIComponent(opening.id)}${kind}`,
+  const tab = await chrome.tabs.get(opening.tabId).catch(() => undefined);
+  // The action's page is gone: nothing is shown on another tab.
+  if (!tab) {
+    await cancelDisclosure(
+      opening.id,
+      "The page closed before the disclosure was shown.",
+    );
+    return;
+  }
+  const token = await openPalette(tab, "disclosure", "page", {
+    pendingId: opening.id,
+    synthId: opening.actionId === SYNTHID_ACTION_ID,
   });
-  // A tab closed without the acknowledgement then ends the action.
-  if (tab?.id === undefined || !pendingDisclosures.has(opening.id)) return;
-  const shown = { ...opening, disclosureTabId: tab.id };
+  // An in-page palette closed without the acknowledgement ends the action.
+  if (token === null || !pendingDisclosures.has(opening.id)) return;
+  const shown = { ...opening, disclosureToken: token };
   pendingDisclosures.set(shown.id, shown);
   await persistPendingDisclosure(shown);
 }
 
 /**
- * A disclosure tab closed without its acknowledgement cancels the action.
- * The page closes its own tab just after it acknowledges, so the record is
+ * A Disclosure view closed without its acknowledgement cancels the action.
+ * The view closes the palette just after it acknowledges, so the record is
  * read again after a moment: by then an acknowledged one is gone.
  */
-async function endClosedDisclosure(tabId: number): Promise<void> {
+async function endClosedDisclosure(token: string): Promise<void> {
   const ids = new Set(
     [...pendingDisclosures.values()]
-      .filter(({ disclosureTabId }) => disclosureTabId === tabId)
+      .filter(({ disclosureToken }) => disclosureToken === token)
       .map(({ id }) => id),
   );
   for (const [id, stored] of Object.entries(await storedDisclosures()))
-    if (isRecord(stored) && stored["disclosureTabId"] === tabId) ids.add(id);
+    if (isRecord(stored) && stored["disclosureToken"] === token) ids.add(id);
   if (ids.size === 0) return;
   await new Promise((settle) => setTimeout(settle, DISCLOSURE_CLOSE_GRACE_MS));
-  for (const id of ids) {
-    const pending =
-      pendingDisclosures.get(id) ?? (await readPendingDisclosure(id));
-    if (!pending) continue;
-    pendingDisclosures.delete(id);
-    await deletePendingDisclosure(id);
-    await noteActivity(pending.activityId, {
-      state: "cancelled",
-      message: "The disclosure was closed before it was acknowledged.",
-    });
-  }
+  for (const id of ids) await cancelDisclosure(id, DISCLOSURE_CLOSED_MESSAGE);
+}
+
+/** Ends a pending disclosure's action as cancelled, if it still waits. */
+async function cancelDisclosure(id: string, message: string): Promise<void> {
+  const pending =
+    pendingDisclosures.get(id) ?? (await readPendingDisclosure(id));
+  if (!pending) return;
+  pendingDisclosures.delete(id);
+  await deletePendingDisclosure(id);
+  await noteActivity(pending.activityId, { state: "cancelled", message });
 }
 
 async function storedDisclosures(): Promise<Record<string, unknown>> {
@@ -1237,6 +1287,7 @@ async function readPendingDisclosure(
         pageTarget: null,
         selection: null,
         activityId: storedActivityId(candidate["activityId"]),
+        disclosureToken: storedToken(candidate["disclosureToken"]),
       };
     }
     const parsedMode = VerificationModeSchema.safeParse(
@@ -1269,10 +1320,15 @@ async function readPendingDisclosure(
           ? null
           : (selection as { success: true; data: ImageSelection }).data,
       activityId: storedActivityId(candidate["activityId"]),
+      disclosureToken: storedToken(candidate["disclosureToken"]),
     };
   } catch {
     return null;
   }
+}
+
+function storedToken(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }
 
 async function deletePendingDisclosure(id: string): Promise<void> {
@@ -4098,14 +4154,19 @@ async function openPalette(
   tab: chrome.tabs.Tab | undefined,
   view: OpenView,
   scope: PaletteOpenRecord["scope"] = "page",
-): Promise<void> {
+  disclosure?: PaletteDisclosure,
+  retried = false,
+): Promise<string | null> {
   const target = tab?.id !== undefined ? tab : await activeTab();
   const tabId = target?.id;
-  if (!target || tabId === undefined) return;
-  const record = paletteRecord(target, view, scope, "page");
+  if (!target || tabId === undefined) return null;
+  const record = {
+    ...paletteRecord(target, view, scope, "page"),
+    ...(disclosure ? { disclosure } : {}),
+  };
   if (record.page !== "web") {
     await openFallbackPopup(target, { ...record, host: "popup" });
-    return;
+    return null;
   }
   // Known before the frame can ask, so a first key right after opening works.
   await rememberPaletteMount(tabId, record.token);
@@ -4125,22 +4186,29 @@ async function openPalette(
   } catch {
     status = "failed";
   }
-  if (status === "ready") return;
+  if (status === "ready") return record.token;
   await forgetPaletteMount({ token: record.token });
   await discardPaletteRecord(record.token);
   // The same key closed the palette that was open.
-  if (status === "closed") return;
+  if (status === "closed" && !disclosure) return null;
+  // The Disclosure view replaces a palette still closing after its start,
+  // once. A page that closes it again gets the fallback popup instead.
+  if (status === "closed" && !retried)
+    return openPalette(target, view, scope, disclosure, true);
   await openFallbackPopup(target, {
     ...record,
     token: crypto.randomUUID(),
     host: "popup",
   });
+  return null;
 }
 
+/** The views a palette in a tab keeps; page views open at the root. */
 const SETTINGS_OPEN_VIEWS: ReadonlySet<OpenView> = new Set([
   "settings",
   "connect",
   "verification-mode",
+  "disclosure",
 ]);
 
 /** What the frame may know about the page: its host name, never its address. */

@@ -118,7 +118,7 @@ export function defaultFor(key: SettingKey): SettingUpdate {
 
 // Text ----------------------------------------------------------------------
 
-/** Card 3 of the Settings page, word for word; a unit test compares them. */
+/** The DigiBot consent text, word for word as the Settings page had it before 2.1.0. */
 export const CONNECT_INTRO =
   "Link this browser to your private DigiBot account to send selected originals, keep shared History, and view account statistics.";
 export const CONNECT_CONSENT =
@@ -128,7 +128,7 @@ export const PROVIDER_DETAILS_URL =
 export const PAIR_INSTRUCTION =
   "In your private DigiBot chat, send this command and approve the matching code.";
 
-/** Today's Settings page strings for the DigiBot connection. */
+/** The DigiBot connection strings, as the Settings page had them before 2.1.0. */
 export const PAIRING_TEXT = {
   creating: "Creating a short-lived pairing request...",
   createFailed: "The DigiBot pairing request could not be created.",
@@ -144,7 +144,7 @@ export const PAIRING_TEXT = {
   disconnectFailed: "The DigiBot connection could not be cleared.",
 } as const;
 
-/** The two disclosure lines of the Settings page's Verification mode card. */
+/** The two mode lines the Settings page showed for Verification mode before 2.1.0. */
 export const MODE_DISCLOSURES = [
   "Website mode downloads the exact selected image file and opens OpenAI Verify for you to upload and review manually. Lens never automates, submits to, or scrapes that website.",
   "API mode sends the exact selected image or audio file to your configured verification backend for an automatic result. The backend and a valid OpenAI API key are required; the API key stays on the backend and is never stored in this extension.",
