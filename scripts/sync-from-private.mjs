@@ -303,8 +303,9 @@ function verify(root, privateRepo, privateCommit) {
     );
   }
   // The lists and SOURCE_BASE come from the working folder, and the proof is
-  // about HEAD.
+  // about HEAD. Without --no-optional-locks, git status can rewrite the index.
   const status = git(root, [
+    "--no-optional-locks",
     "status",
     "--porcelain",
     "--untracked-files=all",

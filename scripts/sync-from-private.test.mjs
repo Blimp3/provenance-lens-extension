@@ -4,8 +4,10 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -259,14 +261,16 @@ test("verify passes on a synced tree and names each difference", (context) => {
     ].join("\n"),
   });
 
+  const later = commit(priv, { ".gitignore": publicFiles[".gitignore"] });
   commit(pub, {
     "packages/shared/src/a.ts": "export const a = 3;\n",
     "packages/shared/src/extra.ts": "export const extra = 1;\n",
     "tsconfig.json": privateFiles["tsconfig.json"],
   });
-  const edited = call(pub, "verify", priv, next);
+  const edited = call(pub, "verify", priv, later);
   assert.equal(edited.code, 2, edited.text);
   for (const blocked of [
+    /^BLOCKED {2}\.gitignore: EDITION path equals the private file/mu,
     /^BLOCKED {2}packages\/shared\/src\/a\.ts: the public file differs from the private base/mu,
     /^BLOCKED {2}packages\/shared\/src\/extra\.ts: public-only file in a private folder/mu,
     /^BLOCKED {2}tsconfig\.json: EDITION path equals the private file/mu,
@@ -298,6 +302,18 @@ test("verify refuses a missing base, a base that is not an ancestor and an unkno
   refused(/SOURCE_BASE must hold one full private commit id/u);
   commit(pub, { SOURCE_BASE: null });
   refused(/This checkout has no SOURCE_BASE/u);
+});
+
+test("verify leaves the public index unchanged", (context) => {
+  const { priv, pub } = fixture(context);
+  const later = new Date(Date.now() + 60_000);
+  utimesSync(join(pub, "README.md"), later, later);
+  const index = readFileSync(join(pub, ".git/index"));
+  assert.equal(call(pub, "verify", priv, "HEAD").code, 0);
+  assert.ok(
+    readFileSync(join(pub, ".git/index")).equals(index),
+    "verify rewrote the public index",
+  );
 });
 
 test("verify refuses a dirty folder and local work that git status hides", (context) => {

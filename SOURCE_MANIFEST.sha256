@@ -168,8 +168,8 @@ fefd04764e0fecbf444fea949906d3b362998645b67287f3d574b8d5a39ebfd1  ./scripts/pack
 e19f5cd22d71c9c4f70152d0c1ba38599204574e30958607008fd2d6e06e2beb  ./scripts/scan-extension.mjs
 936fe652ec8402fa4fdfd2b1225f22af42014579c4db25c58fabdc4c974c2f7c  ./scripts/start-extension.mjs
 b9d45bc198d4e50adf28d7d76d21781d3ac3541a30b27617257000735a90f800  ./scripts/start-extension.test.mjs
-a4a02b68809690a7f11c478a802d4e4331cadfb57091c4c7ee6867bbdd45b51b  ./scripts/sync-from-private.mjs
-1e7c48e7519671a44e58f7f589572ca71599b61bb251db80e6bcb7d8579a582c  ./scripts/sync-from-private.test.mjs
+b8961100d57f4eb49b789a3ba75cdff6d0401c8ae8e6d974e425ac39b122bf38  ./scripts/sync-from-private.mjs
+37fc7f4080e4af3ffb7c0580f145526853971004f842986bd9a7d089b0202f35  ./scripts/sync-from-private.test.mjs
 d16ea7c4aa32440c962895c77aaa898f7b25e13df94342a24297eca97196671e  ./scripts/version-sync.test.mjs
 7951028cdc87a7ea74cb7c1c309c4078b00351bab2803c0102429f450b7a9aa2  ./start-provenance-lens.command
 574f3f7dbcfca5b538a6ac61086c594ed028afe547489cdeab9e80e8a3322c6c  ./tsconfig.base.json
