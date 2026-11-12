@@ -5,9 +5,10 @@ a6b98ea7cb6d61ed8d430dd0dffa46c87012b5cf859d4ce7207898954951fdcd  ./.editorconfi
 d9f318747a126ce2247661af67852b185def7789492eabfad7bba322be087c33  ./.nvmrc
 e9ee6ed217f073ec0a13b0b1c9068e1336f108f2c78f72bb2bbde46281efb973  ./.prettierignore
 88dd31987a6e635b6702ed1b31f02e20b4a90c962aa7210297880a6f12cfde80  ./CHANGELOG.md
-ac287b5e82e63c10fde73a092c0077da0d59c2ffa82328d58b0d6c9a29f6a51f  ./CLAUDE.md
+c016a9ea2f8684aa1a756c5041faf4924bc3df184de463dcc2f73b49e5b91f8b  ./CLAUDE.md
 b7d35f9202a9e47d4a747744631daa208068daf8432c143c1866bca2c21b0336  ./LICENSE
 be9d157d555471ca105a95d3cf10fec85f9c1553398714a8c5bf8fd927124f05  ./README.md
+c957c161a1b2dbe5aca8edfd5662704511f8abbe95c6377e23f61b97de29fe91  ./SOURCE_BASE
 d9cc82068de039542ed6f897b2585aae38591b28579e6caa9a4698edea6ced13  ./SOURCE_PROVENANCE.md
 b4683f46cda056f348356f7de8ab5595b1e28d5b6b2fada4ad6342a1f569af37  ./THIRD_PARTY_NOTICES.txt
 29bcfe7ada6876a297c6854a7a8b58b38ba1fcc8922abd2643f90eb5b3ddcc40  ./apps/extension/e2e/integration.smoke.spec.ts
@@ -121,7 +122,7 @@ c9b5e93b7440339a4c6a9fc52b693bf096e552fb9bb0e2f14d488af9b5da542d  ./apps/extensi
 3b5effb63972fd061ff41acf4fd83fd2e0c1bfb588c1eaa540cd489488a87a77  ./docs/release-checklist.md
 e858905287d8e82a519167678a5d507278c2801e1405a1892edf4447c0a87e52  ./eslint.config.js
 f06087e804a13befbeb82091739f605e3bafccec2e46d5948f621c085aaf07f4  ./package-lock.json
-4a9aa1178839a9583893a968df966c69e3e73d963b477ff0a37b29adf41969a4  ./package.json
+588ce55a98a1b1569b270cc0e55811370e9e5e02ccc03f6cf4c4221104e95e11  ./package.json
 10293e8a711030a19dcad0c667caa55498ebee8f18f25456dfd3961b0b87b23a  ./packages/shared/package.json
 ef3b8ab8df31516808e5f658e56f004378261b3af7ff717975a8e09253222a32  ./packages/shared/src/audio-validation.ts
 83ab72ae8526d09a23425356d2e32992512e8361a59bf2aedd61cbdda5b78f96  ./packages/shared/src/constants.ts
@@ -167,6 +168,8 @@ fefd04764e0fecbf444fea949906d3b362998645b67287f3d574b8d5a39ebfd1  ./scripts/pack
 e19f5cd22d71c9c4f70152d0c1ba38599204574e30958607008fd2d6e06e2beb  ./scripts/scan-extension.mjs
 936fe652ec8402fa4fdfd2b1225f22af42014579c4db25c58fabdc4c974c2f7c  ./scripts/start-extension.mjs
 b9d45bc198d4e50adf28d7d76d21781d3ac3541a30b27617257000735a90f800  ./scripts/start-extension.test.mjs
+b8961100d57f4eb49b789a3ba75cdff6d0401c8ae8e6d974e425ac39b122bf38  ./scripts/sync-from-private.mjs
+37fc7f4080e4af3ffb7c0580f145526853971004f842986bd9a7d089b0202f35  ./scripts/sync-from-private.test.mjs
 d16ea7c4aa32440c962895c77aaa898f7b25e13df94342a24297eca97196671e  ./scripts/version-sync.test.mjs
 7951028cdc87a7ea74cb7c1c309c4078b00351bab2803c0102429f450b7a9aa2  ./start-provenance-lens.command
 574f3f7dbcfca5b538a6ac61086c594ed028afe547489cdeab9e80e8a3322c6c  ./tsconfig.base.json
