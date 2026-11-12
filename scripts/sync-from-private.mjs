@@ -15,6 +15,7 @@ export const PUBLIC_OWNED = [
   "THIRD_PARTY_NOTICES.txt",
   "SOURCE_PROVENANCE.md",
   "SOURCE_MANIFEST.sha256",
+  "SOURCE_BASE",
   "docs/",
   ".github/workflows/ci.yml",
   "scripts/public-package.test.mjs",
@@ -46,6 +47,33 @@ export const FROM_PRIVATE = [
   "scripts/version-sync.test.mjs",
 ];
 
+/**
+ * The FROM_PRIVATE files whose public bytes differ on purpose. The difference
+ * lives in the public file. Every other FROM_PRIVATE file is a mirror and
+ * equals the private file byte for byte.
+ */
+export const EDITION = [
+  ".gitignore",
+  "apps/extension/e2e/popup.smoke.spec.ts",
+  "apps/extension/manifest.json",
+  "apps/extension/package.json",
+  "apps/extension/public/settings.html",
+  "apps/extension/scripts/build.mjs",
+  "apps/extension/src/ui/settings.ts",
+  "apps/extension/tests/unit/bundled-client.test.ts",
+  "apps/extension/tests/unit/storage.test.ts",
+  "package-lock.json",
+  "package.json",
+  "packages/shared/package.json",
+  "packages/shared/src/constants.ts",
+  "packages/shared/tests/integration-api.test.ts",
+  "scripts/audit-extension.mjs",
+  "scripts/package.mjs",
+  "scripts/scan-extension.mjs",
+  "tsconfig.json",
+  "vitest.config.ts",
+];
+
 const NEVER_PUBLISHED =
   /(^|\/)(\.env(\..*)?|\.dev\.vars(\..*)?|\.bundled-client[^/]*|wrangler\.(json|jsonc|toml)|[^/]*\.(patch|orig|rej))$/iu;
 
@@ -66,7 +94,7 @@ const inList = (list, path) =>
     entry.endsWith("/") ? path.startsWith(entry) : path === entry,
   );
 
-/** @returns {"public-owned" | "mirror" | null} null: outside the publication boundary */
+/** @returns {"public-owned" | "edition" | "mirror" | null} null: outside the publication boundary */
 export function classify(path) {
   if (
     path.split("/").some((part) => BAD_PART.test(part)) ||
@@ -74,7 +102,8 @@ export function classify(path) {
   )
     return null;
   if (inList(PUBLIC_OWNED, path)) return "public-owned";
-  return inList(FROM_PRIVATE, path) ? "mirror" : null;
+  if (!inList(FROM_PRIVATE, path)) return null;
+  return EDITION.includes(path) ? "edition" : "mirror";
 }
 
 function mentionFindings(path, text) {
@@ -142,18 +171,198 @@ export function guard(root) {
   return findings;
 }
 
-function run(root, argv) {
-  if (argv.length !== 1 || argv[0] !== "guard") {
-    console.error("usage: node scripts/sync-from-private.mjs guard");
+class Refusal extends Error {}
+
+const short = (id) => id.slice(0, 7);
+
+function readBase(root) {
+  let text;
+  try {
+    text = readFileSync(join(root, "SOURCE_BASE"), "utf8");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    throw new Refusal(
+      "This checkout has no SOURCE_BASE. Its line 1 names the private commit that the public tree holds.",
+    );
+  }
+  const base = text.trim();
+  if (!/^[0-9a-f]{40}$/u.test(base))
+    throw new Refusal("SOURCE_BASE must hold one full private commit id.");
+  return base;
+}
+
+function readTree(repo, commit, pathspecs = []) {
+  const tree = new Map();
+  const listed = git(repo, [
+    "ls-tree",
+    "-r",
+    "-z",
+    "--full-tree",
+    commit,
+    "--",
+    ...pathspecs,
+  ]);
+  for (const record of listed.toString("utf8").split("\0")) {
+    if (record === "") continue;
+    const tab = record.indexOf("\t");
+    const [mode, , oid] = record.slice(0, tab).split(" ");
+    tree.set(record.slice(tab + 1), { mode, oid });
+  }
+  return tree;
+}
+
+const same = (a, b) => a?.oid === b?.oid && a?.mode === b?.mode;
+
+function plan({ pub, base, next }) {
+  const steps = [];
+  const blocks = [];
+  const verified = { mirror: 0, edition: 0 };
+  const paths = new Set([...pub.keys(), ...base.keys(), ...next.keys()]);
+  for (const path of [...paths].sort()) {
+    const kind = classify(path);
+    const [ours, was, now] = [pub.get(path), base.get(path), next.get(path)];
+    const block = (problem) => blocks.push({ path, problem });
+    if (kind === "public-owned") continue;
+    if (kind === null) {
+      if (ours) block("path outside the publication boundary");
+      // base and next hold FROM_PRIVATE paths only, so a private path that
+      // classify refuses is a never-published name or an unsafe path part.
+      else if (now)
+        block("the private commit tracks a name that is never published");
+    } else if (now && now.mode !== "100644" && now.mode !== "100755") {
+      block(`the private commit holds a link or submodule (mode ${now.mode})`);
+    } else if (ours && !was && !now) {
+      block("public-only file in a private folder. List it in PUBLIC_OWNED");
+    } else if (kind === "mirror") {
+      if (same(ours, now)) {
+        if (ours) verified.mirror += 1;
+      } else if (same(ours, was)) {
+        steps.push({ path, action: !now ? "delete" : ours ? "copy" : "add" });
+      } else {
+        block(
+          "the public file differs from the private base. Make the change in private, or list the path in EDITION",
+        );
+      }
+    } else if (!ours) {
+      block("EDITION path is missing in the public tree");
+    } else if (same(ours, was) || same(ours, now)) {
+      block("EDITION path equals the private file. Remove it from EDITION");
+    } else if (same(was, now)) {
+      verified.edition += 1;
+    } else {
+      steps.push({ path, action: "merge" });
+    }
+  }
+  const final = new Set(pub.keys());
+  for (const { path, action } of steps)
+    if (action === "delete") final.delete(path);
+    else final.add(path);
+  blocks.push(...caseFindings(final));
+  return { steps, blocks, verified };
+}
+
+function verify(root, privateRepo, privateCommit) {
+  const recorded = readBase(root);
+  const commitId = (name, missing) => {
+    try {
+      return git(privateRepo, [
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        `${name}^{commit}`,
+      ])
+        .toString("utf8")
+        .trim();
+    } catch {
+      throw new Refusal(missing);
+    }
+  };
+  const target = commitId(
+    privateCommit,
+    `The private clone has no commit ${privateCommit}.`,
+  );
+  const base = commitId(
+    recorded,
+    `The private clone does not hold the base ${recorded}. Fetch the full history (no shallow clone).`,
+  );
+  try {
+    git(privateRepo, ["merge-base", "--is-ancestor", base, target]);
+  } catch {
+    throw new Refusal(
+      `The base ${short(base)} is not an ancestor of ${short(target)}. The tool does not sync backwards.`,
+    );
+  }
+  // The lists and SOURCE_BASE come from the working folder, and the proof is
+  // about HEAD.
+  const status = git(root, [
+    "status",
+    "--porcelain",
+    "--untracked-files=all",
+    "--ignore-submodules=none",
+  ]);
+  if (status.length > 0)
+    throw new Refusal(
+      "The public working folder is not clean. Commit or stash first.",
+    );
+  const hidden = git(root, ["ls-files", "-v", "-z"])
+    .toString("utf8")
+    .split("\0")
+    .find((entry) => /^[a-zS] /u.test(entry));
+  if (hidden)
+    throw new Refusal(
+      `The public index hides local work in ${hidden.slice(2)} (assume-unchanged or skip-worktree). Clear the mark first.`,
+    );
+
+  const pathspecs = FROM_PRIVATE.map((entry) => entry.replace(/\/$/u, ""));
+  const { steps, blocks, verified } = plan({
+    pub: readTree(root, "HEAD"),
+    base: readTree(privateRepo, base, pathspecs),
+    next: readTree(privateRepo, target, pathspecs),
+  });
+  for (const { path, action } of steps)
+    console.log(`${action.padEnd(8)} ${path}`);
+  for (const { path, problem } of blocks)
+    console.log(`BLOCKED  ${path}: ${problem}`);
+  if (blocks.length > 0) {
+    console.log(
+      `\n${blocks.length} blocked. Fix the lists or the public tree first.`,
+    );
     return 2;
   }
-  const findings = guard(root);
-  for (const finding of findings) console.error(finding);
-  if (findings.length > 0) return 1;
+  if (steps.length > 0) {
+    console.log(
+      `\nNot in sync: ${steps.length} paths differ from sync(${short(target)}).`,
+    );
+    return 1;
+  }
   console.log(
-    "Path guard passed: every file is inside the publication boundary.",
+    `Verified: the public HEAD equals sync(${short(target)}). ${verified.mirror} mirror files are byte-identical. ${verified.edition} edition files have no private change after SOURCE_BASE.`,
   );
   return 0;
+}
+
+const usage = [
+  "usage: node scripts/sync-from-private.mjs guard",
+  "       node scripts/sync-from-private.mjs verify <private-clone> <private-commit>",
+].join("\n");
+
+/** Runs one command and prints its result. @returns {0 | 1 | 2} the exit code */
+export function run(root, [command, ...rest]) {
+  try {
+    if (command === "verify" && rest.length === 2) return verify(root, ...rest);
+    if (command !== "guard" || rest.length > 0) throw new Refusal(usage);
+    const findings = guard(root);
+    for (const finding of findings) console.error(finding);
+    if (findings.length > 0) return 1;
+    console.log(
+      "Path guard passed: every file is inside the publication boundary.",
+    );
+    return 0;
+  } catch (error) {
+    if (!(error instanceof Refusal)) throw error;
+    console.error(error.message);
+    return 2;
+  }
 }
 
 const isDirectRun =

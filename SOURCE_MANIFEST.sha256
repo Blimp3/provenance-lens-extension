@@ -8,6 +8,7 @@ e9ee6ed217f073ec0a13b0b1c9068e1336f108f2c78f72bb2bbde46281efb973  ./.prettierign
 10564655c8e2928964fd0e1c10de7f51b65fa51e2d3a8d8edbffeb6a6d009f37  ./CLAUDE.md
 b7d35f9202a9e47d4a747744631daa208068daf8432c143c1866bca2c21b0336  ./LICENSE
 be9d157d555471ca105a95d3cf10fec85f9c1553398714a8c5bf8fd927124f05  ./README.md
+c957c161a1b2dbe5aca8edfd5662704511f8abbe95c6377e23f61b97de29fe91  ./SOURCE_BASE
 d9cc82068de039542ed6f897b2585aae38591b28579e6caa9a4698edea6ced13  ./SOURCE_PROVENANCE.md
 b4683f46cda056f348356f7de8ab5595b1e28d5b6b2fada4ad6342a1f569af37  ./THIRD_PARTY_NOTICES.txt
 29bcfe7ada6876a297c6854a7a8b58b38ba1fcc8922abd2643f90eb5b3ddcc40  ./apps/extension/e2e/integration.smoke.spec.ts
@@ -167,8 +168,8 @@ fefd04764e0fecbf444fea949906d3b362998645b67287f3d574b8d5a39ebfd1  ./scripts/pack
 e19f5cd22d71c9c4f70152d0c1ba38599204574e30958607008fd2d6e06e2beb  ./scripts/scan-extension.mjs
 936fe652ec8402fa4fdfd2b1225f22af42014579c4db25c58fabdc4c974c2f7c  ./scripts/start-extension.mjs
 b9d45bc198d4e50adf28d7d76d21781d3ac3541a30b27617257000735a90f800  ./scripts/start-extension.test.mjs
-6b9785afb28be746b7c9577943d642aae0ff3f98d3678cf0f77477b07c318f1d  ./scripts/sync-from-private.mjs
-8bed63a802084630ebd3285f3431b226719a5933dc45260ffbff43faae2e27da  ./scripts/sync-from-private.test.mjs
+f09be1101fcf980e23d2f0ea14eb0f59571c7d45cc9f311adc767e289f885c04  ./scripts/sync-from-private.mjs
+4552e684655bc8f0f58291ab9044e2233ea9c0bb7e8ad25e33ce4a28dd74c280  ./scripts/sync-from-private.test.mjs
 d16ea7c4aa32440c962895c77aaa898f7b25e13df94342a24297eca97196671e  ./scripts/version-sync.test.mjs
 7951028cdc87a7ea74cb7c1c309c4078b00351bab2803c0102429f450b7a9aa2  ./start-provenance-lens.command
 574f3f7dbcfca5b538a6ac61086c594ed028afe547489cdeab9e80e8a3322c6c  ./tsconfig.base.json
