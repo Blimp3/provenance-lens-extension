@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -156,15 +156,25 @@ export function guard(root) {
       continue;
     }
     if (kind === "public-owned") continue;
-    let text;
+    let entry;
     try {
-      text = readFileSync(join(root, path), "utf8");
+      entry = lstatSync(join(root, path));
     } catch (error) {
       // A tracked file deleted from the working folder publishes nothing.
       if (error.code === "ENOENT") continue;
       throw error;
     }
-    findings.push(...mentionFindings(path, text));
+    // plan blocks a private link or submodule, so one here never came from
+    // the private repository.
+    if (!entry.isFile()) {
+      findings.push(
+        `link or submodule at a path from the private repository: ${path}`,
+      );
+      continue;
+    }
+    findings.push(
+      ...mentionFindings(path, readFileSync(join(root, path), "utf8")),
+    );
   }
   for (const { path, problem } of caseFindings(paths))
     findings.push(`${path}: ${problem}`);

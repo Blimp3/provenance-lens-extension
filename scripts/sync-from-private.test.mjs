@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -195,6 +196,33 @@ test("guard rejects two paths that differ only in letter case", (context) => {
   assert.deepEqual(guard(root), [
     `apps/extension/src/ui: differs only in letter case from apps/extension/src/Ui. ${rename}`,
     `packages/shared/src/a.ts: differs only in letter case from packages/shared/src/A.ts. ${rename}`,
+  ]);
+});
+
+test("guard rejects a link or submodule at a path from the private repository", (context) => {
+  const root = repository(context, {
+    ...publicFiles,
+    "README.md": "apps/worker stays private.\n",
+  });
+  symlinkSync(
+    "../../../apps/worker/src/token.ts",
+    join(root, "packages/shared/src/token.ts"),
+  );
+  symlinkSync("../../README.md", join(root, "packages/shared/readme.md"));
+  git(root, "add", "-A");
+  const head = git(root, "rev-parse", "HEAD");
+  git(
+    root,
+    "update-index",
+    "--add",
+    "--cacheinfo",
+    `160000,${head},packages/shared/vendor`,
+  );
+  mkdirSync(join(root, "packages/shared/vendor"));
+  assert.deepEqual(guard(root), [
+    "link or submodule at a path from the private repository: packages/shared/readme.md",
+    "link or submodule at a path from the private repository: packages/shared/src/token.ts",
+    "link or submodule at a path from the private repository: packages/shared/vendor",
   ]);
 });
 

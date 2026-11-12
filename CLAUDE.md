@@ -48,8 +48,9 @@ Run all three before calling work done; CI runs the same steps.
   The guard checks every tracked file and every untracked file that git does
   not ignore. It fails for a file outside `PUBLIC_OWNED` and `FROM_PRIVATE`, a
   never-published name in any letter case, an empty, `.`, `..` or `.git` path
-  part, two paths that differ only in letter case, or a file from the private
-  repository that names a private workspace. Add a new public-only file to
+  part, two paths that differ only in letter case, a link or submodule at a
+  path from the private repository, or a file from the private repository
+  that names a private workspace. Add a new public-only file to
   `PUBLIC_OWNED` in the same pull request.
 - Every pull request that changes a tracked file regenerates
   `SOURCE_MANIFEST.sha256` as its last change, with the command in step 6 of
